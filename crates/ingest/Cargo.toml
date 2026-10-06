@@ -1,0 +1,19 @@
+[package]
+name = "ingest"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+event = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+storage = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

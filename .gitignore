@@ -1,0 +1,12 @@
+/target
+/data
+/data-dev
+/web/node_modules
+/web/dist
+/web/data-dev
+**/*.db
+.DS_Store
+.idea/
+*.iml
+obj/
+bin/

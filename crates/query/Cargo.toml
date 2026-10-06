@@ -1,0 +1,21 @@
+[package]
+name = "query"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+event = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+storage = { workspace = true }
+tantivy = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+event = { workspace = true }
+storage = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }

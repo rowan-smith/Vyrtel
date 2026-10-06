@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/app",
+    "crates/event",
+    "crates/ingest",
+    "crates/storage",
+    "crates/query",
+    "crates/metadata",
+    "crates/otlp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+async-stream = "0.3"
+axum = { version = "0.8", features = ["macros"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+event = { path = "crates/event" }
+futures = "0.3"
+ingest = { path = "crates/ingest" }
+metadata = { path = "crates/metadata" }
+otlp = { path = "crates/otlp" }
+prost = "0.13"
+query = { path = "crates/query" }
+rust-embed = { version = "8", features = ["include-exclude"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
+storage = { path = "crates/storage" }
+tantivy = "0.22"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+toml = "0.8"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+mime_guess = "2"
+tempfile = "3"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
