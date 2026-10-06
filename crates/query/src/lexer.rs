@@ -1,310 +1,383 @@
+//! Tokenizer for the query language.
+
+use crate::error::ParseError;
+
 #[derive(Debug, Clone, PartialEq)]
-pub enum TokenKind {
+pub enum Tok {
+    /// Field name, possibly dotted: `http.statusCode`.
     Ident(String),
-    String(String),
-    Number(f64),
-    Bool(bool),
+    Str(String),
+    Int(i64),
+    Float(f64),
+    True,
+    False,
+    Null,
     Eq,
-    Neq,
+    Ne,
     Gt,
-    Gte,
+    Ge,
     Lt,
-    Lte,
+    Le,
     And,
     Or,
     Not,
     Contains,
-    By,
     LParen,
     RParen,
-    Pipe,
     Eof,
+}
+
+impl Tok {
+    pub fn describe(&self) -> String {
+        match self {
+            Tok::Ident(s) => format!("field '{s}'"),
+            Tok::Str(s) => format!("string \"{s}\""),
+            Tok::Int(i) => format!("number {i}"),
+            Tok::Float(f) => format!("number {f}"),
+            Tok::True => "'true'".into(),
+            Tok::False => "'false'".into(),
+            Tok::Null => "'null'".into(),
+            Tok::Eq => "'='".into(),
+            Tok::Ne => "'!='".into(),
+            Tok::Gt => "'>'".into(),
+            Tok::Ge => "'>='".into(),
+            Tok::Lt => "'<'".into(),
+            Tok::Le => "'<='".into(),
+            Tok::And => "'and'".into(),
+            Tok::Or => "'or'".into(),
+            Tok::Not => "'not'".into(),
+            Tok::Contains => "'contains'".into(),
+            Tok::LParen => "'('".into(),
+            Tok::RParen => "')'".into(),
+            Tok::Eof => "end of query".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
-    pub kind: TokenKind,
-    pub start: usize,
-    pub end: usize,
+    pub tok: Tok,
+    /// Byte offset in the input.
+    pub pos: usize,
 }
 
-pub struct Lexer<'a> {
-    input: &'a str,
-    chars: Vec<(usize, char)>,
-    pos: usize,
+fn ident_start(c: char) -> bool {
+    c.is_alphabetic() || c == '_' || c == '@' || c == '$'
 }
 
-impl<'a> Lexer<'a> {
-    pub fn new(input: &'a str) -> Self {
-        Self {
-            input,
-            chars: input.char_indices().collect(),
-            pos: 0,
+fn ident_continue(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '.' | '-' | '@' | '$')
+}
+
+pub fn tokenize(input: &str) -> Result<Vec<Token>, ParseError> {
+    let mut out = Vec::new();
+    let mut it = input.char_indices().peekable();
+    while let Some(&(pos, c)) = it.peek() {
+        if c.is_whitespace() {
+            it.next();
+            continue;
         }
-    }
-
-    pub fn tokenize(&mut self) -> Result<Vec<Token>, LexError> {
-        let mut tokens = Vec::new();
-        loop {
-            let tok = self.next_token()?;
-            let is_eof = tok.kind == TokenKind::Eof;
-            tokens.push(tok);
-            if is_eof {
-                break;
-            }
-        }
-        Ok(tokens)
-    }
-
-    fn peek(&self) -> Option<(usize, char)> {
-        self.chars.get(self.pos).copied()
-    }
-
-    fn bump(&mut self) -> Option<(usize, char)> {
-        let c = self.peek()?;
-        self.pos += 1;
-        Some(c)
-    }
-
-    fn next_token(&mut self) -> Result<Token, LexError> {
-        self.skip_whitespace();
-        let Some((start, ch)) = self.peek() else {
-            return Ok(Token {
-                kind: TokenKind::Eof,
-                start: self.input.len(),
-                end: self.input.len(),
-            });
-        };
-
-        match ch {
+        let single = |t: Tok| Token { tok: t, pos };
+        match c {
             '(' => {
-                self.bump();
-                Ok(Token {
-                    kind: TokenKind::LParen,
-                    start,
-                    end: start + 1,
-                })
+                it.next();
+                out.push(single(Tok::LParen));
             }
             ')' => {
-                self.bump();
-                Ok(Token {
-                    kind: TokenKind::RParen,
-                    start,
-                    end: start + 1,
-                })
-            }
-            '|' => {
-                self.bump();
-                Ok(Token {
-                    kind: TokenKind::Pipe,
-                    start,
-                    end: start + 1,
-                })
+                it.next();
+                out.push(single(Tok::RParen));
             }
             '=' => {
-                self.bump();
-                Ok(Token {
-                    kind: TokenKind::Eq,
-                    start,
-                    end: start + 1,
-                })
+                it.next();
+                // Accept `==` as a courtesy for people used to C-like syntax.
+                if matches!(it.peek(), Some((_, '='))) {
+                    it.next();
+                }
+                out.push(single(Tok::Eq));
             }
             '!' => {
-                self.bump();
-                if matches!(self.peek(), Some((_, '='))) {
-                    self.bump();
-                    Ok(Token {
-                        kind: TokenKind::Neq,
-                        start,
-                        end: start + 2,
-                    })
+                it.next();
+                if matches!(it.peek(), Some((_, '='))) {
+                    it.next();
+                    out.push(single(Tok::Ne));
                 } else {
-                    Err(LexError {
-                        message: "Expected '=' after '!'".into(),
-                        position: start,
-                    })
-                }
-            }
-            '>' => {
-                self.bump();
-                if matches!(self.peek(), Some((_, '='))) {
-                    self.bump();
-                    Ok(Token {
-                        kind: TokenKind::Gte,
-                        start,
-                        end: start + 2,
-                    })
-                } else {
-                    Ok(Token {
-                        kind: TokenKind::Gt,
-                        start,
-                        end: start + 1,
-                    })
+                    return Err(ParseError::new("Expected '=' after '!'", pos));
                 }
             }
             '<' => {
-                self.bump();
-                if matches!(self.peek(), Some((_, '='))) {
-                    self.bump();
-                    Ok(Token {
-                        kind: TokenKind::Lte,
-                        start,
-                        end: start + 2,
-                    })
-                } else {
-                    Ok(Token {
-                        kind: TokenKind::Lt,
-                        start,
-                        end: start + 1,
-                    })
+                it.next();
+                match it.peek() {
+                    Some((_, '=')) => {
+                        it.next();
+                        out.push(single(Tok::Le));
+                    }
+                    Some((_, '>')) => {
+                        it.next();
+                        out.push(single(Tok::Ne));
+                    }
+                    _ => out.push(single(Tok::Lt)),
                 }
             }
-            '"' | '\'' => self.read_string(),
-            c if c.is_ascii_digit() || (c == '-' && self.peek_is_digit()) => self.read_number(),
-            c if is_ident_start(c) => self.read_ident_or_keyword(),
-            _ => Err(LexError {
-                message: format!("Unexpected character '{ch}'"),
-                position: start,
-            }),
-        }
-    }
-
-    fn peek_is_digit(&self) -> bool {
-        self.chars
-            .get(self.pos + 1)
-            .map(|(_, c)| c.is_ascii_digit())
-            .unwrap_or(false)
-    }
-
-    fn skip_whitespace(&mut self) {
-        while matches!(self.peek(), Some((_, c)) if c.is_whitespace()) {
-            self.bump();
-        }
-    }
-
-    fn read_string(&mut self) -> Result<Token, LexError> {
-        let (start, quote) = self.bump().unwrap();
-        let mut value = String::new();
-        loop {
-            match self.bump() {
-                Some((_, c)) if c == quote => {
-                    return Ok(Token {
-                        kind: TokenKind::String(value),
-                        start,
-                        end: self.chars.get(self.pos).map(|(i, _)| *i).unwrap_or(self.input.len()),
-                    });
+            '>' => {
+                it.next();
+                if matches!(it.peek(), Some((_, '='))) {
+                    it.next();
+                    out.push(single(Tok::Ge));
+                } else {
+                    out.push(single(Tok::Gt));
                 }
-                Some((_, '\\')) => {
-                    if let Some((_, escaped)) = self.bump() {
-                        value.push(match escaped {
-                            'n' => '\n',
-                            't' => '\t',
-                            'r' => '\r',
-                            '"' => '"',
-                            '\'' => '\'',
-                            '\\' => '\\',
-                            other => other,
-                        });
+            }
+            '"' | '\'' => {
+                let quote = c;
+                it.next();
+                let mut s = String::new();
+                let mut closed = false;
+                while let Some((_, ch)) = it.next() {
+                    if ch == quote {
+                        closed = true;
+                        break;
+                    }
+                    if ch == '\\' {
+                        match it.next() {
+                            Some((_, 'n')) => s.push('\n'),
+                            Some((_, 't')) => s.push('\t'),
+                            Some((_, 'r')) => s.push('\r'),
+                            Some((_, e)) => s.push(e),
+                            None => break,
+                        }
+                    } else {
+                        s.push(ch);
                     }
                 }
-                Some((_, c)) => value.push(c),
-                None => {
-                    return Err(LexError {
-                        message: "Unterminated string".into(),
-                        position: start,
-                    });
+                if !closed {
+                    return Err(ParseError::new("Unterminated string", pos));
                 }
+                out.push(Token { tok: Tok::Str(s), pos });
+            }
+            c if c.is_ascii_digit() || (c == '-' && next_is_digit(input, pos)) => {
+                // -?digits(.digits)?([eE][+-]?digits)?
+                let b = input.as_bytes();
+                let digits = |mut i: usize| {
+                    while i < b.len() && b[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                    i
+                };
+                let start = pos;
+                let mut i = if b[pos] == b'-' { pos + 1 } else { pos };
+                i = digits(i);
+                let mut is_float = false;
+                if i + 1 < b.len() && b[i] == b'.' && b[i + 1].is_ascii_digit() {
+                    is_float = true;
+                    i = digits(i + 1);
+                }
+                if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+                    let mut j = i + 1;
+                    if j < b.len() && (b[j] == b'+' || b[j] == b'-') {
+                        j += 1;
+                    }
+                    if j < b.len() && b[j].is_ascii_digit() {
+                        is_float = true;
+                        i = digits(j);
+                    }
+                }
+                while it.peek().is_some_and(|&(p, _)| p < i) {
+                    it.next();
+                }
+                // `5m`, `10abc`: a number glued to letters is not a number.
+                if let Some(&(_, ch)) = it.peek()
+                    && (ident_start(ch) || ch == '.')
+                {
+                    return Err(ParseError::new(format!("Invalid number '{}{}'", &input[start..i], ch), start));
+                }
+                let text = &input[start..i];
+                let finite = |f: f64| f.is_finite().then_some(f);
+                let tok = if is_float {
+                    text.parse::<f64>().ok().and_then(finite).map(Tok::Float)
+                } else {
+                    text.parse::<i64>()
+                        .map(Tok::Int)
+                        .ok()
+                        .or_else(|| text.parse::<f64>().ok().and_then(finite).map(Tok::Float))
+                };
+                let tok = tok.ok_or_else(|| ParseError::new(format!("Invalid number '{text}'"), start))?;
+                out.push(Token { tok, pos: start });
+            }
+            c if ident_start(c) => {
+                let start = pos;
+                let mut end = pos;
+                while let Some(&(p, ch)) = it.peek() {
+                    if !ident_continue(ch) {
+                        break;
+                    }
+                    end = p + ch.len_utf8();
+                    it.next();
+                }
+                let word = &input[start..end];
+                if word.ends_with('.') {
+                    return Err(ParseError::new(format!("Field name '{word}' cannot end with '.'"), start));
+                }
+                let tok = match word.to_ascii_lowercase().as_str() {
+                    "and" => Tok::And,
+                    "or" => Tok::Or,
+                    "not" => Tok::Not,
+                    "contains" => Tok::Contains,
+                    "true" => Tok::True,
+                    "false" => Tok::False,
+                    "null" => Tok::Null,
+                    _ => Tok::Ident(word.to_string()),
+                };
+                out.push(Token { tok, pos: start });
+            }
+            '&' if input[pos..].starts_with("&&") => {
+                it.next();
+                it.next();
+                out.push(single(Tok::And));
+            }
+            '|' if input[pos..].starts_with("||") => {
+                it.next();
+                it.next();
+                out.push(single(Tok::Or));
+            }
+            other => {
+                return Err(ParseError::new(format!("Unexpected character '{other}'"), pos));
             }
         }
     }
-
-    fn read_number(&mut self) -> Result<Token, LexError> {
-        let (start, _) = self.peek().unwrap();
-        let mut s = String::new();
-        if matches!(self.peek(), Some((_, '-'))) {
-            s.push(self.bump().unwrap().1);
-        }
-        while matches!(self.peek(), Some((_, c)) if c.is_ascii_digit() || c == '.') {
-            s.push(self.bump().unwrap().1);
-        }
-        // Interval unit suffix: 5m, 1h, 1d
-        if matches!(self.peek(), Some((_, c)) if c.is_ascii_alphabetic()) {
-            while matches!(self.peek(), Some((_, c)) if c.is_ascii_alphanumeric()) {
-                s.push(self.bump().unwrap().1);
-            }
-            let end = self.chars.get(self.pos).map(|(i, _)| *i).unwrap_or(self.input.len());
-            return Ok(Token {
-                kind: TokenKind::Ident(s),
-                start,
-                end,
-            });
-        }
-        let end = self.chars.get(self.pos).map(|(i, _)| *i).unwrap_or(self.input.len());
-        let n: f64 = s.parse().map_err(|_| LexError {
-            message: format!("Invalid number '{s}'"),
-            position: start,
-        })?;
-        Ok(Token {
-            kind: TokenKind::Number(n),
-            start,
-            end,
-        })
-    }
-
-    fn read_ident_or_keyword(&mut self) -> Result<Token, LexError> {
-        let (start, _) = self.peek().unwrap();
-        let mut s = String::new();
-        while matches!(self.peek(), Some((_, c)) if is_ident_continue(c)) {
-            s.push(self.bump().unwrap().1);
-        }
-        let end = self.chars.get(self.pos).map(|(i, _)| *i).unwrap_or(self.input.len());
-        let kind = match s.to_ascii_lowercase().as_str() {
-            "and" => TokenKind::And,
-            "or" => TokenKind::Or,
-            "not" => TokenKind::Not,
-            "contains" => TokenKind::Contains,
-            "by" => TokenKind::By,
-            "true" => TokenKind::Bool(true),
-            "false" => TokenKind::Bool(false),
-            _ => TokenKind::Ident(s),
-        };
-        Ok(Token { kind, start, end })
-    }
+    out.push(Token { tok: Tok::Eof, pos: input.len() });
+    Ok(out)
 }
 
-fn is_ident_start(c: char) -> bool {
-    c.is_ascii_alphabetic() || c == '_' || c == '.'
-}
-
-fn is_ident_continue(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-'
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct LexError {
-    pub message: String,
-    pub position: usize,
+fn next_is_digit(input: &str, pos: usize) -> bool {
+    input[pos + 1..].chars().next().is_some_and(|c| c.is_ascii_digit())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn tokenizes_comparison() {
-        let mut lexer = Lexer::new(r#"service = "api" and level >= error"#);
-        let tokens = lexer.tokenize().unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::Ident(ref s) if s == "service"));
-        assert_eq!(tokens[1].kind, TokenKind::Eq);
-        assert!(matches!(tokens[2].kind, TokenKind::String(ref s) if s == "api"));
-        assert_eq!(tokens[3].kind, TokenKind::And);
+    fn toks(s: &str) -> Vec<Tok> {
+        tokenize(s).unwrap().into_iter().map(|t| t.tok).collect()
     }
 
     #[test]
-    fn tokenizes_pipe() {
-        let mut lexer = Lexer::new("level = error | count by service");
-        let tokens = lexer.tokenize().unwrap();
-        assert!(tokens.iter().any(|t| t.kind == TokenKind::Pipe));
-        assert!(tokens.iter().any(|t| t.kind == TokenKind::By));
+    fn basic_tokens() {
+        assert_eq!(
+            toks(r#"level = "Error" and durationMs >= 500"#),
+            vec![
+                Tok::Ident("level".into()),
+                Tok::Eq,
+                Tok::Str("Error".into()),
+                Tok::And,
+                Tok::Ident("durationMs".into()),
+                Tok::Ge,
+                Tok::Int(500),
+                Tok::Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn operators() {
+        assert_eq!(
+            toks("a != 1 b <> 2 c < 3 d <= 4 e > 5 f == 6"),
+            vec![
+                Tok::Ident("a".into()),
+                Tok::Ne,
+                Tok::Int(1),
+                Tok::Ident("b".into()),
+                Tok::Ne,
+                Tok::Int(2),
+                Tok::Ident("c".into()),
+                Tok::Lt,
+                Tok::Int(3),
+                Tok::Ident("d".into()),
+                Tok::Le,
+                Tok::Int(4),
+                Tok::Ident("e".into()),
+                Tok::Gt,
+                Tok::Int(5),
+                Tok::Ident("f".into()),
+                Tok::Eq,
+                Tok::Int(6),
+                Tok::Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn keywords_case_insensitive() {
+        assert_eq!(
+            toks("NOT a AND b Or c CONTAINS null TRUE false"),
+            vec![
+                Tok::Not,
+                Tok::Ident("a".into()),
+                Tok::And,
+                Tok::Ident("b".into()),
+                Tok::Or,
+                Tok::Ident("c".into()),
+                Tok::Contains,
+                Tok::Null,
+                Tok::True,
+                Tok::False,
+                Tok::Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn numbers() {
+        assert_eq!(toks("-12")[0], Tok::Int(-12));
+        assert_eq!(toks("71.50")[0], Tok::Float(71.5));
+        assert_eq!(toks("1e3")[0], Tok::Float(1000.0));
+        assert_eq!(toks("2.5E-1")[0], Tok::Float(0.25));
+        // Overflowing integers degrade to floats rather than failing.
+        assert_eq!(toks("99999999999999999999")[0], Tok::Float(1e20));
+        assert!(tokenize("5m").is_err());
+    }
+
+    #[test]
+    fn strings_and_escapes() {
+        assert_eq!(toks(r#""a \"b\" \n""#)[0], Tok::Str("a \"b\" \n".into()));
+        assert_eq!(toks("'single'")[0], Tok::Str("single".into()));
+        let e = tokenize(r#"message = "open"#).unwrap_err();
+        assert_eq!(e.position, 10);
+    }
+
+    #[test]
+    fn dotted_and_special_identifiers() {
+        assert_eq!(toks("http.statusCode")[0], Tok::Ident("http.statusCode".into()));
+        assert_eq!(toks("@t")[0], Tok::Ident("@t".into()));
+        assert_eq!(toks("service-name")[0], Tok::Ident("service-name".into()));
+        assert!(tokenize("http.").is_err());
+    }
+
+    #[test]
+    fn errors_have_positions() {
+        let e = tokenize("a = 1 # 2").unwrap_err();
+        assert_eq!(e.position, 6);
+        let e = tokenize("a ! 1").unwrap_err();
+        assert_eq!(e.position, 2);
+    }
+
+    #[test]
+    fn symbolic_boolean_operators() {
+        assert_eq!(
+            toks("a = 1 && b = 2 || c = 3"),
+            vec![
+                Tok::Ident("a".into()),
+                Tok::Eq,
+                Tok::Int(1),
+                Tok::And,
+                Tok::Ident("b".into()),
+                Tok::Eq,
+                Tok::Int(2),
+                Tok::Or,
+                Tok::Ident("c".into()),
+                Tok::Eq,
+                Tok::Int(3),
+                Tok::Eof
+            ]
+        );
     }
 }

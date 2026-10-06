@@ -1,0 +1,12 @@
+{
+  "resourceLogs": [ {
+    "resource": { "attributes": [ { "key": "service.name", "value": { "stringValue": "inventory" } }, { "key": "host.name", "value": { "stringValue": "web-1" } } ] },
+    "scopeLogs": [ { "scope": { "name": "Inventory.Worker" }, "logRecords": [
+      { "timeUnixNano": "{{now-5s}}", "severityNumber": 13, "severityText": "Warning", "body": { "stringValue": "Stock low for ABC-1" },
+        "attributes": [ { "key": "sku", "value": { "stringValue": "ABC-1" } }, { "key": "remaining", "value": { "intValue": "3" } } ] },
+      { "timeUnixNano": "{{now-4s}}", "severityNumber": 17, "body": { "stringValue": "Reservation failed" },
+        "traceId": "4bf92f3577b34da6a3ce929d0e0e4736", "spanId": "b2b2b2b2b2b2b2b2",
+        "attributes": [ { "key": "exception.type", "value": { "stringValue": "DbException" } }, { "key": "exception.stacktrace", "value": { "stringValue": "DbException: deadlock\n   at Inventory.Reserve()" } } ] }
+    ] } ]
+  } ]
+}

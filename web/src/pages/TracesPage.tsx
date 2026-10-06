@@ -1,68 +1,118 @@
-import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
-import { listTraces } from '../api';
-import { formatDuration, formatTime, presetRange, type TimePreset } from '../types';
+import { useEffect, useState } from 'react';
 
-const PRESETS: { id: TimePreset; label: string }[] = [
-  { id: '1h', label: 'Last hour' },
-  { id: '6h', label: 'Last 6 hours' },
-  { id: '24h', label: 'Last 24 hours' },
-  { id: '7d', label: 'Last 7 days' },
-];
+import { api } from '../lib/api';
+import type { Diagnostics, TraceSummary } from '../lib/types';
+import { formatDateTime, formatDuration } from '../lib/format';
+import { rangeWindow } from '../lib/query';
+import { Link, useRouter } from '../lib/router';
+import { DiagnosticsPanel } from '../components/Diagnostics';
+import { QueryBar, RangeSelect } from '../components/QueryBar';
+import { Empty, ErrorBanner, Spinner } from '../components/common';
 
-export default function TracesPage() {
-  const [preset, setPreset] = useState<TimePreset>('1h');
-  const range = useMemo(() => presetRange(preset), [preset]);
+export function TracesPage() {
+  const { location, navigate } = useRouter();
+  const query = location.search.get('q') ?? '';
+  const range = location.search.get('range') ?? '1h';
+  const [traces, setTraces] = useState<TraceSummary[]>([]);
+  const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [loading, setLoading] = useState(false);
+  const [runId, setRunId] = useState(0);
 
-  const tracesQuery = useQuery({
-    queryKey: ['traces', range.from, range.to],
-    queryFn: () => listTraces({ from: range.from, to: range.to }),
-  });
+  useEffect(() => {
+    const ctrl = new AbortController();
+    setLoading(true);
+    setError(null);
+    api
+      .searchTraces({ query, limit: 100, ...rangeWindow(range) }, ctrl.signal)
+      .then((r) => {
+        setTraces(r.traces);
+        setDiagnostics(r.diagnostics);
+      })
+      .catch((e) => {
+        if (e.name !== 'AbortError') {
+          setError(e);
+          setTraces([]);
+        }
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false);
+      });
+    return () => ctrl.abort();
+  }, [query, range, runId]);
+
+  const setUrl = (q: string, r: string) => {
+    const p = new URLSearchParams();
+    if (q) p.set('q', q);
+    if (r !== '1h') p.set('range', r);
+    navigate(`/traces${p.toString() ? `?${p}` : ''}`);
+  };
+
+  const maxDuration = Math.max(1, ...traces.map((t) => t.durationMs));
 
   return (
     <div className="page">
-      <div className="page-header">
-        <h1 className="page-title">Traces</h1>
-        <select className="select" value={preset} onChange={(e) => setPreset(e.target.value as TimePreset)}>
-          {PRESETS.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
+      <div className="toolbar">
+        <QueryBar
+          query={query}
+          placeholder='status = Error or durationMs > 500 or service = "payments"'
+          onRun={(q) => (q === query ? setRunId((n) => n + 1) : setUrl(q, range))}
+          running={loading}
+        >
+          <RangeSelect value={range} onChange={(r) => setUrl(query, r)} />
+        </QueryBar>
       </div>
-      <div className="trace-list">
-        <table className="table">
+      <ErrorBanner error={error} query={query} />
+      <div className="results-head">
+        <DiagnosticsPanel diagnostics={diagnostics} count={traces.length} />
+        {loading && <Spinner />}
+      </div>
+      {traces.length > 0 && (
+        <table className="table traces-table">
           <thead>
             <tr>
-              <th>Timestamp</th>
-              <th>Trace ID</th>
-              <th>Root operation</th>
-              <th>Service</th>
-              <th>Duration</th>
+              <th>Start</th>
+              <th>Trace</th>
+              <th>Services</th>
+              <th>Spans</th>
+              <th className="num">Duration</th>
               <th>Status</th>
             </tr>
           </thead>
           <tbody>
-            {(tracesQuery.data?.traces ?? []).map((t) => (
-              <tr key={t.traceId}>
-                <td>{formatTime(t.timestamp)}</td>
+            {traces.map((t) => (
+              <tr key={t.traceId} data-testid="trace-row">
+                <td className="nowrap">{formatDateTime(t.start)}</td>
                 <td>
-                  <Link to={`/traces/${encodeURIComponent(t.traceId)}`}>{t.traceId}</Link>
+                  <Link to={`/traces/${t.traceId}`} className="trace-link">
+                    <strong>{t.rootName ?? '(unknown root)'}</strong>
+                    <span className="muted"> {t.rootService}</span>
+                  </Link>
+                  <div className="muted small mono">{t.traceId}</div>
                 </td>
-                <td>{t.rootOperation ?? '—'}</td>
-                <td>{t.service ?? '—'}</td>
-                <td>{formatDuration(t.durationNs)}</td>
-                <td>{t.status}</td>
+                <td>
+                  {t.services.map((s) => (
+                    <span key={s} className="tag">
+                      {s}
+                    </span>
+                  ))}
+                </td>
+                <td className="num">{t.spanCount}</td>
+                <td className="num">
+                  <div className="duration-cell">
+                    <div className="duration-bar" style={{ width: `${(t.durationMs / maxDuration) * 100}%` }} />
+                    <span>{formatDuration(t.durationMs)}</span>
+                  </div>
+                </td>
+                <td>{t.errorCount > 0 ? <span className="badge badge-error">{t.errorCount} error{t.errorCount > 1 ? 's' : ''}</span> : <span className="badge badge-ok">OK</span>}</td>
               </tr>
             ))}
           </tbody>
         </table>
-        {(tracesQuery.data?.traces.length ?? 0) === 0 && !tracesQuery.isLoading && (
-          <div className="empty">No traces in this time range.</div>
-        )}
-      </div>
+      )}
+      {!loading && !error && traces.length === 0 && (
+        <Empty title="No traces found">Send spans with OTLP/HTTP to <code>/v1/traces</code>, or widen the time range.</Empty>
+      )}
     </div>
   );
 }

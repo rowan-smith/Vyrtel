@@ -1,0 +1,10 @@
+target
+data
+data-dev
+**/node_modules
+web/dist
+web/test-results
+web/playwright-report
+dotnet-live
+.git
+.idea

@@ -1,19 +1,18 @@
 [package]
 name = "ingest"
+description = "Native JSON/NDJSON and OTLP/HTTP parsing into the common telemetry model"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+publish = false
 
 [dependencies]
-anyhow = { workspace = true }
-chrono = { workspace = true }
-event = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-storage = { workspace = true }
-thiserror = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
-uuid = { workspace = true }
+telemetry.workspace = true
+base64.workspace = true
+hex.workspace = true
+prost.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-tempfile = { workspace = true }
+proptest.workspace = true

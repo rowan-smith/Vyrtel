@@ -1,0 +1,20 @@
+[package]
+name = "telemetry"
+description = "Common telemetry model (logs, spans, metrics) shared by every Observer crate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Proptest strategies for generating arbitrary events in other crates' tests.
+testing = ["dep:proptest"]
+
+[dependencies]
+chrono.workspace = true
+proptest = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

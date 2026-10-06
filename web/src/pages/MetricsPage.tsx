@@ -1,128 +1,141 @@
-import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import ReactECharts from 'echarts-for-react';
-import { fetchMetricSeries, listMetrics } from '../api';
-import { formatTime, presetRange, type TimePreset } from '../types';
+import { useEffect, useState } from 'react';
 
-export default function MetricsPage() {
-  const [preset, setPreset] = useState<TimePreset>('6h');
-  const [selected, setSelected] = useState<string | null>(null);
-  const range = useMemo(() => presetRange(preset), [preset]);
+import { api } from '../lib/api';
+import type { Agg, MetricResponse } from '../lib/types';
+import { boundedWindow } from '../lib/query';
+import { useRouter } from '../lib/router';
+import { LineChart, seriesColor } from '../components/Charts';
+import { RangeSelect } from '../components/QueryBar';
+import { Empty, ErrorBanner, Spinner } from '../components/common';
 
-  const metricsQuery = useQuery({
-    queryKey: ['metrics', range.from, range.to],
-    queryFn: () => listMetrics({ from: range.from, to: range.to }),
-  });
+export const AGGS: Agg[] = ['avg', 'sum', 'count', 'min', 'max', 'last'];
 
-  const metrics = metricsQuery.data?.metrics ?? [];
-  const active = selected ?? metrics[0]?.name ?? null;
+export function MetricsPage() {
+  const { location, navigate } = useRouter();
+  const [names, setNames] = useState<string[] | null>(null);
+  const name = location.search.get('name') ?? '';
+  const agg = (location.search.get('agg') as Agg) ?? 'avg';
+  const range = location.search.get('range') ?? '1h';
+  const groupBy = location.search.get('groupBy') ?? '';
+  const filter = location.search.get('q') ?? '';
+  const [draft, setDraft] = useState({ groupBy, filter });
+  const [data, setData] = useState<MetricResponse | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [loading, setLoading] = useState(false);
 
-  const seriesQuery = useQuery({
-    queryKey: ['metric-series', active, range.from, range.to],
-    queryFn: () =>
-      fetchMetricSeries({
-        name: active!,
-        from: range.from,
-        to: range.to,
-      }),
-    enabled: !!active,
-  });
+  useEffect(() => setDraft({ groupBy, filter }), [groupBy, filter]);
 
-  const chartOption = useMemo(() => {
-    const points = seriesQuery.data?.points ?? [];
-    return {
-      backgroundColor: 'transparent',
-      grid: { left: 48, right: 16, top: 20, bottom: 32 },
-      xAxis: {
-        type: 'category',
-        data: points.map((p) => formatTime(p.timestamp)),
-        axisLabel: { color: '#8b939e', fontSize: 10 },
-        axisLine: { lineStyle: { color: '#2f353c' } },
-      },
-      yAxis: {
-        type: 'value',
-        axisLabel: { color: '#8b939e', fontSize: 10 },
-        splitLine: { lineStyle: { color: '#2f353c' } },
-      },
-      series: [
-        {
-          type: 'line',
-          data: points.map((p) => p.value),
-          smooth: true,
-          showSymbol: false,
-          itemStyle: { color: '#6ea8d8' },
-          areaStyle: { color: 'rgba(110,168,216,0.12)' },
-        },
-      ],
-      tooltip: { trigger: 'axis' },
-    };
-  }, [seriesQuery.data]);
+  useEffect(() => {
+    api
+      .metricNames()
+      .then((r) => setNames(r.metrics.map((m) => m.name)))
+      .catch((e) => {
+        setError(e);
+        setNames([]);
+      });
+  }, []);
+
+  const set = (patch: Record<string, string>) => {
+    const p = new URLSearchParams({ name, agg, range, groupBy, q: filter, ...patch });
+    for (const [k, v] of [...p.entries()]) if (!v) p.delete(k);
+    navigate(`/metrics?${p}`);
+  };
+
+  useEffect(() => {
+    if (!name && names && names.length) set({ name: names[0] });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [names]);
+
+  useEffect(() => {
+    if (!name) return;
+    const ctrl = new AbortController();
+    setLoading(true);
+    setError(null);
+    api
+      .metricQuery({ name, agg, groupBy: groupBy || undefined, query: filter || undefined, ...boundedWindow(range) }, ctrl.signal)
+      .then(setData)
+      .catch((e) => {
+        if (e.name !== 'AbortError') setError(e);
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false);
+      });
+    return () => ctrl.abort();
+  }, [name, agg, range, groupBy, filter]);
+
+  if (names && names.length === 0 && !error) {
+    return (
+      <div className="page">
+        <Empty title="No metrics yet">
+          Send OTLP metrics to <code>/v1/metrics</code> (counters, gauges and histograms are supported).
+        </Empty>
+      </div>
+    );
+  }
 
   return (
     <div className="page">
-      <div className="page-header">
-        <h1 className="page-title">Metrics</h1>
-        <select className="select" value={preset} onChange={(e) => setPreset(e.target.value as TimePreset)}>
-          <option value="1h">Last hour</option>
-          <option value="6h">Last 6 hours</option>
-          <option value="24h">Last 24 hours</option>
-          <option value="7d">Last 7 days</option>
-        </select>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: '0.75rem', minHeight: 0, flex: 1 }}>
-        <div className="trace-list">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Metric</th>
-                <th>Last</th>
-              </tr>
-            </thead>
-            <tbody>
-              {metrics.map((m) => (
-                <tr
-                  key={m.name}
-                  onClick={() => setSelected(m.name)}
-                  style={active === m.name ? { background: 'var(--bg-active)' } : undefined}
-                >
-                  <td>
-                    <div style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>{m.name}</div>
-                    <div className="muted" style={{ fontSize: 11 }}>
-                      {m.service ?? '—'} · {m.pointCount} pts
-                    </div>
-                  </td>
-                  <td style={{ fontFamily: 'var(--mono)' }}>
-                    {m.lastValue != null ? formatMetric(m.lastValue, m.unit) : '—'}
-                  </td>
-                </tr>
+      <form
+        className="toolbar metric-toolbar"
+        onSubmit={(e) => {
+          e.preventDefault();
+          set({ groupBy: draft.groupBy.trim(), q: draft.filter.trim() });
+        }}
+      >
+        <label>
+          <span className="label">Metric</span>
+          <select className="select" aria-label="Metric" value={name} onChange={(e) => set({ name: e.target.value })}>
+            {(names ?? []).map((n) => (
+              <option key={n}>{n}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span className="label">Aggregation</span>
+          <select className="select" aria-label="Aggregation" value={agg} onChange={(e) => set({ agg: e.target.value })}>
+            {AGGS.map((a) => (
+              <option key={a}>{a}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span className="label">Group by</span>
+          <input className="input" placeholder="attribute, e.g. route" value={draft.groupBy} onChange={(e) => setDraft({ ...draft, groupBy: e.target.value })} />
+        </label>
+        <label className="grow">
+          <span className="label">Filter</span>
+          <input className="input" placeholder='route = "/checkout"' value={draft.filter} onChange={(e) => setDraft({ ...draft, filter: e.target.value })} />
+        </label>
+        <RangeSelect value={range} onChange={(r) => set({ range: r })} />
+        <button className="btn btn-primary" type="submit">
+          Apply
+        </button>
+      </form>
+      <ErrorBanner error={error} query={filter} />
+      {loading && <Spinner />}
+      {data && (
+        <div className="card">
+          <div className="card-head">
+            <h2>
+              {agg}({data.name}) {data.unit && <span className="muted">{data.unit}</span>}
+            </h2>
+            <span className="muted small">
+              {data.kind} · step {Math.round(data.stepMs / 1000)}s
+            </span>
+          </div>
+          {data.description && <p className="muted">{data.description}</p>}
+          <LineChart series={data.series} unit={data.unit} />
+          {data.series.length > 1 && (
+            <ul className="legend">
+              {data.series.map((s, i) => (
+                <li key={s.group ?? i}>
+                  <span className="swatch" style={{ background: seriesColor(i) }} /> {s.group}
+                </li>
               ))}
-            </tbody>
-          </table>
-          {metrics.length === 0 && !metricsQuery.isLoading && (
-            <div className="empty">No metrics in this range.</div>
+            </ul>
           )}
         </div>
-
-        <div className="widget" style={{ minHeight: 360 }}>
-          <div className="widget-title">{active ?? 'Select a metric'}</div>
-          {active && <ReactECharts option={chartOption} style={{ height: 320 }} opts={{ renderer: 'canvas' }} />}
-          {!active && <div className="empty">Choose a metric to plot.</div>}
-        </div>
-      </div>
+      )}
     </div>
   );
-}
-
-function formatMetric(value: number, unit?: string | null): string {
-  const formatted =
-    Math.abs(value) >= 1_000_000
-      ? `${(value / 1_000_000).toFixed(2)}M`
-      : Math.abs(value) >= 1000
-        ? `${(value / 1000).toFixed(2)}k`
-        : Number.isInteger(value)
-          ? String(value)
-          : value.toFixed(2);
-  if (!unit || unit === '1') return formatted;
-  return `${formatted} ${unit}`;
 }

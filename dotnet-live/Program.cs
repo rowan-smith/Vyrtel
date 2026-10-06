@@ -8,7 +8,7 @@ using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var observatoryEndpoint = builder.Configuration["Observatory:Endpoint"] ?? "http://localhost:5341";
+var observatoryEndpoint = builder.Configuration["Observatory:Endpoint"] ?? "http://localhost:8080";
 var observatoryApi = builder.Configuration["Observatory:Api"] ?? "";
 var serviceName = builder.Environment.ApplicationName;
 var environmentName = builder.Environment.EnvironmentName;
@@ -325,7 +325,7 @@ public sealed class TraceJsonExporter : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var endpoint = _config["Observatory:Endpoint"] ?? "http://localhost:5341";
+        var endpoint = _config["Observatory:Endpoint"] ?? "http://localhost:8080";
         var service = _env.ApplicationName;
         var environment = _env.EnvironmentName;
 

@@ -1,0 +1,104 @@
+# Development
+
+## Toolchain
+
+| Tool                | Version                           | Used for                |
+|---------------------|-----------------------------------|-------------------------|
+| Rust                | stable ≥ 1.89 (edition 2024)      | server and libraries    |
+| A C compiler        | any (MSVC, gcc, clang)            | bundled SQLite and zstd |
+| Node.js             | 22+ (with npm)                    | web UI                  |
+| Playwright browsers | `npx playwright install chromium` | E2E tests only          |
+
+## Layout
+
+```
+crates/telemetry   event model
+crates/storage     WAL, segments, indexes, recovery
+crates/query       query language and engine
+crates/ingest      native JSON + OTLP parsing
+crates/metadata    SQLite metadata store
+crates/server      HTTP server and the `observer` binary
+tools/loadgen      load generator
+web/               React + TypeScript UI (Vite)
+tests/integration  end-to-end Rust tests against a real server
+tests/fixtures     shared test data
+docs/              documentation
+```
+
+## Running the backend
+
+```bash
+cargo run -p server -- --data-dir ./data-dev
+```
+
+Without a built UI the server embeds a placeholder page; the API works
+regardless. Useful flags: `--bind 127.0.0.1:8080`, `--log-level debug`,
+`--memory-limit 256MB`.
+
+## Running the frontend
+
+```bash
+cd web
+npm ci
+npm run dev        # http://localhost:5173, proxies /api and /v1 to :8080
+```
+
+Set `OBSERVER_URL=http://127.0.0.1:9090` to proxy to a different server.
+
+## Running both as one binary
+
+```bash
+cd web && npm ci && npm run build && cd ..
+cargo build --release -p server
+./target/release/observer
+```
+
+`crates/server/build.rs` embeds `web/dist` when it exists (rebuild the
+server after rebuilding the UI). In debug builds the files are read from
+`web/dist` at runtime, so `npm run build` is enough to see UI changes.
+
+## Test data
+
+```bash
+# Native logs
+curl -X POST localhost:8080/api/v1/events -H 'content-type: application/x-ndjson' \
+     --data-binary @tests/fixtures/logs.ndjson
+
+# A realistic stream (logs + a trace per 200 events)
+cargo run --release -p loadgen -- --rate 2000 --duration 60s --traces-every 200
+```
+
+The OTLP fixtures contain `{{now-…}}` placeholders; see
+[tests/fixtures/README.md](../tests/fixtures/README.md).
+
+## Debugging
+
+* `--log-level debug` (or `OBSERVER_LOG_LEVEL=storage=debug,info`) logs
+  sealing, compaction and retention decisions.
+* Every query response carries `diagnostics`; the UI shows them under the
+  results ("▸ N results · 12 ms …").
+* `GET /api/v1/system/info` and `/api/v1/system/storage` show queue depths,
+  active segment sizes, memory budgets and storage totals.
+* Damaged files found at startup are moved to `data/quarantine/` and logged
+  at WARN/ERROR with the reason.
+* `observer config` prints the effective configuration.
+
+## Formatting and linting
+
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cd web && npm run lint && npm run typecheck
+```
+
+## Release builds
+
+```bash
+cd web && npm ci && npm run build && cd ..
+cargo build --release --locked -p server     # target/release/observer
+docker build -t observer .
+```
+
+Releases are produced by `.github/workflows/release.yml` when a `v*` tag is
+pushed: Linux x86_64/ARM64, macOS ARM64 and Windows x86_64 binaries with
+SHA-256 checksums, plus a multi-architecture image on GHCR.

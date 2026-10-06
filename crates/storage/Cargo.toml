@@ -1,21 +1,25 @@
 [package]
 name = "storage"
+description = "WAL, immutable segments, indexes, retention and recovery"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+publish = false
 
 [dependencies]
-anyhow = { workspace = true }
-base64 = { workspace = true }
-chrono = { workspace = true }
-event = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-tantivy = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
-uuid = { workspace = true }
+telemetry.workspace = true
+crc32fast.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+xxhash-rust.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
-tempfile = { workspace = true }
-serde_json = { workspace = true }
-tantivy = { workspace = true }
+criterion.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+telemetry = { workspace = true, features = ["testing"] }
+
+[[bench]]
+name = "storage"
+harness = false

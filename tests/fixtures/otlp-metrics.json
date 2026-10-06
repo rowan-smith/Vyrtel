@@ -1,0 +1,19 @@
+{
+  "resourceMetrics": [ {
+    "resource": { "attributes": [ { "key": "service.name", "value": { "stringValue": "checkout" } } ] },
+    "scopeMetrics": [ { "metrics": [
+      { "name": "http.server.requests", "unit": "1", "sum": { "aggregationTemporality": 1, "isMonotonic": true, "dataPoints": [
+        { "timeUnixNano": "{{now-120s}}", "asInt": "12", "attributes": [ { "key": "route", "value": { "stringValue": "/checkout" } } ] },
+        { "timeUnixNano": "{{now-60s}}", "asInt": "18", "attributes": [ { "key": "route", "value": { "stringValue": "/checkout" } } ] },
+        { "timeUnixNano": "{{now-60s}}", "asInt": "4", "attributes": [ { "key": "route", "value": { "stringValue": "/health" } } ] }
+      ] } },
+      { "name": "process.memory.usage", "unit": "By", "gauge": { "dataPoints": [
+        { "timeUnixNano": "{{now-120s}}", "asDouble": 52428800 },
+        { "timeUnixNano": "{{now-60s}}", "asDouble": 62914560 }
+      ] } },
+      { "name": "http.server.duration", "unit": "ms", "histogram": { "aggregationTemporality": 2, "dataPoints": [
+        { "timeUnixNano": "{{now-60s}}", "count": "4", "sum": 820, "min": 40, "max": 400, "bucketCounts": ["1", "2", "1"], "explicitBounds": [100, 250] }
+      ] } }
+    ] } ]
+  } ]
+}

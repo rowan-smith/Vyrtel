@@ -1,50 +1,75 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/app",
-    "crates/event",
-    "crates/ingest",
+    "crates/telemetry",
     "crates/storage",
     "crates/query",
+    "crates/ingest",
     "crates/metadata",
-    "crates/otlp",
+    "crates/server",
+    "tools/loadgen",
 ]
+default-members = ["crates/server"]
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
+rust-version = "1.89"
+repository = "https://github.com/observer/observer"
 
 [workspace.dependencies]
-anyhow = "1"
-async-stream = "0.3"
-axum = { version = "0.8", features = ["macros"] }
-base64 = "0.22"
-chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4", features = ["derive"] }
-event = { path = "crates/event" }
-futures = "0.3"
+# Internal crates
+telemetry = { path = "crates/telemetry" }
+storage = { path = "crates/storage" }
+query = { path = "crates/query" }
 ingest = { path = "crates/ingest" }
 metadata = { path = "crates/metadata" }
-otlp = { path = "crates/otlp" }
-prost = "0.13"
-query = { path = "crates/query" }
-rust-embed = { version = "8", features = ["include-exclude"] }
+
+# External
+anyhow = "1"
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash", "std"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "macros"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+clap = { version = "4", features = ["derive", "env"] }
+crc32fast = "1"
+flate2 = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+hex = "0.4"
+mime_guess = { version = "2", default-features = false }
+prost = { version = "0.13", default-features = false, features = ["std", "derive"] }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
-storage = { path = "crates/storage" }
-tantivy = "0.22"
 thiserror = "2"
-tokio = { version = "1", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
-toml = "0.8"
-tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs"] }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+tower-http = { version = "0.6", default-features = false, features = ["decompression-gzip", "trace", "set-header"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v4", "serde"] }
-mime_guess = "2"
-tempfile = "3"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "json"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+zstd = { version = "0.13", default-features = false }
+
+# Dev
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 http-body-util = "0.1"
-tower = { version = "0.5", features = ["util"] }
+proptest = "1"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+# Benchmarks and tests want reasonable speed for storage-heavy code.
+[profile.test]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

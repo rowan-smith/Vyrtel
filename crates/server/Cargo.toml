@@ -1,0 +1,56 @@
+[package]
+name = "server"
+description = "Observer: a small, self-hosted observability server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+default-run = "observer"
+
+[[bin]]
+name = "observer"
+path = "src/main.rs"
+
+[dependencies]
+telemetry.workspace = true
+storage.workspace = true
+query.workspace = true
+ingest.workspace = true
+metadata.workspace = true
+
+anyhow.workspace = true
+argon2.workspace = true
+axum.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+http-body-util.workspace = true
+mime_guess.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+rust-embed.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+flate2.workspace = true
+prost.workspace = true
+tempfile.workspace = true
+tower.workspace = true
+ingest.workspace = true
+axum.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+telemetry.workspace = true
+tokio.workspace = true
+
+[[test]]
+name = "integration"
+path = "../../tests/integration/main.rs"

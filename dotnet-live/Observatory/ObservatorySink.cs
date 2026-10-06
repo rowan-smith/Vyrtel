@@ -54,14 +54,16 @@ public sealed class ObservatorySink : ILogEventSink, IDisposable
             attributes[key] = Simplify(value);
         }
 
-        string? stacktrace = null;
+        ObservatoryException? exception = null;
         if (logEvent.Exception is not null)
         {
             // Native Exception.ToString() — same text Serilog gets from LogError(ex, "…")
-            stacktrace = logEvent.Exception.ToString();
-            attributes["exception.type"] = logEvent.Exception.GetType().FullName;
-            attributes["exception.message"] = logEvent.Exception.Message;
-            attributes["exception.stacktrace"] = stacktrace;
+            exception = new ObservatoryException
+            {
+                Type = logEvent.Exception.GetType().FullName,
+                Message = logEvent.Exception.Message,
+                StackTrace = logEvent.Exception.ToString(),
+            };
         }
 
         var activity = System.Diagnostics.Activity.Current;
@@ -70,13 +72,13 @@ public sealed class ObservatorySink : ILogEventSink, IDisposable
             Timestamp = logEvent.Timestamp.UtcDateTime,
             Level = MapLevel(logEvent.Level),
             Message = logEvent.RenderMessage(),
+            MessageTemplate = logEvent.MessageTemplate.Text,
             Service = _service,
             Environment = _environment,
             TraceId = activity?.TraceId.ToHexString(),
             SpanId = activity?.SpanId.ToHexString(),
-            // Prefer attribute form; ingest lifts exception.stacktrace → event.stacktrace
-            Stacktrace = null,
-            Attributes = attributes,
+            Exception = exception,
+            Properties = attributes,
         };
     }
 
@@ -150,7 +152,7 @@ public sealed class ObservatorySink : ILogEventSink, IDisposable
     private async Task FlushAsync(List<ObservatoryEvent> batch)
     {
         using var response = await _http.PostAsJsonAsync(
-            "api/events/bulk",
+            "api/v1/events",
             batch,
             ObservatoryJson.Options,
             _cts.Token);
@@ -189,8 +191,16 @@ internal sealed class ObservatoryEvent
     public string? Environment { get; set; }
     public string? TraceId { get; set; }
     public string? SpanId { get; set; }
-    public string? Stacktrace { get; set; }
-    public Dictionary<string, object?> Attributes { get; set; } = new();
+    public string? MessageTemplate { get; set; }
+    public ObservatoryException? Exception { get; set; }
+    public Dictionary<string, object?> Properties { get; set; } = new();
+}
+
+internal sealed class ObservatoryException
+{
+    public string? Type { get; set; }
+    public string? Message { get; set; }
+    public string? StackTrace { get; set; }
 }
 
 internal static class ObservatoryJson

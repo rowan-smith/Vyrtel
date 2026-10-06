@@ -1,9 +1,12 @@
 /target
 /data
 /data-dev
+/observer.toml
 /web/node_modules
 /web/dist
 /web/data-dev
+/web/test-results
+/web/playwright-report
 **/*.db
 .DS_Store
 .idea/

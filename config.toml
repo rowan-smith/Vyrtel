@@ -1,9 +1,0 @@
-[server]
-host = "0.0.0.0"
-port = 5341
-
-[storage]
-path = "./data"
-
-[retention]
-days = 30

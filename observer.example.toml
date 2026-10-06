@@ -1,0 +1,35 @@
+# Example Observer configuration. Copy to observer.toml (picked up
+# automatically from the working directory) or pass --config <file>.
+# Every key is optional; see docs/configuration.md.
+
+[server]
+bind = "0.0.0.0:8080"
+
+[storage]
+path = "./data"
+max_memory = "512MB"
+segment_target_size = "64MB"
+segment_max_age = "5m"
+durability = "normal"        # or "strict": fsync before acknowledging
+
+[retention]
+logs = "30d"
+traces = "14d"
+metrics = "30d"
+
+[ingest]
+max_request_size = "16MB"
+queue_capacity = 10000
+
+[query]
+timeout = "30s"
+max_concurrent = 4
+
+[auth]
+enabled = false
+# admin_username = "admin"
+# admin_password = "change-me"
+
+[log]
+level = "info"
+format = "text"              # or "json"

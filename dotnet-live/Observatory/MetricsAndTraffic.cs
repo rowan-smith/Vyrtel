@@ -61,7 +61,7 @@ public sealed class ObservatoryMetricsPublisher : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var endpoint = _config["Observatory:Endpoint"] ?? "http://localhost:5341";
+        var endpoint = _config["Observatory:Endpoint"] ?? "http://localhost:8080";
         var service = _env.ApplicationName;
         var environment = _env.EnvironmentName;
 
@@ -72,23 +72,50 @@ public sealed class ObservatoryMetricsPublisher : BackgroundService
                 var batch = _buffer.Drain();
                 if (batch.Count > 0)
                 {
-                    var payload = batch.Select(p => new
+                    // OTLP/JSON: one gauge data point per recorded measurement.
+                    var payload = new
                     {
-                        name = p.Name,
-                        value = p.Value,
-                        unit = p.Unit,
-                        timestamp = p.Timestamp,
-                        service,
-                        environment,
-                        attributes = p.Attributes,
-                    }).ToList();
+                        resourceMetrics = new[]
+                        {
+                            new
+                            {
+                                resource = new
+                                {
+                                    attributes = new object[]
+                                    {
+                                        new { key = "service.name", value = new { stringValue = service } },
+                                        new { key = "deployment.environment.name", value = new { stringValue = environment } },
+                                    },
+                                },
+                                scopeMetrics = new[]
+                                {
+                                    new
+                                    {
+                                        metrics = batch.GroupBy(p => (p.Name, p.Unit)).Select(g => new
+                                        {
+                                            name = g.Key.Name,
+                                            unit = g.Key.Unit ?? "",
+                                            gauge = new
+                                            {
+                                                dataPoints = g.Select(p => new
+                                                {
+                                                    timeUnixNano = ((p.Timestamp.ToUniversalTime() - DateTime.UnixEpoch).Ticks * 100).ToString(),
+                                                    asDouble = p.Value,
+                                                    attributes = p.Attributes.Select(a => new { key = a.Key, value = new { stringValue = a.Value?.ToString() ?? "" } }).ToArray(),
+                                                }).ToArray(),
+                                            },
+                                        }).ToArray(),
+                                    },
+                                },
+                            },
+                        },
+                    };
 
                     var client = _httpClientFactory.CreateClient("observatory");
                     client.BaseAddress ??= new Uri(endpoint.TrimEnd('/') + "/");
                     using var response = await client.PostAsJsonAsync(
-                        "api/metrics/bulk",
+                        "v1/metrics",
                         payload,
-                        ObservatoryJson.Options,
                         stoppingToken);
                     if (!response.IsSuccessStatusCode)
                     {

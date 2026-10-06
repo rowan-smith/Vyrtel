@@ -1,388 +1,181 @@
-use crate::ast::{
-    Aggregation, ComparisonOperator, Expression, ParsedQuery, QueryValue, TimeInterval,
-};
-use crate::lexer::{LexError, Lexer, Token, TokenKind};
+//! Recursive-descent parser.
+//!
+//! ```text
+//! query      := expr? EOF
+//! expr       := or
+//! or         := and ("or" and)*
+//! and        := unary ("and" unary)*
+//! unary      := "not" unary | primary
+//! primary    := "(" expr ")" | STRING | comparison
+//! comparison := FIELD op value
+//! op         := "=" | "!=" | ">" | ">=" | "<" | "<=" | "contains"
+//! value      := STRING | NUMBER | "true" | "false" | "null" | WORD
+//! ```
+//!
+//! A bare string is shorthand for `message contains "<string>"`.
 
-use std::fmt;
+use crate::ast::{Comparison, Expr, Literal, Op};
+use crate::error::ParseError;
+use crate::lexer::{Tok, Token, tokenize};
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ParseError {
-    pub code: String,
-    pub message: String,
-    pub position: usize,
+/// Maximum nesting depth (parentheses / `not`), to bound recursion.
+const MAX_DEPTH: usize = 64;
+
+/// Parse a query. An empty (or whitespace-only) query matches everything
+/// and returns `None`.
+pub fn parse(input: &str) -> Result<Option<Expr>, ParseError> {
+    let tokens = tokenize(input)?;
+    if tokens.len() == 1 {
+        return Ok(None);
+    }
+    let mut p = Parser { tokens, pos: 0, depth: 0 };
+    let e = p.expr()?;
+    let t = p.peek();
+    if t.tok != Tok::Eof {
+        let msg = match &t.tok {
+            Tok::RParen => "Unexpected ')' without matching '('".to_string(),
+            Tok::Ident(_) | Tok::Str(_) | Tok::LParen | Tok::Not => {
+                format!("Expected 'and' or 'or' before {}", t.tok.describe())
+            }
+            other => format!("Unexpected {}", other.describe()),
+        };
+        return Err(ParseError::new(msg, t.pos));
+    }
+    Ok(Some(e))
 }
 
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for ParseError {}
-
-impl From<LexError> for ParseError {
-    fn from(e: LexError) -> Self {
-        Self {
-            code: "invalid_query".into(),
-            message: e.message,
-            position: e.position,
-        }
-    }
-}
-
-pub fn parse_query(input: &str) -> Result<ParsedQuery, ParseError> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Ok(ParsedQuery {
-            filter: None,
-            aggregation: None,
-        });
-    }
-
-    // Free-text shortcut: no operators present
-    if is_free_text(trimmed) {
-        return Ok(ParsedQuery {
-            filter: Some(Expression::FreeText(trimmed.to_string())),
-            aggregation: None,
-        });
-    }
-
-    let mut lexer = Lexer::new(trimmed);
-    let tokens = lexer.tokenize()?;
-    let mut parser = Parser {
-        tokens,
-        pos: 0,
-        source: trimmed,
-    };
-    parser.parse_pipeline()
-}
-
-fn is_free_text(s: &str) -> bool {
-    let operators = ["=", "!=", ">=", "<=", ">", "<", "|", "(", ")"];
-    if operators.iter().any(|op| s.contains(op)) {
-        return false;
-    }
-    let lower = s.to_ascii_lowercase();
-    // Keywords that indicate structured query
-    if lower.contains(" and ")
-        || lower.contains(" or ")
-        || lower.starts_with("not ")
-        || lower.contains(" contains ")
-    {
-        return false;
-    }
-    true
-}
-
-struct Parser<'a> {
+struct Parser {
     tokens: Vec<Token>,
     pos: usize,
-    source: &'a str,
+    depth: usize,
 }
 
-impl<'a> Parser<'a> {
-    fn current(&self) -> &Token {
+impl Parser {
+    fn peek(&self) -> &Token {
         &self.tokens[self.pos]
     }
 
-    fn bump(&mut self) -> &Token {
-        let tok = &self.tokens[self.pos];
+    fn next(&mut self) -> Token {
+        let t = self.tokens[self.pos].clone();
         if self.pos + 1 < self.tokens.len() {
             self.pos += 1;
         }
-        tok
+        t
     }
 
-    fn parse_pipeline(&mut self) -> Result<ParsedQuery, ParseError> {
-        let filter = if matches!(self.current().kind, TokenKind::Pipe | TokenKind::Eof) {
-            None
-        } else {
-            Some(self.parse_or()?)
-        };
-
-        let aggregation = if matches!(self.current().kind, TokenKind::Pipe) {
-            self.bump();
-            Some(self.parse_aggregation()?)
-        } else {
-            None
-        };
-
-        if !matches!(self.current().kind, TokenKind::Eof) {
-            return Err(ParseError {
-                code: "invalid_query".into(),
-                message: format!("Unexpected token near '{}'", &self.source[self.current().start..self.current().end.min(self.source.len())]),
-                position: self.current().start,
-            });
+    fn expr(&mut self) -> Result<Expr, ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(ParseError::new("Query is nested too deeply", self.peek().pos));
         }
-
-        Ok(ParsedQuery {
-            filter,
-            aggregation,
-        })
+        let r = self.or();
+        self.depth -= 1;
+        r
     }
 
-    fn parse_or(&mut self) -> Result<Expression, ParseError> {
-        let mut left = self.parse_and()?;
-        while matches!(self.current().kind, TokenKind::Or) {
-            self.bump();
-            let right = self.parse_and()?;
-            left = Expression::Or(Box::new(left), Box::new(right));
+    fn or(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.and()?;
+        while self.peek().tok == Tok::Or {
+            self.next();
+            self.expect_operand("or")?;
+            let right = self.and()?;
+            left = Expr::or(left, right);
         }
         Ok(left)
     }
 
-    fn parse_and(&mut self) -> Result<Expression, ParseError> {
-        let mut left = self.parse_not()?;
-        while matches!(self.current().kind, TokenKind::And) {
-            self.bump();
-            let right = self.parse_not()?;
-            left = Expression::And(Box::new(left), Box::new(right));
+    fn and(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.unary()?;
+        while self.peek().tok == Tok::And {
+            self.next();
+            self.expect_operand("and")?;
+            let right = self.unary()?;
+            left = Expr::and(left, right);
         }
         Ok(left)
     }
 
-    fn parse_not(&mut self) -> Result<Expression, ParseError> {
-        if matches!(self.current().kind, TokenKind::Not) {
-            self.bump();
-            let inner = self.parse_not()?;
-            return Ok(Expression::Not(Box::new(inner)));
+    fn expect_operand(&self, after: &str) -> Result<(), ParseError> {
+        match self.peek().tok {
+            Tok::Eof | Tok::RParen | Tok::And | Tok::Or => {
+                Err(ParseError::new(format!("Expected expression after '{after}'"), self.peek().pos))
+            }
+            _ => Ok(()),
         }
-        self.parse_primary()
     }
 
-    fn parse_primary(&mut self) -> Result<Expression, ParseError> {
-        match &self.current().kind {
-            TokenKind::LParen => {
-                self.bump();
-                let expr = self.parse_or()?;
-                if !matches!(self.current().kind, TokenKind::RParen) {
-                    return Err(ParseError {
-                        code: "invalid_query".into(),
-                        message: "Expected ')'".into(),
-                        position: self.current().start,
-                    });
+    fn unary(&mut self) -> Result<Expr, ParseError> {
+        if self.peek().tok == Tok::Not {
+            self.next();
+            self.expect_operand("not")?;
+            self.depth += 1;
+            if self.depth > MAX_DEPTH {
+                return Err(ParseError::new("Query is nested too deeply", self.peek().pos));
+            }
+            let inner = self.unary();
+            self.depth -= 1;
+            return Ok(Expr::not(inner?));
+        }
+        self.primary()
+    }
+
+    fn primary(&mut self) -> Result<Expr, ParseError> {
+        let t = self.next();
+        match t.tok {
+            Tok::LParen => {
+                if self.peek().tok == Tok::RParen {
+                    return Err(ParseError::new("Empty parentheses", self.peek().pos));
                 }
-                self.bump();
-                Ok(expr)
-            }
-            TokenKind::Ident(_) => self.parse_comparison_or_contains(),
-            _ => Err(ParseError {
-                code: "invalid_query".into(),
-                message: "Expected expression".into(),
-                position: self.current().start,
-            }),
-        }
-    }
-
-    fn parse_comparison_or_contains(&mut self) -> Result<Expression, ParseError> {
-        let field = match &self.bump().kind {
-            TokenKind::Ident(s) => s.clone(),
-            _ => unreachable!(),
-        };
-
-        if matches!(self.current().kind, TokenKind::Contains) {
-            self.bump();
-            let value = self.parse_string_value()?;
-            return Ok(Expression::Contains { field, value });
-        }
-
-        let operator = match &self.current().kind {
-            TokenKind::Eq => ComparisonOperator::Eq,
-            TokenKind::Neq => ComparisonOperator::Neq,
-            TokenKind::Gt => ComparisonOperator::Gt,
-            TokenKind::Gte => ComparisonOperator::Gte,
-            TokenKind::Lt => ComparisonOperator::Lt,
-            TokenKind::Lte => ComparisonOperator::Lte,
-            _ => {
-                return Err(ParseError {
-                    code: "invalid_query".into(),
-                    message: format!("Expected operator after field '{field}'"),
-                    position: self.current().start,
-                });
-            }
-        };
-        self.bump();
-
-        let value = self.parse_value()?;
-        Ok(Expression::Comparison {
-            field,
-            operator,
-            value,
-        })
-    }
-
-    fn parse_value(&mut self) -> Result<QueryValue, ParseError> {
-        let tok = self.current().clone();
-        match tok.kind {
-            TokenKind::String(s) => {
-                self.bump();
-                Ok(QueryValue::String(s))
-            }
-            TokenKind::Number(n) => {
-                self.bump();
-                Ok(QueryValue::Number(n))
-            }
-            TokenKind::Bool(b) => {
-                self.bump();
-                Ok(QueryValue::Bool(b))
-            }
-            TokenKind::Ident(s) => {
-                // Bare identifier treated as string (e.g. level = error)
-                self.bump();
-                Ok(QueryValue::String(s))
-            }
-            _ => Err(ParseError {
-                code: "invalid_query".into(),
-                message: "Expected a value after operator".into(),
-                position: tok.start,
-            }),
-        }
-    }
-
-    fn parse_string_value(&mut self) -> Result<String, ParseError> {
-        match self.parse_value()? {
-            QueryValue::String(s) => Ok(s),
-            other => Err(ParseError {
-                code: "invalid_query".into(),
-                message: format!("Expected string, got {other:?}"),
-                position: self.current().start,
-            }),
-        }
-    }
-
-    fn parse_aggregation(&mut self) -> Result<Aggregation, ParseError> {
-        let name = match &self.current().kind {
-            TokenKind::Ident(s) => {
-                let s = s.to_ascii_lowercase();
-                self.bump();
-                s
-            }
-            _ => {
-                return Err(ParseError {
-                    code: "invalid_query".into(),
-                    message: "Expected aggregation after '|'".into(),
-                    position: self.current().start,
-                });
-            }
-        };
-
-        match name.as_str() {
-            "count" => {
-                if matches!(self.current().kind, TokenKind::By) {
-                    self.bump();
-                    self.parse_count_by()
-                } else {
-                    Ok(Aggregation::Count)
+                let e = self.expr()?;
+                let close = self.next();
+                if close.tok != Tok::RParen {
+                    return Err(ParseError::new(format!("Expected ')' but found {}", close.tok.describe()), close.pos));
                 }
+                Ok(e)
             }
-            "avg" | "sum" | "min" | "max" => {
-                let field = self.parse_agg_field_arg()?;
-                Ok(match name.as_str() {
-                    "avg" => Aggregation::Avg { field },
-                    "sum" => Aggregation::Sum { field },
-                    "min" => Aggregation::Min { field },
-                    "max" => Aggregation::Max { field },
-                    _ => unreachable!(),
-                })
-            }
-            other => Err(ParseError {
-                code: "invalid_query".into(),
-                message: format!("Unknown aggregation '{other}'"),
-                position: self.current().start,
-            }),
-        }
-    }
-
-    fn parse_count_by(&mut self) -> Result<Aggregation, ParseError> {
-        // count by time(5m)  OR  count by service
-        match &self.current().kind {
-            TokenKind::Ident(s) if s.eq_ignore_ascii_case("time") => {
-                self.bump();
-                if !matches!(self.current().kind, TokenKind::LParen) {
-                    return Err(ParseError {
-                        code: "invalid_query".into(),
-                        message: "Expected '(' after time".into(),
-                        position: self.current().start,
-                    });
-                }
-                self.bump();
-                let interval_str = match &self.current().kind {
-                    TokenKind::Ident(s) => s.clone(),
-                    TokenKind::String(s) => s.clone(),
-                    _ => {
-                        return Err(ParseError {
-                            code: "invalid_query".into(),
-                            message: "Expected time interval".into(),
-                            position: self.current().start,
-                        });
+            Tok::Str(s) => Ok(Expr::cmp("message", Op::Contains, Literal::String(s))),
+            Tok::Ident(field) => {
+                let op_tok = self.next();
+                let op = match op_tok.tok {
+                    Tok::Eq => Op::Eq,
+                    Tok::Ne => Op::Ne,
+                    Tok::Gt => Op::Gt,
+                    Tok::Ge => Op::Ge,
+                    Tok::Lt => Op::Lt,
+                    Tok::Le => Op::Le,
+                    Tok::Contains => Op::Contains,
+                    other => {
+                        return Err(ParseError::new(
+                            format!("Expected an operator after '{field}' but found {}", other.describe()),
+                            op_tok.pos,
+                        ));
                     }
                 };
-                self.bump();
-                if !matches!(self.current().kind, TokenKind::RParen) {
-                    return Err(ParseError {
-                        code: "invalid_query".into(),
-                        message: "Expected ')'".into(),
-                        position: self.current().start,
-                    });
+                let v = self.next();
+                let value = match v.tok {
+                    Tok::Str(s) => Literal::String(s),
+                    Tok::Int(i) => Literal::Int(i),
+                    Tok::Float(f) => Literal::Float(f),
+                    Tok::True => Literal::Bool(true),
+                    Tok::False => Literal::Bool(false),
+                    Tok::Null => Literal::Null,
+                    // Unquoted words are accepted as strings: `level = Error`.
+                    Tok::Ident(w) => Literal::String(w),
+                    other => {
+                        return Err(ParseError::new(
+                            format!("Expected a value after '{}' but found {}", op.as_str(), other.describe()),
+                            v.pos,
+                        ));
+                    }
+                };
+                if op == Op::Contains && value == Literal::Null {
+                    return Err(ParseError::new("'contains' needs a text value", v.pos));
                 }
-                self.bump();
-                let interval = TimeInterval::parse(&interval_str).ok_or_else(|| ParseError {
-                    code: "invalid_query".into(),
-                    message: format!("Unsupported interval '{interval_str}'"),
-                    position: self.current().start,
-                })?;
-                Ok(Aggregation::CountByTime { interval })
+                Ok(Expr::Comparison(Comparison { field, op, value }))
             }
-            TokenKind::Ident(s) => {
-                let field = s.clone();
-                self.bump();
-                Ok(Aggregation::CountBy { field })
+            other => {
+                Err(ParseError::new(format!("Expected a field, string or '(' but found {}", other.describe()), t.pos))
             }
-            _ => Err(ParseError {
-                code: "invalid_query".into(),
-                message: "Expected field or time(...) after 'by'".into(),
-                position: self.current().start,
-            }),
-        }
-    }
-
-    fn parse_agg_field_arg(&mut self) -> Result<String, ParseError> {
-        // avg(duration_ns) or avg duration_ns
-        if matches!(self.current().kind, TokenKind::LParen) {
-            self.bump();
-            let field = match &self.current().kind {
-                TokenKind::Ident(s) => {
-                    let s = s.clone();
-                    self.bump();
-                    s
-                }
-                _ => {
-                    return Err(ParseError {
-                        code: "invalid_query".into(),
-                        message: "Expected field name".into(),
-                        position: self.current().start,
-                    });
-                }
-            };
-            if !matches!(self.current().kind, TokenKind::RParen) {
-                return Err(ParseError {
-                    code: "invalid_query".into(),
-                    message: "Expected ')'".into(),
-                    position: self.current().start,
-                });
-            }
-            self.bump();
-            Ok(field)
-        } else if let TokenKind::Ident(s) = &self.current().kind {
-            let s = s.clone();
-            self.bump();
-            Ok(s)
-        } else {
-            Err(ParseError {
-                code: "invalid_query".into(),
-                message: "Expected field name".into(),
-                position: self.current().start,
-            })
         }
     }
 }
@@ -391,53 +184,117 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_and_or() {
-        let q = parse_query(r#"(service = "api" or service = "billing") and level = error"#).unwrap();
-        assert!(q.filter.is_some());
-        assert!(q.aggregation.is_none());
+    fn p(s: &str) -> Expr {
+        parse(s).unwrap().unwrap()
+    }
+
+    fn err(s: &str) -> ParseError {
+        parse(s).unwrap_err()
     }
 
     #[test]
-    fn parses_free_text() {
-        let q = parse_query("database timeout").unwrap();
+    fn spec_examples_parse() {
+        for q in [
+            r#"level = "Error""#,
+            r#"service = "payments""#,
+            r#"level = "Error" and service = "payments""#,
+            "durationMs > 500",
+            r#"message contains "timeout""#,
+            "customerId = 123",
+            r#"traceId = "abc123""#,
+            "http.statusCode = 500",
+        ] {
+            assert!(parse(q).unwrap().is_some(), "{q}");
+        }
+    }
+
+    #[test]
+    fn empty_query_matches_all() {
+        assert_eq!(parse("").unwrap(), None);
+        assert_eq!(parse("   ").unwrap(), None);
+    }
+
+    #[test]
+    fn precedence_and_binds_tighter_than_or() {
         assert_eq!(
-            q.filter,
-            Some(Expression::FreeText("database timeout".into()))
+            p("a = 1 or b = 2 and c = 3"),
+            Expr::or(
+                Expr::cmp("a", Op::Eq, Literal::Int(1)),
+                Expr::and(Expr::cmp("b", Op::Eq, Literal::Int(2)), Expr::cmp("c", Op::Eq, Literal::Int(3)))
+            )
         );
     }
 
     #[test]
-    fn parses_contains() {
-        let q = parse_query(r#"message contains "timeout""#).unwrap();
-        assert!(matches!(
-            q.filter,
-            Some(Expression::Contains { ref field, ref value })
-                if field == "message" && value == "timeout"
-        ));
+    fn not_binds_tighter_than_and() {
+        assert_eq!(
+            p("not a = 1 and b = 2"),
+            Expr::and(Expr::not(Expr::cmp("a", Op::Eq, Literal::Int(1))), Expr::cmp("b", Op::Eq, Literal::Int(2)))
+        );
     }
 
     #[test]
-    fn parses_aggregation() {
-        let q = parse_query("level = error | count by service").unwrap();
-        assert!(matches!(
-            q.aggregation,
-            Some(Aggregation::CountBy { ref field }) if field == "service"
-        ));
+    fn parentheses_override_precedence() {
+        assert_eq!(
+            p("(a = 1 or b = 2) and c = 3"),
+            Expr::and(
+                Expr::or(Expr::cmp("a", Op::Eq, Literal::Int(1)), Expr::cmp("b", Op::Eq, Literal::Int(2))),
+                Expr::cmp("c", Op::Eq, Literal::Int(3))
+            )
+        );
     }
 
     #[test]
-    fn parses_count_by_time() {
-        let q = parse_query("level = error | count by time(5m)").unwrap();
-        assert!(matches!(
-            q.aggregation,
-            Some(Aggregation::CountByTime { interval: TimeInterval::FiveMinutes })
-        ));
+    fn left_associative() {
+        assert_eq!(
+            p("a = 1 and b = 2 and c = 3"),
+            Expr::and(
+                Expr::and(Expr::cmp("a", Op::Eq, Literal::Int(1)), Expr::cmp("b", Op::Eq, Literal::Int(2))),
+                Expr::cmp("c", Op::Eq, Literal::Int(3))
+            )
+        );
     }
 
     #[test]
-    fn error_on_missing_value() {
-        let err = parse_query("service =").unwrap_err();
-        assert_eq!(err.code, "invalid_query");
+    fn literals() {
+        assert_eq!(p("a = null"), Expr::cmp("a", Op::Eq, Literal::Null));
+        assert_eq!(p("a != true"), Expr::cmp("a", Op::Ne, Literal::Bool(true)));
+        assert_eq!(p("a <= 1.5"), Expr::cmp("a", Op::Le, Literal::Float(1.5)));
+        assert_eq!(p("level = Error"), Expr::cmp("level", Op::Eq, Literal::String("Error".into())));
+    }
+
+    #[test]
+    fn bare_string_is_message_contains() {
+        assert_eq!(
+            p(r#""timeout" and level = Error"#),
+            Expr::and(
+                Expr::cmp("message", Op::Contains, Literal::String("timeout".into())),
+                Expr::cmp("level", Op::Eq, Literal::String("Error".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn helpful_errors() {
+        let e = err(r#"level = "Error" and"#);
+        assert_eq!(e.message, "Expected expression after 'and'");
+        assert_eq!(e.position, 19);
+        assert_eq!(err("level =").message, "Expected a value after '=' but found end of query");
+        assert!(err("level").message.starts_with("Expected an operator after 'level'"));
+        assert!(err("(a = 1").message.starts_with("Expected ')'"));
+        assert!(err("a = 1)").message.contains("')'"));
+        assert!(err("a = 1 b = 2").message.starts_with("Expected 'and' or 'or'"));
+        assert_eq!(err("()").message, "Empty parentheses");
+        assert!(err("= 1").message.starts_with("Expected a field"));
+        assert_eq!(err("not").message, "Expected expression after 'not'");
+        assert!(err("a contains null").message.contains("contains"));
+    }
+
+    #[test]
+    fn deep_nesting_is_rejected_not_overflowed() {
+        let q = format!("{}a = 1{}", "(".repeat(500), ")".repeat(500));
+        assert!(err(&q).message.contains("nested"));
+        let q = format!("{}a = 1", "not ".repeat(500));
+        assert!(err(&q).message.contains("nested"));
     }
 }
