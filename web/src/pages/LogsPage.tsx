@@ -4,6 +4,7 @@ import { api } from '../lib/api';
 import type { Diagnostics, Facet, HistogramBucket, Json, TelemetryEvent } from '../lib/types';
 import { andQuery, boundedWindow, clause, rangeWindow } from '../lib/query';
 import { useRouter } from '../lib/router';
+import { useHasData } from '../lib/useHasData';
 import { useLiveTail } from '../lib/useLiveTail';
 import { DiagnosticsPanel } from '../components/Diagnostics';
 import { FilterPanel } from '../components/FilterPanel';
@@ -34,6 +35,21 @@ function savePref(key: string, v: boolean) {
 }
 
 export function LogsPage() {
+  const hasData = useHasData('logs');
+  if (hasData === null) return <div className="page" />;
+  if (!hasData) {
+    return (
+      <div className="page">
+        <Empty title="No logs yet">
+          Send JSON or NDJSON events to <code>/api/v1/events</code>, or OTLP logs to <code>/v1/logs</code>. See the README quick start.
+        </Empty>
+      </div>
+    );
+  }
+  return <LogsView />;
+}
+
+function LogsView() {
   const { location, navigate } = useRouter();
   const query = location.search.get('q') ?? '';
   const range = location.search.get('range') ?? '1h';
@@ -206,7 +222,7 @@ export function LogsPage() {
           </div>
           {!loading && !error && events.length === 0 && (
             <Empty title="No matching events">
-              {query ? 'Try a wider time range or a simpler query.' : 'Send your first event — see the README quick start.'}
+              {query ? 'Try a wider time range or a simpler query.' : 'Nothing in this time range. Try a wider one.'}
             </Empty>
           )}
           {token && (

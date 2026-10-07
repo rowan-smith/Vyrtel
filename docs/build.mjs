@@ -42,7 +42,8 @@ const [owner, name] = repo.split('/');
 const repoUrl = `https://github.com/${repo}`;
 const siteUrl = (process.env.SITE_URL ?? `https://${owner.toLowerCase()}.github.io/${name}/`).replace(/\/?$/, '/');
 const version = read('Cargo.toml').match(/\[workspace\.package\][^[]*?version\s*=\s*"([^"]+)"/)[1];
-const image = `ghcr.io/${repo.toLowerCase()}`;
+// Published by .github/workflows/release.yml (ghcr.io/<owner>/<repo>, lowercase); `latest` = newest release.
+const image = `ghcr.io/${repo.toLowerCase()}:latest`;
 const word = read('web/src/lib/wordmark.ts');
 const wordPath = word.match(/path: '([^']+)'/)[1];
 const wordWidth = Number(word.match(/width: ([\d.]+)/)[1]);

@@ -26,10 +26,11 @@ const diag = {
   ],
 };
 
-function setup(error?: boolean) {
+function setup(error?: boolean, logCount = 2) {
   const first = logEvent({ id: 'a1', message: 'first event' });
   const second = logEvent({ id: 'a2', message: 'second event', level: 'Information', exception: undefined });
   const calls = mockFetch({
+    '/api/v1/system/info': () => ({ eventCounts: { logs: logCount, traces: 0, metrics: 0 } }),
     '/api/v1/query/logs': (body) => {
       if (error) {
         return new Response(JSON.stringify({ error: { code: 'invalid_query', message: "Expected a value after '='", position: 8 } }), { status: 400 });
@@ -130,6 +131,16 @@ describe('LogsPage', () => {
     expect(screen.queryByText('should not appear')).not.toBeInTheDocument();
     expect(screen.getByText('arrived live')).toBeInTheDocument();
     expect(screen.getByText('first event')).toBeInTheDocument();
+  });
+
+  it('shows only the "no logs yet" message when no logs exist at all', async () => {
+    const calls = setup(false, 0);
+    renderWithRouter(<LogsPage />, '/logs');
+    expect(await screen.findByText('No logs yet')).toBeInTheDocument();
+    // No query tools, and no searches against an empty store.
+    expect(screen.queryByRole('textbox', { name: 'Query' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Live' })).not.toBeInTheDocument();
+    expect(calls.some((c) => c.url.startsWith('/api/v1/query/'))).toBe(false);
   });
 
   it('shows only the empty state when nothing matches', async () => {

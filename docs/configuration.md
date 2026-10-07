@@ -169,5 +169,5 @@ directory writable for that user first:
 
 ```bash
 mkdir -p vyrtel-data && sudo chown 65532:65532 vyrtel-data
-docker run -p 8080:8080 -v ./vyrtel-data:/data vyrtel
+docker run -p 8080:8080 -v ./vyrtel-data:/data ghcr.io/rowan-smith/vyrtel:latest
 ```

@@ -117,18 +117,33 @@ export function AlertsPage() {
     enabled: a.enabled,
   });
 
+  const empty = alerts?.length === 0;
+
   return (
     <div className="page">
-      <div className="page-head">
-        <h1>Alerts</h1>
-        <button className="btn btn-primary" onClick={() => setEditing('new')}>
-          New alert
-        </button>
-      </div>
-      <p className="muted">Log-count threshold alerts. Each transition (OK ⇄ FIRING, ERROR) is recorded and sent to the alert's webhook.</p>
+      {!empty && (
+        <>
+          <div className="page-head">
+            <h1>Alerts</h1>
+            <button className="btn btn-primary" onClick={() => setEditing('new')}>
+              New alert
+            </button>
+          </div>
+          <p className="muted">Log-count threshold alerts. Each transition (OK ⇄ FIRING, ERROR) is recorded and sent to the alert's webhook.</p>
+        </>
+      )}
       <ErrorBanner error={error} />
       {alerts === null && <Spinner />}
-      {alerts?.length === 0 && <Empty title="No alerts yet" />}
+      {empty && (
+        <Empty title="No alerts yet">
+          Get notified when a log query crosses a threshold: each state change is recorded and sent to a webhook.
+          <div className="empty-actions">
+            <button className="btn btn-primary" onClick={() => setEditing('new')}>
+              New alert
+            </button>
+          </div>
+        </Empty>
+      )}
       {alerts && alerts.length > 0 && (
         <table className="table">
           <thead>

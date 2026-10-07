@@ -13,11 +13,12 @@ services.
 > observed.
 
 ```
-docker run -p 8080:8080 -v vyrtel-data:/data vyrtel
+docker pull ghcr.io/rowan-smith/vyrtel:latest
+docker run -p 8080:8080 -v vyrtel-data:/data ghcr.io/rowan-smith/vyrtel:latest
 ```
 
 ```
-Vyrtel 0.1.0
+Vyrtel 0.1.1
 
 Web UI              http://localhost:8080
 Data directory      /data
@@ -92,6 +93,15 @@ cargo run --release -p server
 ```
 
 ### Docker
+
+Prebuilt multi-arch images (amd64, arm64) are published with every release:
+
+```bash
+docker pull ghcr.io/rowan-smith/vyrtel:latest
+docker run -p 8080:8080 -v vyrtel-data:/data ghcr.io/rowan-smith/vyrtel:latest
+```
+
+Or build the image yourself:
 
 ```bash
 docker build -t vyrtel .

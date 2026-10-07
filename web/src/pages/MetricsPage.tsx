@@ -4,6 +4,7 @@ import { api } from '../lib/api';
 import type { Agg, MetricResponse } from '../lib/types';
 import { boundedWindow } from '../lib/query';
 import { useRouter } from '../lib/router';
+import { useHasData } from '../lib/useHasData';
 import { LineChart, seriesColor } from '../components/Charts';
 import { RangeSelect } from '../components/QueryBar';
 import { Empty, ErrorBanner, Spinner } from '../components/common';
@@ -11,6 +12,23 @@ import { Empty, ErrorBanner, Spinner } from '../components/common';
 export const AGGS: Agg[] = ['avg', 'sum', 'count', 'min', 'max', 'last'];
 
 export function MetricsPage() {
+  const hasData = useHasData('metrics');
+  if (hasData === null) return <div className="page" />;
+  if (!hasData) return <NoMetrics />;
+  return <MetricsView />;
+}
+
+function NoMetrics() {
+  return (
+    <div className="page">
+      <Empty title="No metrics yet">
+        Send OTLP metrics to <code>/v1/metrics</code> (counters, gauges and histograms are supported).
+      </Empty>
+    </div>
+  );
+}
+
+function MetricsView() {
   const { location, navigate } = useRouter();
   const [names, setNames] = useState<string[] | null>(null);
   const name = location.search.get('name') ?? '';
@@ -63,15 +81,7 @@ export function MetricsPage() {
     return () => ctrl.abort();
   }, [name, agg, range, groupBy, filter]);
 
-  if (names && names.length === 0 && !error) {
-    return (
-      <div className="page">
-        <Empty title="No metrics yet">
-          Send OTLP metrics to <code>/v1/metrics</code> (counters, gauges and histograms are supported).
-        </Empty>
-      </div>
-    );
-  }
+  if (names && names.length === 0 && !error) return <NoMetrics />;
 
   return (
     <div className="page">

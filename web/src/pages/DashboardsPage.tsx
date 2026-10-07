@@ -34,26 +34,42 @@ export function DashboardsPage() {
     }
   };
 
+  const createForm = (className: string) => (
+    <form
+      className={className}
+      onSubmit={(e) => {
+        e.preventDefault();
+        create();
+      }}
+    >
+      <input className="input" aria-label="New dashboard name" placeholder="New dashboard name" value={name} onChange={(e) => setName(e.target.value)} />
+      <button className="btn btn-primary" type="submit" disabled={!name.trim()}>
+        Create
+      </button>
+    </form>
+  );
+
+  // No dashboards: just the message and the one thing you can do about it.
+  if (list?.length === 0) {
+    return (
+      <div className="page">
+        <ErrorBanner error={error} />
+        <Empty title="No dashboards yet">
+          Create one to pin log counts, metrics and saved queries side by side.
+          {createForm('inline-form empty-actions')}
+        </Empty>
+      </div>
+    );
+  }
+
   return (
     <div className="page">
       <div className="page-head">
         <h1>Dashboards</h1>
-        <form
-          className="inline-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            create();
-          }}
-        >
-          <input className="input" aria-label="New dashboard name" placeholder="New dashboard name" value={name} onChange={(e) => setName(e.target.value)} />
-          <button className="btn btn-primary" type="submit" disabled={!name.trim()}>
-            Create
-          </button>
-        </form>
+        {createForm('inline-form')}
       </div>
       <ErrorBanner error={error} />
       {list === null && <Spinner />}
-      {list?.length === 0 && <Empty title="No dashboards yet">Create one to pin log counts, metrics and saved queries.</Empty>}
       <ul className="card-list">
         {list?.map((d) => (
           <li key={d.id} className="card">

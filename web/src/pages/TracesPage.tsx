@@ -5,11 +5,27 @@ import type { Diagnostics, TraceSummary } from '../lib/types';
 import { formatDateTime, formatDuration } from '../lib/format';
 import { rangeWindow } from '../lib/query';
 import { Link, useRouter } from '../lib/router';
+import { useHasData } from '../lib/useHasData';
 import { DiagnosticsPanel } from '../components/Diagnostics';
 import { QueryBar, RangeSelect } from '../components/QueryBar';
 import { Empty, ErrorBanner, Spinner } from '../components/common';
 
 export function TracesPage() {
+  const hasData = useHasData('traces');
+  if (hasData === null) return <div className="page" />;
+  if (!hasData) {
+    return (
+      <div className="page">
+        <Empty title="No traces yet">
+          Send spans with OTLP/HTTP to <code>/v1/traces</code>.
+        </Empty>
+      </div>
+    );
+  }
+  return <TracesView />;
+}
+
+function TracesView() {
   const { location, navigate } = useRouter();
   const query = location.search.get('q') ?? '';
   const range = location.search.get('range') ?? '1h';
@@ -114,7 +130,7 @@ export function TracesPage() {
         </table>
       )}
       {!loading && !error && traces.length === 0 && (
-        <Empty title="No traces found">Send spans with OTLP/HTTP to <code>/v1/traces</code>, or widen the time range.</Empty>
+        <Empty title="No traces found">{query ? 'Try a wider time range or a simpler query.' : 'Nothing in this time range. Try a wider one.'}</Empty>
       )}
     </div>
   );

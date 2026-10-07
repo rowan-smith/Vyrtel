@@ -306,8 +306,12 @@
         <div class="install">
           <h3>Docker</h3>
           <div class="command command-dark" data-copy-wrap>
+            <code>docker pull {{IMAGE}}</code>
+            <button class="copy" type="button" data-copy="docker pull {{IMAGE}}" aria-label="Copy Docker pull command">Copy</button>
+          </div>
+          <div class="command command-dark command-stacked" data-copy-wrap>
             <code>docker run -p 8080:8080 -v vyrtel-data:/data {{IMAGE}}</code>
-            <button class="copy" type="button" data-copy="docker run -p 8080:8080 -v vyrtel-data:/data {{IMAGE}}" aria-label="Copy Docker command">Copy</button>
+            <button class="copy" type="button" data-copy="docker run -p 8080:8080 -v vyrtel-data:/data {{IMAGE}}" aria-label="Copy Docker run command">Copy</button>
           </div>
           <p class="muted small">Multi-arch (amd64, arm64), distroless, runs as non-root.</p>
         </div>
