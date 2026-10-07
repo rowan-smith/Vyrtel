@@ -155,6 +155,10 @@ export function LogsPage() {
       return n;
     });
 
+  // With nothing to show, show only the "no events" message: no empty histogram band, "0 results"
+  // diagnostics line or empty filter panel.
+  const hasResults = events.length > 0;
+
   return (
     <div className="page logs-page">
       <div className="toolbar">
@@ -177,15 +181,17 @@ export function LogsPage() {
         </QueryBar>
       </div>
       <ErrorBanner error={error} query={query} />
-      <div className={`logs-layout ${showFilters ? 'with-filters' : ''}`}>
-        {showFilters && <FilterPanel facets={facets.fields} sampled={facets.sampled} loading={facetsLoading} onSelect={(f, v) => addFilter(f, v)} />}
+      <div className={`logs-layout ${showFilters && hasResults ? 'with-filters' : ''}`}>
+        {showFilters && hasResults && <FilterPanel facets={facets.fields} sampled={facets.sampled} loading={facetsLoading} onSelect={(f, v) => addFilter(f, v)} />}
         <section className="logs-main" aria-label="Log events">
-          {histogram.length > 0 && <HistogramChart buckets={histogram} />}
-          <div className="results-head">
-            <DiagnosticsPanel diagnostics={diagnostics} count={events.length} />
-            {loading && <Spinner />}
-            {live && dropped > 0 && <span className="muted small">{dropped} live events skipped (too fast to display)</span>}
-          </div>
+          {hasResults && histogram.length > 0 && <HistogramChart buckets={histogram} />}
+          {(hasResults || loading) && (
+            <div className="results-head">
+              {hasResults && <DiagnosticsPanel diagnostics={diagnostics} count={events.length} />}
+              {loading && <Spinner />}
+              {live && dropped > 0 && <span className="muted small">{dropped} live events skipped (too fast to display)</span>}
+            </div>
+          )}
           <div className="log-list" data-testid="log-list">
             {events.map((e) => (
               <LogRow

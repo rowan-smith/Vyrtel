@@ -13,3 +13,5 @@
 *.iml
 obj/
 bin/
+/docs/node_modules
+/docs/build

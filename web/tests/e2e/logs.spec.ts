@@ -36,10 +36,10 @@ test('search, inspect, live tail and trace navigation', async ({ page, request }
   await expect(details.getByTestId('prop-http.statusCode')).toContainText('504');
   await expect(details.getByTestId('stacktrace')).toContainText('StripeClient.Charge');
 
-  // Paused: a newly ingested event must not appear.
-  const live = page.getByRole('button', { name: /^(Paused|Live|Connecting…)$/ });
-  await expect(live).toHaveText(/Paused/);
+  // Live tail off: a newly ingested event must not appear.
+  const live = page.getByRole('button', { name: 'Live', exact: true });
   await expect(live).toHaveAttribute('aria-pressed', 'false');
+  await expect(live).toHaveClass(/is-paused/);
   await request.post('/api/v1/events', { data: { level: 'Error', message: 'E2E paused event', service: 'e2e' } });
   await page.waitForTimeout(1500);
   await expect(page.getByText('E2E paused event')).toHaveCount(0);
@@ -48,7 +48,8 @@ test('search, inspect, live tail and trace navigation', async ({ page, request }
   // Live: new matching events appear automatically; non-matching do not.
   await live.click();
   await expect(live).toHaveAttribute('aria-pressed', 'true');
-  await expect(live).toHaveText(/Live/);
+  // Green dot = stream connected (amber while connecting); only then is ingest guaranteed to reach us.
+  await expect(live).toHaveClass(/is-live/);
   await request.post('/api/v1/events', {
     data: [
       { level: 'Error', message: 'E2E live event', service: 'e2e' },
@@ -58,9 +59,9 @@ test('search, inspect, live tail and trace navigation', async ({ page, request }
   await expect(page.getByText('E2E live event')).toBeVisible();
   await expect(page.getByText('E2E info event')).toHaveCount(0);
 
-  // Pause again: results stay where they are.
+  // Turn it off again: results stay where they are.
   await live.click();
-  await expect(live).toHaveText(/Paused/);
+  await expect(live).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByText('E2E live event')).toBeVisible();
 
   // Open the related trace from the log event.

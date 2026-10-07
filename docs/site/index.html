@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+{{HEAD}}
+</head>
+<body class="home">
+<a class="skip-link" href="#main">Skip to content</a>
+{{HEADER}}
+
+<main id="main">
+
+  <!-- ===================== Hero ===================== -->
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div class="hero-copy reveal">
+        <p class="eyebrow"><span class="pulse-dot" aria-hidden="true"></span> Vyrtel {{VERSION}} · open source · MIT</p>
+        <h1>View. Trace.<br>Understand.</h1>
+        <p class="lead">
+          Self-hosted logs, traces and metrics in one ~11&nbsp;MB binary. One process, one data
+          directory, no cluster, no database, no external services.
+        </p>
+        <div class="hero-actions">
+          <a class="button button-dark" href="#download" data-os-cta>Download</a>
+          <a class="button button-ghost" href="docs/overview.html">Read the docs</a>
+        </div>
+        <div class="command" data-copy-wrap>
+          <code><span class="prompt">$</span> docker run -p 8080:8080 -v vyrtel-data:/data {{IMAGE}}</code>
+          <button class="copy" type="button" data-copy="docker run -p 8080:8080 -v vyrtel-data:/data {{IMAGE}}" aria-label="Copy command">Copy</button>
+        </div>
+      </div>
+
+      <div class="hero-visual reveal" aria-label="Example: a checkout trace in Vyrtel" role="img">
+        <div class="trace-card">
+          <div class="trace-card-head">
+            <span class="crumb">TRACE / checkout / production</span>
+            <span class="badge badge-error">2 errors</span>
+          </div>
+          <h2>POST /checkout</h2>
+          <p class="muted">4.66 s · 6 spans · checkout, payments</p>
+          <div class="waterfall">
+            <div class="wf-row"><span class="wf-name">checkout <b>POST /checkout</b></span><span class="wf-track"><i class="wf-bar mint" style="--l:0%;--w:100%"></i></span><span class="wf-dur">800 ms</span></div>
+            <div class="wf-row"><span class="wf-name in1">payments <b>charge card</b></span><span class="wf-track"><i class="wf-bar error" style="--l:6%;--w:86%"></i></span><span class="wf-dur">700 ms</span></div>
+            <div class="wf-row"><span class="wf-name in2">payments <b>SELECT payments</b></span><span class="wf-track"><i class="wf-bar iris" style="--l:9%;--w:4%"></i></span><span class="wf-dur">20 ms</span></div>
+            <div class="wf-row"><span class="wf-name in2">payments <b>stripe.charge</b></span><span class="wf-track"><i class="wf-bar error" style="--l:14%;--w:76%"></i></span><span class="wf-dur">612 ms</span></div>
+            <div class="wf-row"><span class="wf-name in1">orders <b>reserve stock</b></span><span class="wf-track"><i class="wf-bar mint" style="--l:91%;--w:8%"></i></span><span class="wf-dur">64 ms</span></div>
+          </div>
+          <div class="trace-log">
+            <span class="lvl lvl-error">ERROR</span>
+            <span class="mono">payments</span>
+            <span>Payment provider timed out <em>TimeoutException</em></span>
+          </div>
+          <p class="flow mono">signal → context → cause → understanding</p>
+          <div class="signal-line" aria-hidden="true"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Numbers ===================== -->
+  <section class="numbers" aria-label="Measured numbers">
+    <div class="wrap numbers-grid">
+      <div class="number reveal"><strong>11 MB</strong><span>one binary, web UI included</span></div>
+      <div class="number reveal"><strong>~20 MB</strong><span>memory when idle</span></div>
+      <div class="number reveal"><strong>10k/s</strong><span>events ingested on a laptop</span></div>
+      <div class="number reveal"><strong>0</strong><span>external services to run</span></div>
+    </div>
+  </section>
+
+  <!-- ===================== View / Trace / Understand ===================== -->
+  <section class="section" id="features">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">How it works</p>
+        <h2>From a symptom to the cause, in one place.</h2>
+        <p class="lead">Logs, traces and metrics live in the same process and the same query language, so the path from &ldquo;something is wrong&rdquo; to &ldquo;this is why&rdquo; is a few clicks, not a few tools.</p>
+      </div>
+      <div class="steps">
+        <article class="step reveal">
+          <span class="step-num">01</span>
+          <h3>View.</h3>
+          <p>Search structured events with a small query language, watch them arrive with live tail, and open any event vertically: properties, exception, stack trace.</p>
+          <code class="mono">level = "Error" and service = "payments"</code>
+        </article>
+        <article class="step reveal">
+          <span class="step-num">02</span>
+          <h3>Trace.</h3>
+          <p>Jump from a log line to its trace. The waterfall shows which span was slow or failed, with every related log right underneath.</p>
+          <code class="mono">traceId = "4bf92f3577b34da6…"</code>
+        </article>
+        <article class="step reveal">
+          <span class="step-num">03</span>
+          <h3>Understand.</h3>
+          <p>Put metrics and log counts on a dashboard, alert when a threshold is crossed, and see exactly how each query used the indexes.</p>
+          <code class="mono">count &gt; 100 in 5 min → webhook</code>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Product tour ===================== -->
+  <section class="section section-tint" id="tour">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">The product</p>
+        <h2>A UI that explains itself.</h2>
+        <p class="lead">Dark, dense and fast. Every screen below is the real app, captured by its end-to-end tests.</p>
+      </div>
+      <div class="tour reveal">
+        <div class="tour-tabs" role="tablist" aria-label="Screens">
+          <button role="tab" aria-selected="true" aria-controls="shot-logs" id="tab-logs">Logs</button>
+          <button role="tab" aria-selected="false" aria-controls="shot-trace" id="tab-trace" tabindex="-1">Traces</button>
+          <button role="tab" aria-selected="false" aria-controls="shot-storage" id="tab-storage" tabindex="-1">Storage</button>
+        </div>
+        <div class="window">
+          <div class="window-bar"><i></i><i></i><i></i><span class="mono">localhost:8080</span></div>
+          <figure role="tabpanel" id="shot-logs" aria-labelledby="tab-logs">
+            <img src="assets/screenshots/logs.png" width="1400" height="860" alt="Logs view: query bar, filter panel with detected fields, query diagnostics and an expanded error event with properties.">
+            <figcaption>Query, filter by detected fields, and see exactly which indexes each search used.</figcaption>
+          </figure>
+          <figure role="tabpanel" id="shot-trace" aria-labelledby="tab-trace" hidden>
+            <img src="assets/screenshots/trace.png" width="1400" height="860" loading="lazy" alt="Trace view: waterfall of six spans with two failing, span details and related logs.">
+            <figcaption>Waterfall, span attributes and events, and the logs that belong to the trace.</figcaption>
+          </figure>
+          <figure role="tabpanel" id="shot-storage" aria-labelledby="tab-storage" hidden>
+            <img src="assets/screenshots/storage.png" width="1400" height="860" loading="lazy" alt="Storage settings: raw and stored bytes, compression ratio, segments and events per signal.">
+            <figcaption>Storage you can see: raw vs stored bytes, compression and index overhead per signal.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Features ===================== -->
+  <section class="section">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">Everything in the box</p>
+        <h2>One binary. The whole stack.</h2>
+      </div>
+      <div class="cards">
+        <article class="card card-featured reveal">
+          <span class="card-eyebrow">Logs</span>
+          <h3>The hero feature</h3>
+          <p>JSON / NDJSON ingestion (Serilog CLEF compatible), a readable query language, live tail with pause, a filter panel built from detected fields and a compact level histogram.</p>
+        </article>
+        <article class="card reveal">
+          <span class="card-eyebrow">OpenTelemetry</span>
+          <h3>OTLP/HTTP in</h3>
+          <p>Point any OpenTelemetry SDK or Collector at it. Logs, traces and metrics, protobuf or JSON, gzip.</p>
+        </article>
+        <article class="card reveal">
+          <span class="card-eyebrow">Traces</span>
+          <h3>Waterfall + related logs</h3>
+          <p>Search traces by status, duration or service; inspect spans; navigate logs ↔ traces both ways.</p>
+        </article>
+        <article class="card reveal">
+          <span class="card-eyebrow">Metrics</span>
+          <h3>Counters, gauges, histograms</h3>
+          <p>Sum, count, min, max, avg and last with group-by, plotted over any time range.</p>
+        </article>
+        <article class="card reveal">
+          <span class="card-eyebrow">Dashboards</span>
+          <h3>Panels on a grid</h3>
+          <p>Log counts, metric lines, single stats and saved queries side by side.</p>
+        </article>
+        <article class="card reveal">
+          <span class="card-eyebrow">Alerts</span>
+          <h3>Thresholds that page you</h3>
+          <p>Log-count alerts with OK / FIRING / ERROR state, history and webhook delivery.</p>
+        </article>
+        <article class="card reveal">
+          <span class="card-eyebrow">Storage</span>
+          <h3>Crash-safe by design</h3>
+          <p>Append-only WAL with checksums, immutable zstd segments, bitmap indexes, Bloom filters and zone maps. Bounded memory, automatic recovery.</p>
+        </article>
+        <article class="card reveal">
+          <span class="card-eyebrow">Operations</span>
+          <h3>Boring in production</h3>
+          <p>Per-signal retention, compaction, strict or normal durability, API keys, admin login, health endpoints and a non-root Docker image.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Query language ===================== -->
+  <section class="section section-tint">
+    <div class="wrap split">
+      <div class="reveal">
+        <p class="eyebrow">Query language</p>
+        <h2>Ask production a question.</h2>
+        <p class="lead">Small enough to learn in a minute, precise enough for incidents. Fields come from your events, nested paths included, and every query reports what it scanned and which indexes it skipped with.</p>
+        <p><a class="text-link" href="docs/query-language.html">Query language reference →</a></p>
+      </div>
+      <div class="code-panel reveal" aria-label="Example queries">
+        <div class="code-panel-head mono">queries</div>
+        <pre><code><span class="c"># errors from one service</span>
+<span class="f">level</span> <span class="o">=</span> <span class="s">"Error"</span> <span class="k">and</span> <span class="f">service</span> <span class="o">=</span> <span class="s">"payments"</span>
+
+<span class="c"># nested fields, comparisons, negation</span>
+<span class="f">http.statusCode</span> <span class="o">&gt;=</span> <span class="n">500</span> <span class="k">and not</span> <span class="f">environment</span> <span class="o">=</span> <span class="s">"staging"</span>
+
+<span class="c"># slow requests</span>
+<span class="f">durationMs</span> <span class="o">&gt;</span> <span class="n">500</span>
+
+<span class="c"># level ranges and grouping</span>
+<span class="f">level</span> <span class="o">&gt;=</span> Warning <span class="k">and</span> (<span class="f">service</span> <span class="o">=</span> <span class="s">"orders"</span> <span class="k">or</span> <span class="f">service</span> <span class="o">=</span> <span class="s">"payments"</span>)
+
+<span class="c"># free text</span>
+<span class="s">"timed out"</span></code></pre>
+        <div class="diag mono">
+          <span class="diag-ok">✓</span> 21 results · 274 µs · 3/4 segments skipped by index · 0 B read
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Terminal ===================== -->
+  <section class="section section-dark">
+    <div class="wrap split split-reverse">
+      <div class="terminal reveal" aria-label="Terminal: starting Vyrtel and sending an event">
+        <div class="window-bar"><i></i><i></i><i></i><span class="mono">vyrtel</span></div>
+<pre class="mono"><span class="t-prompt">$</span> ./vyrtel
+<span class="t-dim">Vyrtel {{VERSION}}</span>
+
+<span class="t-key">Web UI</span>              <span class="t-link">http://localhost:8080</span>
+<span class="t-key">Data directory</span>      ./data
+<span class="t-key">OTLP HTTP</span>           http://0.0.0.0:8080/v1/*
+<span class="t-key">Memory limit</span>        512 MB
+<span class="t-key">Durability</span>          normal
+
+<span class="t-ok">Ready.</span>
+
+<span class="t-prompt">$</span> curl localhost:8080/api/v1/events \
+    -H 'content-type: application/json' \
+    -d '{"level":"Error","service":"payments",
+         "message":"Payment failed"}'
+<span class="t-ok">{"accepted":1}</span></pre>
+      </div>
+      <div class="reveal">
+        <p class="eyebrow eyebrow-mint">Quiet when healthy</p>
+        <h2>Running in one command.</h2>
+        <p class="lead">No setup wizard, no connection strings, no cluster to plan. Start the binary, open the URL it prints, and send events over HTTP or OTLP.</p>
+        <ul class="checks">
+          <li>Point OpenTelemetry at <code>OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:8080</code></li>
+          <li>Or POST JSON / NDJSON to <code>/api/v1/events</code></li>
+          <li>Everything persistent lives in one directory</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Why ===================== -->
+  <section class="section">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">Why Vyrtel</p>
+        <h2>Observability shouldn't need more resources than what it observes.</h2>
+      </div>
+      <div class="compare reveal">
+        <div class="compare-col">
+          <h3>A typical stack</h3>
+          <ul class="stack">
+            <li>Search cluster for logs</li>
+            <li>Time-series database for metrics</li>
+            <li>Tracing backend + its storage</li>
+            <li>Message queue in front of it all</li>
+            <li>Dashboards and alerting service</li>
+          </ul>
+          <p class="muted">Several services, several gigabytes of RAM, before the first log line.</p>
+        </div>
+        <div class="compare-arrow" aria-hidden="true">→</div>
+        <div class="compare-col compare-vyrtel">
+          <h3>Vyrtel</h3>
+          <div class="one-box">
+            <span>HTTP API · OTLP ingestion · query engine · storage · metadata · web UI · background jobs</span>
+          </div>
+          <p class="muted">One process, one data directory, idle at ~20 MB.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Download ===================== -->
+  <section class="section section-dark" id="download">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow eyebrow-mint">Download</p>
+        <h2>Get Vyrtel {{VERSION}}</h2>
+        <p class="lead" data-release-note>Single self-contained binaries with the web UI built in. Download, run, open the printed URL.</p>
+      </div>
+      <div class="downloads reveal">
+        <a class="dl" data-os="linux" data-asset="vyrtel-linux-x86_64" href="{{REPO_URL}}/releases/latest/download/vyrtel-linux-x86_64">
+          <span class="dl-os">Linux</span><span class="dl-arch">x86_64</span><span class="dl-file mono">vyrtel-linux-x86_64</span>
+        </a>
+        <a class="dl" data-os="linux-arm" data-asset="vyrtel-linux-arm64" href="{{REPO_URL}}/releases/latest/download/vyrtel-linux-arm64">
+          <span class="dl-os">Linux</span><span class="dl-arch">ARM64</span><span class="dl-file mono">vyrtel-linux-arm64</span>
+        </a>
+        <a class="dl" data-os="mac" data-asset="vyrtel-macos-arm64" href="{{REPO_URL}}/releases/latest/download/vyrtel-macos-arm64">
+          <span class="dl-os">macOS</span><span class="dl-arch">Apple silicon</span><span class="dl-file mono">vyrtel-macos-arm64</span>
+        </a>
+        <a class="dl" data-os="windows" data-asset="vyrtel-windows-x86_64.exe" href="{{REPO_URL}}/releases/latest/download/vyrtel-windows-x86_64.exe">
+          <span class="dl-os">Windows</span><span class="dl-arch">x64</span><span class="dl-file mono">vyrtel-windows-x86_64.exe</span>
+        </a>
+      </div>
+      <div class="install-grid reveal">
+        <div class="install">
+          <h3>Docker</h3>
+          <div class="command command-dark" data-copy-wrap>
+            <code>docker run -p 8080:8080 -v vyrtel-data:/data {{IMAGE}}</code>
+            <button class="copy" type="button" data-copy="docker run -p 8080:8080 -v vyrtel-data:/data {{IMAGE}}" aria-label="Copy Docker command">Copy</button>
+          </div>
+          <p class="muted small">Multi-arch (amd64, arm64), distroless, runs as non-root.</p>
+        </div>
+        <div class="install">
+          <h3>Linux / macOS</h3>
+          <div class="command command-dark" data-copy-wrap>
+            <code>chmod +x vyrtel-* &amp;&amp; ./vyrtel-*</code>
+            <button class="copy" type="button" data-copy="chmod +x vyrtel-* && ./vyrtel-*" aria-label="Copy run command">Copy</button>
+          </div>
+          <p class="muted small">Verify downloads against <a href="{{REPO_URL}}/releases/latest/download/SHA256SUMS">SHA256SUMS</a>.</p>
+        </div>
+        <div class="install">
+          <h3>From source</h3>
+          <div class="command command-dark" data-copy-wrap>
+            <code>cargo run --release -p server</code>
+            <button class="copy" type="button" data-copy="cargo run --release -p server" aria-label="Copy build command">Copy</button>
+          </div>
+          <p class="muted small">Needs Rust stable and Node 22. <a href="docs/development.html">Build guide</a>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Docs ===================== -->
+  <section class="section" id="docs">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">Documentation</p>
+        <h2>Everything is written down.</h2>
+      </div>
+      <div class="doc-links">
+        <a class="doc-link reveal" href="docs/overview.html"><strong>Quick start</strong><span>Install, send your first event, run a query.</span></a>
+        <a class="doc-link reveal" href="docs/query-language.html"><strong>Query language</strong><span>Operators, types, coercion and examples.</span></a>
+        <a class="doc-link reveal" href="docs/api.html"><strong>HTTP API</strong><span>Ingestion, querying, live tail and admin endpoints.</span></a>
+        <a class="doc-link reveal" href="docs/configuration.html"><strong>Configuration</strong><span>TOML, environment variables, Docker and durability.</span></a>
+        <a class="doc-link reveal" href="docs/architecture.html"><strong>Architecture</strong><span>How ingestion, storage and queries fit together.</span></a>
+        <a class="doc-link reveal" href="docs/storage-format.html"><strong>Storage format</strong><span>WAL, segments, indexes, commit and recovery.</span></a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== CTA ===================== -->
+  <section class="cta">
+    <div class="wrap cta-inner reveal">
+      <h2>See what production is doing.</h2>
+      <div class="hero-actions">
+        <a class="button button-primary" href="#download" data-os-cta>Download</a>
+        <a class="button button-ghost-dark" href="{{REPO_URL}}">View source on GitHub</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+{{FOOTER}}
+</body>
+</html>

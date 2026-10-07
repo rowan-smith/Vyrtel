@@ -135,10 +135,13 @@ impl App {
             .iter()
             .map(|x| x.segment_data_bytes + x.segment_index_bytes + x.wal_bytes)
             .sum();
-        let host = if bound.ip().is_unspecified() { "0.0.0.0".to_string() } else { bound.ip().to_string() };
-        let url = format!("http://{host}:{}", bound.port());
+        // SocketAddr's Display brackets IPv6 addresses. A wildcard bind (0.0.0.0 / [::]) isn't
+        // something you can open in a browser, so the UI link points at localhost instead.
+        let url = format!("http://{bound}");
+        let web = if bound.ip().is_unspecified() { format!("http://localhost:{}", bound.port()) } else { url.clone() };
         let mut out = format!(
             "Vyrtel {}\n\n\
+             Web UI              {web}\n\
              Data directory      {}\n\
              HTTP                {url}\n\
              OTLP HTTP           {url}/v1/*\n\

@@ -38,8 +38,10 @@ export function QueryBar({
         autoComplete="off"
         onChange={(e) => setText(e.target.value)}
       />
-      <button className="btn btn-primary" type="submit" disabled={running}>
-        Run
+      <button className="btn btn-run" type="submit" disabled={running} aria-label="Run" title="Run query (Enter)">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z" fill="currentColor" />
+        </svg>
       </button>
       {children}
     </form>
@@ -47,17 +49,25 @@ export function QueryBar({
 }
 
 export function LiveToggle({ live, status, onChange }: { live: boolean; status?: string; onChange: (live: boolean) => void }) {
-  const label = live ? (status === 'connecting' ? 'Connecting…' : 'Live') : 'Paused';
+  // Always labelled "Live"; the dot shows the state (red off, amber connecting, green on) and
+  // aria-pressed carries it for assistive tech.
+  const state = live ? (status === 'connecting' ? 'is-connecting' : 'is-live') : 'is-paused';
   return (
     <button
       type="button"
-      className={`live-toggle ${live ? 'is-live' : 'is-paused'}`}
+      className={`live-toggle ${state}`}
       aria-pressed={live}
-      title={live ? 'Live: new matching events appear automatically. Click to pause.' : 'Paused: results stay put. Click to go live.'}
+      title={
+        live
+          ? status === 'connecting'
+            ? 'Live tail: connecting… Click to stop.'
+            : 'Live tail on: new matching events appear automatically. Click to stop.'
+          : 'Live tail off: results stay put. Click to go live.'
+      }
       onClick={() => onChange(!live)}
     >
       <span className="live-dot" aria-hidden="true" />
-      {label}
+      Live
     </button>
   );
 }

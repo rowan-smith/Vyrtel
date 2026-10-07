@@ -11,17 +11,20 @@ import { ApiError } from '../../src/lib/api';
 import { logEvent, renderWithRouter } from './helpers';
 
 describe('LiveToggle', () => {
-  it('shows paused (red) and live (green) states and toggles', async () => {
+  it('is always labelled Live; the dot shows off (red) and on (green), and it toggles', async () => {
     const onChange = vi.fn();
     const { rerender } = render(<LiveToggle live={false} onChange={onChange} />);
-    const btn = screen.getByRole('button', { name: /paused/i });
+    const btn = screen.getByRole('button', { name: 'Live' });
     expect(btn).toHaveAttribute('aria-pressed', 'false');
     expect(btn).toHaveClass('is-paused');
     await userEvent.click(btn);
     expect(onChange).toHaveBeenCalledWith(true);
 
+    rerender(<LiveToggle live={true} status="connecting" onChange={onChange} />);
+    expect(screen.getByRole('button', { name: 'Live' })).toHaveClass('is-connecting');
+
     rerender(<LiveToggle live={true} status="live" onChange={onChange} />);
-    const live = screen.getByRole('button', { name: /live/i });
+    const live = screen.getByRole('button', { name: 'Live' });
     expect(live).toHaveAttribute('aria-pressed', 'true');
     expect(live).toHaveClass('is-live');
     await userEvent.click(live);

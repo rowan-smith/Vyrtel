@@ -63,10 +63,13 @@ export function TracesPage() {
         </QueryBar>
       </div>
       <ErrorBanner error={error} query={query} />
-      <div className="results-head">
-        <DiagnosticsPanel diagnostics={diagnostics} count={traces.length} />
-        {loading && <Spinner />}
-      </div>
+      {/* With no traces, show only the "no traces" message (no "0 results" diagnostics line). */}
+      {(traces.length > 0 || loading) && (
+        <div className="results-head">
+          {traces.length > 0 && <DiagnosticsPanel diagnostics={diagnostics} count={traces.length} />}
+          {loading && <Spinner />}
+        </div>
+      )}
       {traces.length > 0 && (
         <table className="table traces-table">
           <thead>

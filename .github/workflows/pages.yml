@@ -1,0 +1,71 @@
+name: Deploy site
+
+# Builds the website from docs/ (front page + every doc rendered to HTML under /docs/) and
+# publishes it with GitHub Pages.
+# Requires Settings → Pages → Build and deployment → Source: "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - README.md
+      - Cargo.toml
+      - web/public/**
+      - web/src/lib/wordmark.ts
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Install dependencies
+        working-directory: docs
+        run: npm ci
+
+      - name: Build
+        working-directory: docs
+        env:
+          # The published URL (custom domain if one is set); used for absolute og:image links.
+          SITE_URL: ${{ steps.pages.outputs.base_url }}
+        run: npm run build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/build
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

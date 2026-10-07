@@ -41,10 +41,11 @@ export function HistogramChart({ buckets, height = 64 }: { buckets: HistogramBuc
   );
 }
 
-const SERIES_COLORS = ['#38bdf8', '#a78bfa', '#34d399', '#fbbf24', '#f87171', '#f472b6', '#60a5fa', '#a3e635'];
+// Aurora series palette (--series-0..7 in styles.css, with light-mode variants).
+const SERIES_COUNT = 8;
 
 export function seriesColor(i: number) {
-  return SERIES_COLORS[i % SERIES_COLORS.length];
+  return `var(--series-${i % SERIES_COUNT})`;
 }
 
 /** Multi-series line chart with a simple Y axis. */

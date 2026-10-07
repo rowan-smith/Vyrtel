@@ -4,6 +4,7 @@ import { api, setUnauthorizedHandler } from './lib/api';
 import type { AuthState } from './lib/types';
 import { Link, matchPath, useRouter } from './lib/router';
 import { Spinner } from './components/common';
+import { WORD } from './lib/wordmark';
 import { AlertsPage } from './pages/AlertsPage';
 import { DashboardPage, DashboardsPage } from './pages/DashboardsPage';
 import { LogsPage } from './pages/LogsPage';
@@ -20,12 +21,40 @@ const NAV = [
   ['/alerts', 'Alerts'],
 ] as const;
 
-function Logo() {
+/**
+ * The integrated wordmark [V]yrtel: the Trace V (two telemetry paths, mint and iris, converging
+ * on a correlation node) is the first letter. Rendered inside an element with class `brand`,
+ * which is compact (V only) until hover/focus unless it also has `is-expanded`.
+ */
+function BrandMark() {
   return (
-    <svg width="20" height="20" viewBox="0 0 32 32" aria-hidden="true">
-      <circle cx="16" cy="16" r="10" fill="none" stroke="currentColor" strokeWidth="3" />
-      <circle cx="16" cy="16" r="4" fill="var(--ok)" />
-    </svg>
+    <>
+      <svg className="brand-mark" viewBox="0 0 96 96" aria-hidden="true">
+        <g>
+          <path d="M18 18 L47 72" fill="none" stroke="var(--mint)" strokeWidth="10" strokeLinecap="round" />
+          <path d="M78 18 L49 72" fill="none" stroke="var(--iris)" strokeWidth="10" strokeLinecap="round" />
+        </g>
+        <circle cx="48" cy="73" r="7" fill="var(--brand-node-ring)" />
+        <circle className="brand-node" cx="48" cy="73" r="4" fill="var(--brand-node)" />
+      </svg>
+      <span className="brand-word" aria-hidden="true">
+        <svg viewBox={`0 ${-WORD.ascender} ${WORD.width} ${WORD.ascender + WORD.descender}`} style={{ width: `${WORD.width / 100}em` }}>
+          <path d={WORD.path} fill="currentColor" />
+        </svg>
+      </span>
+      <span className="sr-only">Vyrtel</span>
+    </>
+  );
+}
+
+function LoginBrand() {
+  return (
+    <h1 className="login-brand">
+      <span className="brand is-expanded">
+        <BrandMark />
+      </span>
+      <span className="brand-tagline">View. Trace. Understand.</span>
+    </h1>
   );
 }
 
@@ -47,9 +76,7 @@ function LoginPage({ onLogin }: { onLogin: (a: AuthState) => void }) {
           }
         }}
       >
-        <h1>
-          <Logo /> Vyrtel
-        </h1>
+        <LoginBrand />
         <label>
           <span className="label">Username</span>
           <input className="input" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
@@ -120,9 +147,7 @@ export function App() {
     return (
       <div className="login">
         <div className="card login-card">
-          <h1>
-            <Logo /> Vyrtel
-          </h1>
+          <LoginBrand />
           <div className="error-banner">{authError}</div>
           <button className="btn" onClick={refresh}>
             Retry
@@ -138,8 +163,8 @@ export function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <Link to="/logs" className="brand">
-          <Logo /> Vyrtel
+        <Link to="/logs" className="brand" title="Vyrtel">
+          <BrandMark />
         </Link>
         <nav className="nav" aria-label="Main">
           {NAV.map(([p, label]) => (

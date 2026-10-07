@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+{{HEAD}}
+</head>
+<body class="docs">
+<a class="skip-link" href="#main">Skip to content</a>
+{{HEADER}}
+
+<div class="wrap docs-layout">
+  <aside class="docs-sidebar" aria-label="Documentation">
+    <details class="side-menu" open>
+      <summary>Documentation</summary>
+      {{SIDEBAR}}
+    </details>
+  </aside>
+  <main id="main" class="docs-main">
+    <article class="prose">
+{{CONTENT}}
+    </article>
+    <p class="edit-link small"><a href="{{EDIT_URL}}">Edit this page on GitHub</a></p>
+    {{PAGER}}
+  </main>
+  <aside class="docs-toc">{{TOC}}</aside>
+</div>
+
+{{FOOTER}}
+</body>
+</html>

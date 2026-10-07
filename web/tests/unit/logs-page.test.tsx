@@ -111,7 +111,7 @@ describe('LogsPage', () => {
     expect(FakeEventSource.instances).toHaveLength(0);
 
     // Go live.
-    await userEvent.click(screen.getByRole('button', { name: /paused/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^live$/i }));
     const es = FakeEventSource.latest()!;
     expect(es.url).toContain('/api/v1/live/logs');
     act(() => es.emit('ready', {}));
@@ -132,9 +132,15 @@ describe('LogsPage', () => {
     expect(screen.getByText('first event')).toBeInTheDocument();
   });
 
-  it('shows an empty state', async () => {
+  it('shows only the empty state when nothing matches', async () => {
     setup();
     renderWithRouter(<LogsPage />, '/logs?q=message%20%3D%20%22nothing%22');
     expect(await screen.findByText('No matching events')).toBeInTheDocument();
+    // No histogram band, "0 results" diagnostics line or empty filter panel alongside it.
+    expect(screen.queryByRole('img', { name: 'Events over time' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('diagnostics')).not.toBeInTheDocument();
+    expect(screen.queryByRole('complementary', { name: 'Filters' })).not.toBeInTheDocument();
+    // The query bar stays so the query or time range can be changed.
+    expect(screen.getByRole('textbox', { name: 'Query' })).toBeInTheDocument();
   });
 });

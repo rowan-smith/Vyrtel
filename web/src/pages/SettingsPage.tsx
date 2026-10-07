@@ -278,7 +278,7 @@ export function SettingsPage() {
   const { location, navigate } = useRouter();
   const tab = location.search.get('tab') ?? 'storage';
   return (
-    <div className="page narrow">
+    <div className="page">
       <h1>Settings</h1>
       <div className="tabs" role="tablist">
         {TABS.map(([k, label]) => (

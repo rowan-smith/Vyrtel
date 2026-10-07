@@ -189,3 +189,20 @@ async fn generated_admin_password_when_none_configured() {
     assert!(server::auth::verify_password(&pw, &user.password_hash));
     app.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn banner_shows_a_browsable_web_ui_url() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = server::App::build(base_config(dir.path())).unwrap();
+    // Wildcard binds can't be opened in a browser: point at localhost, keep the real bind for HTTP.
+    let b = app.banner("0.0.0.0:8080".parse().unwrap());
+    assert!(b.contains("Web UI              http://localhost:8080\n"), "{b}");
+    assert!(b.contains("HTTP                http://0.0.0.0:8080\n"), "{b}");
+    let b = app.banner("[::]:9000".parse().unwrap());
+    assert!(b.contains("Web UI              http://localhost:9000\n"), "{b}");
+    assert!(b.contains("OTLP HTTP           http://[::]:9000/v1/*\n"), "{b}");
+    // A specific address is used as-is.
+    let b = app.banner("192.168.1.20:8080".parse().unwrap());
+    assert!(b.contains("Web UI              http://192.168.1.20:8080\n"), "{b}");
+    app.shutdown().await;
+}

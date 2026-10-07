@@ -1,46 +1,99 @@
 /* Vyrtel UI. Plain CSS with custom properties; no component framework. */
 
+/* Brand palette "Aurora" (see docs/brand/README.md). Brand colours mark signal, not decoration:
+   mint = primary / healthy / active path, iris = secondary telemetry and selection.
+   Operational colours (ok/warn/error/info) are kept separate from brand colours. */
 :root {
-  --bg: #0b0f17;
-  --bg-raised: #111827;
-  --bg-hover: #1a2333;
-  --bg-active: #22304a;
-  --border: #1f2a3c;
-  --border-strong: #2c3b54;
-  --text: #e5e9f0;
-  --text-dim: #a3adbf;
-  --muted: #7d889c;
-  --accent: #38bdf8;
-  --accent-strong: #0ea5e9;
-  --ok: #22c55e;
-  --warn: #f59e0b;
-  --error: #ef4444;
-  --c-none: #475569;
-  --c-trace: #6b7280;
-  --c-debug: #8b5cf6;
-  --c-info: #3b82f6;
-  --c-warn: #f59e0b;
-  --c-error: #ef4444;
-  --c-fatal: #e11d48;
+  --midnight: #07131f;
+  --surface: #0d1e2e;
+  --mint: #39e6c2;
+  --mint-dark: #087a68;
+  --iris: #7c72ff;
+  --paper: #f6f8fb;
+
+  --bg: var(--midnight);
+  --bg-raised: var(--surface);
+  --bg-hover: #13283b;
+  --bg-active: #1a3449;
+  --border: #172b3e;
+  --border-strong: #24415b;
+  --text: var(--paper);
+  --text-dim: #a8b6c8;
+  --muted: #8193a8;
+  --accent: var(--mint);
+  --accent-2: var(--iris);
+  --primary: var(--mint);
+  --primary-hover: #6cefd4;
+  --on-primary: var(--midnight);
+  --ok: var(--mint);
+  --warn: #ffc857;
+  --error: #ff6b7a;
+  --info: #59c7ff;
+  --c-none: #3a4b5f;
+  --c-trace: #6b7d93;
+  --c-debug: var(--iris);
+  --c-info: var(--info);
+  --c-warn: var(--warn);
+  --c-error: var(--error);
+  --c-fatal: #ff3d5e;
+  --val-number: #aba5ff;
+  --val-boolean: #f4a6c8;
+  --series-0: #39e6c2;
+  --series-1: #7c72ff;
+  --series-2: #59c7ff;
+  --series-3: #ffc857;
+  --series-4: #ff6b7a;
+  --series-5: #f4a6c8;
+  --series-6: #a7e36b;
+  --series-7: #b8c4d3;
+  --brand-node: var(--paper);
+  --brand-node-ring: var(--bg-raised);
   --radius: 6px;
-  --mono: ui-monospace, 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, monospace;
-  --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* Motion: reveal, correlation, direction or state change only. */
+  --motion-fast: 140ms;
+  --motion-base: 220ms;
+  --motion-brand: 320ms;
+  --motion-slow: 480ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  --sans: 'Inter Variable', Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   color-scheme: dark;
 }
 
+/* Light mode: bright mint fails contrast on Paper (1.5:1), so text and controls use Mint Dark. */
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f7f8fa;
+    --bg: var(--paper);
     --bg-raised: #ffffff;
-    --bg-hover: #eef2f7;
-    --bg-active: #dbeafe;
-    --border: #e2e8f0;
-    --border-strong: #cbd5e1;
-    --text: #0f172a;
-    --text-dim: #334155;
-    --muted: #64748b;
-    --accent: #0284c7;
-    --accent-strong: #0369a1;
+    --bg-hover: #edf1f6;
+    --bg-active: #dcf4ee;
+    --border: #e1e7ef;
+    --border-strong: #c8d2de;
+    --text: var(--midnight);
+    --text-dim: #2a3b4f;
+    --muted: #5a6b80;
+    --accent: var(--mint-dark);
+    --accent-2: #5b50e6;
+    --primary: var(--mint-dark);
+    --primary-hover: #0a6a5b;
+    --on-primary: #ffffff;
+    --ok: #0e9e85;
+    --warn: #c98a00;
+    --error: #e5384c;
+    --info: #1a8fd1;
+    --c-debug: #5b50e6;
+    --val-number: #5b50e6;
+    --val-boolean: #b4237a;
+    --series-0: #0e9e85;
+    --series-1: #5b50e6;
+    --series-2: #1a8fd1;
+    --series-3: #c98a00;
+    --series-4: #e5384c;
+    --series-5: #c2408a;
+    --series-6: #5c9e1e;
+    --series-7: #5a6b80;
+    --brand-node-ring: var(--midnight);
     color-scheme: light;
   }
 }
@@ -129,6 +182,15 @@ h3 {
   color: var(--error);
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* ---------- layout ---------- */
 
 .app {
@@ -148,17 +210,108 @@ h3 {
   flex-shrink: 0;
 }
 
+/* Integrated wordmark: the Trace V *is* the V of [V]yrtel. Compact (the full-width V only) until
+   hover, keyboard focus or .is-expanded; then the node pulses once and "yrtel" slides in.
+   ~480 ms, no bounce. (The brand pack also narrows the arms when collapsed; at top-bar size that
+   reads as a thin "\/" rather than the mark, so the V keeps its master shape.)
+
+   Proportions follow the outlined master (docs/brand/vyrtel-wordmark-*.svg); all sizes are in em of
+   the word, so the font-size on .brand scales everything:
+   - the V's arms span 1.143em vertically (mark box 2.032em; arms are 54/96 of the box),
+   - the arm ends sit on the word's baseline,
+   - "y" tucks 0.167em under the iris arm's top cap. */
 .brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 700;
+  display: inline-flex;
+  align-items: flex-end;
   color: var(--text);
-  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
 }
 
 .brand:hover {
   text-decoration: none;
+}
+
+.brand-mark {
+  width: 2.032em;
+  height: 2.032em;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.brand-node {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.brand-word {
+  display: inline-block;
+  max-width: 0;
+  opacity: 0;
+  /* Clip only horizontally (for the reveal), so the "y" descender can never be cut off. */
+  overflow-x: clip;
+  overflow-y: visible;
+  white-space: nowrap;
+  line-height: 0;
+  /* Baseline (0.2412em above the outline's box bottom) on the arm ends, 0.508em above the mark's
+     box bottom. Collapsed it takes no space at all. */
+  margin: 0 0 0.2668em 0;
+  transform: translateX(-0.35em);
+  transition:
+    max-width var(--motion-slow) var(--ease-enter),
+    margin var(--motion-slow) var(--ease-enter),
+    opacity var(--motion-brand) var(--ease) 120ms,
+    transform var(--motion-slow) var(--ease-enter);
+}
+
+.brand-word svg {
+  display: block;
+  height: 1.21em;
+  overflow: visible;
+}
+
+.brand:hover .brand-word,
+.brand:focus-visible .brand-word,
+.brand.is-expanded .brand-word {
+  max-width: 3em;
+  opacity: 1;
+  transform: translateX(0);
+  /* Tuck under the iris arm; the right margin keeps the gap after "l" equal to the gap after the
+     V alone (whose box has 0.275em of empty space right of its ink, vs ~0.02em after "l"). */
+  margin-left: -0.457em;
+  margin-right: 0.253em;
+}
+
+.brand:hover .brand-node,
+.brand:focus-visible .brand-node {
+  animation: node-pulse var(--motion-slow) var(--ease);
+}
+
+@keyframes node-pulse {
+  50% {
+    transform: scale(1.25);
+  }
+}
+
+/* Top bar: the V's ink lines up with the page's 16px content edge, and the space from the
+   brand's ink to "Logs" equals the 24px text-to-text spacing between nav items (gap 24 + link
+   padding 10, minus the 0.275em empty space either side of the V's ink). The nav slides
+   along as the word reveals, so the spacing holds in both states. */
+.topbar .brand {
+  font-size: 17px;
+  margin-left: -0.275em;
+  margin-right: calc(0.275em * -1 - 10px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 .nav,
@@ -179,6 +332,9 @@ h3 {
   background: none;
   border: 0;
   cursor: pointer;
+  transition:
+    background var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
 }
 
 .nav-link:hover {
@@ -199,10 +355,6 @@ h3 {
 
 .page {
   padding: 16px;
-}
-
-.page.narrow {
-  max-width: 1200px;
 }
 
 .page-head {
@@ -250,13 +402,31 @@ h3 {
 }
 
 .btn-primary {
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
-  color: #fff;
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+  font-weight: 600;
 }
 
 .btn-primary:hover {
-  background: var(--accent);
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+
+/* Icon-only run button: a mint play triangle (Mint Dark in light mode, via --primary). */
+.btn-run {
+  justify-content: center;
+  width: 36px;
+  padding: 0;
+  color: var(--primary);
+  transition:
+    background var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease);
+}
+
+.btn-run:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, var(--bg-raised));
 }
 
 .btn-active {
@@ -388,7 +558,6 @@ h3 {
   border: 1px solid var(--border-strong);
   background: var(--bg-raised);
   cursor: pointer;
-  min-width: 92px;
 }
 
 .live-dot {
@@ -401,22 +570,26 @@ h3 {
   background: var(--error);
 }
 
+.is-connecting .live-dot {
+  background: var(--warn);
+}
+
 .is-live {
   border-color: var(--ok);
 }
 
 .is-live .live-dot {
   background: var(--ok);
-  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent);
   animation: pulse 1.6s infinite;
 }
 
 @keyframes pulse {
   70% {
-    box-shadow: 0 0 0 6px rgba(34, 197, 94, 0);
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--ok) 0%, transparent);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 0%, transparent);
   }
 }
 
@@ -875,11 +1048,11 @@ h3 {
 }
 
 .val-number {
-  color: #a5b4fc;
+  color: var(--val-number);
 }
 
 .val-boolean {
-  color: #f9a8d4;
+  color: var(--val-boolean);
 }
 
 .val-null {
@@ -1265,7 +1438,7 @@ h3 {
 
 .wf-dur.inside {
   margin: 0 6px 0 0;
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .wf-details {
@@ -1294,7 +1467,7 @@ h3 {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: color-mix(in srgb, var(--midnight) 70%, transparent);
   display: grid;
   place-items: center;
   z-index: 10;
@@ -1344,10 +1517,25 @@ h3 {
   gap: 12px;
 }
 
-.login-card h1 {
+.login-brand {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 28px;
+}
+
+.login-brand .brand {
+  /* Align the V's ink, not its box, with the card's content edge. */
+  margin-left: -0.275em;
+}
+
+.brand-tagline {
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.015em;
 }
 
 .login-card .input {

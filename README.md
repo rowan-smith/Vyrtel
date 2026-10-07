@@ -1,6 +1,11 @@
-# Vyrtel
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/vyrtel-lockup-tagline-dark.svg">
+    <img alt="Vyrtel. View. Trace. Understand." src="docs/brand/vyrtel-lockup-tagline-light.svg" height="110">
+  </picture>
+</p>
 
-**Small, fast, self-hosted observability.** Structured logs, traces and
+Small, fast, self-hosted observability. Structured logs, traces and
 metrics in one ~11 MB binary with one data directory and no external
 services.
 
@@ -14,6 +19,7 @@ docker run -p 8080:8080 -v vyrtel-data:/data vyrtel
 ```
 Vyrtel 0.1.0
 
+Web UI              http://localhost:8080
 Data directory      /data
 HTTP                http://0.0.0.0:8080
 OTLP HTTP           http://0.0.0.0:8080/v1/*
@@ -31,8 +37,8 @@ cluster configuration.
 
 ![Logs: query, filter panel, diagnostics and an expanded event](docs/screenshots/logs.png)
 
-| Trace waterfall with related logs | Storage statistics |
-|---|---|
+| Trace waterfall with related logs         | Storage statistics                       |
+|-------------------------------------------|------------------------------------------|
 | ![Trace view](docs/screenshots/trace.png) | ![Storage](docs/screenshots/storage.png) |
 
 (Regenerate with `SCREENSHOTS=1 npx playwright test screenshots` in `web/`.)
@@ -188,6 +194,7 @@ shape; see [docs/testing.md](docs/testing.md) for method):
 * [Development](docs/development.md)
 * [Testing](docs/testing.md)
 * [Roadmap](docs/roadmap.md)
+* [Brand guide](docs/brand/README.md) — name, voice, logo, Aurora palette, typography, motion
 
 ## Current limitations
 

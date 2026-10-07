@@ -118,7 +118,7 @@ export function AlertsPage() {
   });
 
   return (
-    <div className="page narrow">
+    <div className="page">
       <div className="page-head">
         <h1>Alerts</h1>
         <button className="btn btn-primary" onClick={() => setEditing('new')}>

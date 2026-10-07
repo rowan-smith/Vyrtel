@@ -35,7 +35,7 @@ export function DashboardsPage() {
   };
 
   return (
-    <div className="page narrow">
+    <div className="page">
       <div className="page-head">
         <h1>Dashboards</h1>
         <form
