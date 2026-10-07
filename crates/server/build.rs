@@ -10,9 +10,9 @@ fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let dist = manifest.join("../../web/dist");
     println!("cargo:rerun-if-changed=../../web/dist");
-    println!("cargo:rerun-if-env-changed=OBSERVER_WEB_DIST");
+    println!("cargo:rerun-if-env-changed=VYRTEL_WEB_DIST");
 
-    let dir = if let Ok(custom) = std::env::var("OBSERVER_WEB_DIST") {
+    let dir = if let Ok(custom) = std::env::var("VYRTEL_WEB_DIST") {
         PathBuf::from(custom)
     } else if dist.join("index.html").exists() {
         dist.canonicalize().unwrap()
@@ -21,13 +21,13 @@ fn main() {
         std::fs::create_dir_all(&out).unwrap();
         std::fs::write(
             out.join("index.html"),
-            "<!doctype html><html><head><meta charset=\"utf-8\"><title>Observer</title></head>\
-             <body style=\"font-family:system-ui;padding:2rem\"><h1>Observer</h1>\
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>Vyrtel</title></head>\
+             <body style=\"font-family:system-ui;padding:2rem\"><h1>Vyrtel</h1>\
              <p>The web UI was not built into this binary. Run <code>npm ci &amp;&amp; npm run build</code> \
              in <code>web/</code> and rebuild the server.</p><p>The HTTP API is fully available.</p></body></html>",
         )
         .unwrap();
         out
     };
-    println!("cargo:rustc-env=OBSERVER_WEB_DIST={}", dir.display());
+    println!("cargo:rustc-env=VYRTEL_WEB_DIST={}", dir.display());
 }

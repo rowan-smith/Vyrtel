@@ -1,4 +1,4 @@
-# Observer
+# Vyrtel
 
 **Small, fast, self-hosted observability.** Structured logs, traces and
 metrics in one ~11 MB binary with one data directory and no external
@@ -8,11 +8,11 @@ services.
 > observed.
 
 ```
-docker run -p 8080:8080 -v observer-data:/data observer
+docker run -p 8080:8080 -v vyrtel-data:/data vyrtel
 ```
 
 ```
-Observer 0.1.0
+Vyrtel 0.1.0
 
 Data directory      /data
 HTTP                http://0.0.0.0:8080
@@ -41,7 +41,7 @@ cluster configuration.
 
 Most observability stacks need a search cluster, a time-series database, a
 message queue and a few gigabytes of RAM before they show their first log
-line. Observer is for teams and side projects that want good structured-log
+line. Vyrtel is for teams and side projects that want good structured-log
 search, basic tracing and metrics **without operating infrastructure**:
 
 * one process (HTTP API, OTLP ingestion, query engine, storage, metadata,
@@ -80,7 +80,7 @@ search, basic tracing and metrics **without operating infrastructure**:
 Requirements: Rust (stable), a C compiler, Node.js 22+.
 
 ```bash
-git clone <this repository> observer && cd observer
+git clone <this repository> vyrtel && cd vyrtel
 cd web && npm ci && npm run build && cd ..
 cargo run --release -p server
 ```
@@ -88,11 +88,11 @@ cargo run --release -p server
 ### Docker
 
 ```bash
-docker build -t observer .
-docker run -p 8080:8080 -v observer-data:/data observer
+docker build -t vyrtel .
+docker run -p 8080:8080 -v vyrtel-data:/data vyrtel
 ```
 
-(For a bind mount such as `-v ./observer-data:/data` on Linux, make the
+(For a bind mount such as `-v ./vyrtel-data:/data` on Linux, make the
 directory writable by uid 65532 first — see
 [configuration](docs/configuration.md#docker-and-bind-mounts).)
 
@@ -199,7 +199,7 @@ shape; see [docs/testing.md](docs/testing.md) for method):
   counters, no percentiles yet).
 * Alerts: log-count thresholds with a generic webhook only.
 * Authentication is a single admin user plus API keys; it is **off by
-  default** — enable it before exposing Observer, and terminate TLS in a
+  default** — enable it before exposing Vyrtel, and terminate TLS in a
   reverse proxy.
 * Retention is per signal at segment granularity.
 

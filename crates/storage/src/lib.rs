@@ -1,4 +1,4 @@
-//! Observer's telemetry storage engine.
+//! Vyrtel's telemetry storage engine.
 //!
 //! * [`wal`] — append-only write-ahead log with per-record CRCs
 //! * [`segment`] — immutable, block-compressed, versioned segment files

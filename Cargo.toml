@@ -16,7 +16,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.89"
-repository = "https://github.com/observer/observer"
+repository = "https://github.com/vyrtel/vyrtel"
 
 [workspace.dependencies]
 # Internal crates

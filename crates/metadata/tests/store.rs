@@ -176,7 +176,7 @@ fn alert_state_transitions_and_history() {
 #[test]
 fn api_keys_store_hashes_only() {
     let m = Metadata::open_in_memory().unwrap();
-    let k = m.create_api_key("ci", "obs_abcd", "hash-1", "ingest").unwrap();
+    let k = m.create_api_key("ci", "vyr_abcd", "hash-1", "ingest").unwrap();
     assert_eq!(m.find_api_key("hash-1").unwrap(), Some((k.id, "ingest".to_string())));
     assert_eq!(m.find_api_key("nope").unwrap(), None);
     m.touch_api_key(k.id).unwrap();

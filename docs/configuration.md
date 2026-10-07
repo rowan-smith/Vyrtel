@@ -1,13 +1,13 @@
 # Configuration
 
-Observer runs with no configuration at all. When you need to change
+Vyrtel runs with no configuration at all. When you need to change
 something, use any combination of:
 
-1. a TOML file (`--config observer.toml`, or `./observer.toml` if present),
-2. `OBSERVER_*` environment variables,
+1. a TOML file (`--config vyrtel.toml`, or `./vyrtel.toml` if present),
+2. `VYRTEL_*` environment variables,
 3. command-line flags,
 
-in increasing order of precedence. `observer config` prints the effective
+in increasing order of precedence. `vyrtel config` prints the effective
 configuration; `GET /api/v1/system/config` returns it (without secrets).
 Unknown keys are rejected so typos do not silently do nothing.
 
@@ -39,7 +39,7 @@ queue_capacity = 10000
 
 [auth]
 enabled = true
-admin_password = "change-me"     # or OBSERVER_AUTH_ADMIN_PASSWORD
+admin_password = "change-me"     # or VYRTEL_AUTH_ADMIN_PASSWORD
 ```
 
 ## Reference
@@ -48,20 +48,20 @@ admin_password = "change-me"     # or OBSERVER_AUTH_ADMIN_PASSWORD
 
 | Key    | Default        | Env                    | Description                                   |
 |--------|----------------|------------------------|-----------------------------------------------|
-| `bind` | `0.0.0.0:8080` | `OBSERVER_SERVER_BIND` | Listen address for the UI, API and OTLP/HTTP. |
+| `bind` | `0.0.0.0:8080` | `VYRTEL_SERVER_BIND` | Listen address for the UI, API and OTLP/HTTP. |
 
 ### `[storage]`
 
 | Key                   | Default   | Env                                    | Description                                                                                                                                        |
 |-----------------------|-----------|----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------|
-| `path`                | `./data`  | `OBSERVER_STORAGE_PATH`                | Data directory. Everything persistent lives here.                                                                                                  |
-| `max_memory`          | `512MB`   | `OBSERVER_STORAGE_MAX_MEMORY`          | Global memory budget (see below). Minimum 64MB.                                                                                                    |
-| `segment_target_size` | `64MB`    | `OBSERVER_STORAGE_SEGMENT_TARGET_SIZE` | Seal the active segment at this *uncompressed in-memory* size (capped by the memory budget). Compressed segment files are typically 5–15× smaller. |
-| `segment_max_age`     | `5m`      | `OBSERVER_STORAGE_SEGMENT_MAX_AGE`     | Seal the active segment after this long, even if small.                                                                                            |
+| `path`                | `./data`  | `VYRTEL_STORAGE_PATH`                | Data directory. Everything persistent lives here.                                                                                                  |
+| `max_memory`          | `512MB`   | `VYRTEL_STORAGE_MAX_MEMORY`          | Global memory budget (see below). Minimum 64MB.                                                                                                    |
+| `segment_target_size` | `64MB`    | `VYRTEL_STORAGE_SEGMENT_TARGET_SIZE` | Seal the active segment at this *uncompressed in-memory* size (capped by the memory budget). Compressed segment files are typically 5–15× smaller. |
+| `segment_max_age`     | `5m`      | `VYRTEL_STORAGE_SEGMENT_MAX_AGE`     | Seal the active segment after this long, even if small.                                                                                            |
 | `segment_max_events`  | `2000000` | –                                      | Seal after this many events.                                                                                                                       |
-| `durability`          | `normal`  | `OBSERVER_STORAGE_DURABILITY`          | `normal`: acknowledge after writing to the OS, fsync every `fsync_interval`. `strict`: fsync before every acknowledgement (group-committed).       |
-| `fsync_interval`      | `1s`      | `OBSERVER_STORAGE_FSYNC_INTERVAL`      | WAL fsync period in `normal` mode.                                                                                                                 |
-| `compaction`          | `true`    | `OBSERVER_STORAGE_COMPACTION`          | Merge small segments (e.g. sealed by age on quiet systems).                                                                                        |
+| `durability`          | `normal`  | `VYRTEL_STORAGE_DURABILITY`          | `normal`: acknowledge after writing to the OS, fsync every `fsync_interval`. `strict`: fsync before every acknowledgement (group-committed).       |
+| `fsync_interval`      | `1s`      | `VYRTEL_STORAGE_FSYNC_INTERVAL`      | WAL fsync period in `normal` mode.                                                                                                                 |
+| `compaction`          | `true`    | `VYRTEL_STORAGE_COMPACTION`          | Merge small segments (e.g. sealed by age on quiet systems).                                                                                        |
 | `zstd_level`          | `3`       | –                                      | Compression level 1–22. Higher is smaller and slower to write.                                                                                     |
 | `block_events`        | `1024`    | –                                      | Events per compressed block.                                                                                                                       |
 
@@ -69,9 +69,9 @@ admin_password = "change-me"     # or OBSERVER_AUTH_ADMIN_PASSWORD
 
 | Key       | Default | Env                          |
 |-----------|---------|------------------------------|
-| `logs`    | `30d`   | `OBSERVER_RETENTION_LOGS`    |
-| `traces`  | `14d`   | `OBSERVER_RETENTION_TRACES`  |
-| `metrics` | `30d`   | `OBSERVER_RETENTION_METRICS` |
+| `logs`    | `30d`   | `VYRTEL_RETENTION_LOGS`    |
+| `traces`  | `14d`   | `VYRTEL_RETENTION_TRACES`  |
+| `metrics` | `30d`   | `VYRTEL_RETENTION_METRICS` |
 
 Use `"forever"` (or `0`) to keep data indefinitely. Retention deletes whole
 segments whose newest event is older than the period; it runs every 30
@@ -82,16 +82,16 @@ by up to one segment's time span.
 
 | Key                | Default | Env                                | Description                                                                                                      |
 |--------------------|---------|------------------------------------|------------------------------------------------------------------------------------------------------------------|
-| `max_request_size` | `16MB`  | `OBSERVER_INGEST_MAX_REQUEST_SIZE` | Maximum body size (after gzip decoding). Larger requests get 413.                                                |
-| `queue_capacity`   | `10000` | `OBSERVER_INGEST_QUEUE_CAPACITY`   | Events waiting to be written, per signal. When full, requests get 429. A single batch larger than this gets 413. |
+| `max_request_size` | `16MB`  | `VYRTEL_INGEST_MAX_REQUEST_SIZE` | Maximum body size (after gzip decoding). Larger requests get 413.                                                |
+| `queue_capacity`   | `10000` | `VYRTEL_INGEST_QUEUE_CAPACITY`   | Events waiting to be written, per signal. When full, requests get 429. A single batch larger than this gets 413. |
 | `ack_timeout`      | `30s`   | –                                  | Give up waiting for a write acknowledgement (503).                                                               |
 
 ### `[query]`
 
 | Key                | Default | Env                             | Description                                                |
 |--------------------|---------|---------------------------------|------------------------------------------------------------|
-| `timeout`          | `30s`   | `OBSERVER_QUERY_TIMEOUT`        | Per-query time limit (504).                                |
-| `max_concurrent`   | `4`     | `OBSERVER_QUERY_MAX_CONCURRENT` | Queries executing at once; more wait up to 10 s, then 503. |
+| `timeout`          | `30s`   | `VYRTEL_QUERY_TIMEOUT`        | Per-query time limit (504).                                |
+| `max_concurrent`   | `4`     | `VYRTEL_QUERY_MAX_CONCURRENT` | Queries executing at once; more wait up to 10 s, then 503. |
 | `max_scan_bytes`   | `4GB`   | –                               | Compressed bytes one query may read (422 beyond).          |
 | `max_results`      | `1000`  | –                               | Maximum page size.                                         |
 | `max_live_streams` | `64`    | –                               | Concurrent live-tail connections.                          |
@@ -100,34 +100,34 @@ by up to one segment's time span.
 
 | Key              | Default | Env                            | Description                                                                                                                                       |
 |------------------|---------|--------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
-| `enabled`        | `false` | `OBSERVER_AUTH_ENABLED`        | Require API keys for ingestion and an admin login for the UI/API.                                                                                 |
-| `admin_username` | `admin` | `OBSERVER_AUTH_ADMIN_USERNAME` |                                                                                                                                                   |
-| `admin_password` | –       | `OBSERVER_AUTH_ADMIN_PASSWORD` | Hashed (Argon2id) into the metadata store at startup. If unset on first start with auth enabled, a random password is generated and printed once. |
+| `enabled`        | `false` | `VYRTEL_AUTH_ENABLED`        | Require API keys for ingestion and an admin login for the UI/API.                                                                                 |
+| `admin_username` | `admin` | `VYRTEL_AUTH_ADMIN_USERNAME` |                                                                                                                                                   |
+| `admin_password` | –       | `VYRTEL_AUTH_ADMIN_PASSWORD` | Hashed (Argon2id) into the metadata store at startup. If unset on first start with auth enabled, a random password is generated and printed once. |
 | `session_ttl`    | `7d`    | –                              | Login session lifetime.                                                                                                                           |
 
 > **Security note.** With `enabled = false` (the default, for zero-setup
 > local use) anyone who can reach the port can read and write data. Enable
-> authentication before exposing Observer beyond a trusted network, and put
-> it behind TLS (a reverse proxy) — Observer itself serves plain HTTP.
+> authentication before exposing Vyrtel beyond a trusted network, and put
+> it behind TLS (a reverse proxy) — Vyrtel itself serves plain HTTP.
 
 ### `[alerts]`
 
 | Key               | Default | Env                       | Description                         |
 |-------------------|---------|---------------------------|-------------------------------------|
-| `enabled`         | `true`  | `OBSERVER_ALERTS_ENABLED` | Run the background alert evaluator. |
+| `enabled`         | `true`  | `VYRTEL_ALERTS_ENABLED` | Run the background alert evaluator. |
 | `webhook_timeout` | `10s`   | –                         | Per-attempt webhook timeout.        |
 
-### `[log]` — Observer's own logs
+### `[log]` — Vyrtel's own logs
 
 | Key      | Default | Env                   | Description                                                               |
 |----------|---------|-----------------------|---------------------------------------------------------------------------|
-| `level`  | `info`  | `OBSERVER_LOG_LEVEL`  | `tracing` filter, e.g. `debug` or `info,storage=debug`.                   |
-| `format` | `text`  | `OBSERVER_LOG_FORMAT` | `text` or `json`. Written to stderr; never ingested into Observer itself. |
+| `level`  | `info`  | `VYRTEL_LOG_LEVEL`  | `tracing` filter, e.g. `debug` or `info,storage=debug`.                   |
+| `format` | `text`  | `VYRTEL_LOG_FORMAT` | `text` or `json`. Written to stderr; never ingested into Vyrtel itself. |
 
 ## Command line
 
 ```
-observer [OPTIONS] [COMMAND]
+vyrtel [OPTIONS] [COMMAND]
 
 Commands:
   serve        Run the server (default)
@@ -168,6 +168,6 @@ volumes work out of the box. With a bind mount on Linux, make the host
 directory writable for that user first:
 
 ```bash
-mkdir -p observer-data && sudo chown 65532:65532 observer-data
-docker run -p 8080:8080 -v ./observer-data:/data observer
+mkdir -p vyrtel-data && sudo chown 65532:65532 vyrtel-data
+docker run -p 8080:8080 -v ./vyrtel-data:/data vyrtel
 ```

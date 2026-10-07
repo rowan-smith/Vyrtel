@@ -17,7 +17,7 @@ crates/storage     WAL, segments, indexes, recovery
 crates/query       query language and engine
 crates/ingest      native JSON + OTLP parsing
 crates/metadata    SQLite metadata store
-crates/server      HTTP server and the `observer` binary
+crates/server      HTTP server and the `vyrtel` binary
 tools/loadgen      load generator
 web/               React + TypeScript UI (Vite)
 tests/integration  end-to-end Rust tests against a real server
@@ -43,14 +43,14 @@ npm ci
 npm run dev        # http://localhost:5173, proxies /api and /v1 to :8080
 ```
 
-Set `OBSERVER_URL=http://127.0.0.1:9090` to proxy to a different server.
+Set `VYRTEL_URL=http://127.0.0.1:9090` to proxy to a different server.
 
 ## Running both as one binary
 
 ```bash
 cd web && npm ci && npm run build && cd ..
 cargo build --release -p server
-./target/release/observer
+./target/release/vyrtel
 ```
 
 `crates/server/build.rs` embeds `web/dist` when it exists (rebuild the
@@ -73,7 +73,7 @@ The OTLP fixtures contain `{{now-…}}` placeholders; see
 
 ## Debugging
 
-* `--log-level debug` (or `OBSERVER_LOG_LEVEL=storage=debug,info`) logs
+* `--log-level debug` (or `VYRTEL_LOG_LEVEL=storage=debug,info`) logs
   sealing, compaction and retention decisions.
 * Every query response carries `diagnostics`; the UI shows them under the
   results ("▸ N results · 12 ms …").
@@ -81,7 +81,7 @@ The OTLP fixtures contain `{{now-…}}` placeholders; see
   active segment sizes, memory budgets and storage totals.
 * Damaged files found at startup are moved to `data/quarantine/` and logged
   at WARN/ERROR with the reason.
-* `observer config` prints the effective configuration.
+* `vyrtel config` prints the effective configuration.
 
 ## Formatting and linting
 
@@ -95,8 +95,8 @@ cd web && npm run lint && npm run typecheck
 
 ```bash
 cd web && npm ci && npm run build && cd ..
-cargo build --release --locked -p server     # target/release/observer
-docker build -t observer .
+cargo build --release --locked -p server     # target/release/vyrtel
+docker build -t vyrtel .
 ```
 
 Releases are produced by `.github/workflows/release.yml` when a `v*` tag is

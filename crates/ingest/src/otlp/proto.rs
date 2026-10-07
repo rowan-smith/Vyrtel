@@ -1,5 +1,5 @@
 //! The subset of the OTLP protobuf schema (opentelemetry-proto v1) that
-//! Observer reads, written out by hand with `prost` derives. Field numbers
+//! Vyrtel reads, written out by hand with `prost` derives. Field numbers
 //! match the upstream `.proto` files exactly; unknown fields are skipped by
 //! prost, so newer producers remain compatible.
 

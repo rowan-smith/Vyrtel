@@ -1,6 +1,6 @@
 [package]
 name = "telemetry"
-description = "Common telemetry model (logs, spans, metrics) shared by every Observer crate"
+description = "Common telemetry model (logs, spans, metrics) shared by every Vyrtel crate"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

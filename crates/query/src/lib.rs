@@ -1,4 +1,4 @@
-//! Observer's query language and execution engine.
+//! Vyrtel's query language and execution engine.
 //!
 //! Parsing ([`parser`]) produces an [`ast::Expr`] and knows nothing about
 //! storage. Execution compiles the AST ([`eval`]), prunes segments and

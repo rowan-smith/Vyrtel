@@ -137,7 +137,7 @@ cargo build -p server
 cd web && npx playwright install chromium && npm run e2e
 ```
 
-Set `OBSERVER_BIN` to test a different binary (e.g. a release build).
+Set `VYRTEL_BIN` to test a different binary (e.g. a release build).
 
 ## Benchmarks
 

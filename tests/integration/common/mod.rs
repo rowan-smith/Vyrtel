@@ -1,4 +1,4 @@
-//! Test harness: runs a real Observer server on an ephemeral port.
+//! Test harness: runs a real Vyrtel server on an ephemeral port.
 
 #![allow(dead_code)]
 

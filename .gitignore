@@ -1,7 +1,7 @@
 /target
 /data
 /data-dev
-/observer.toml
+/vyrtel.toml
 /web/node_modules
 /web/dist
 /web/data-dev

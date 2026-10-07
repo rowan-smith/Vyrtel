@@ -36,7 +36,7 @@ async fn ingestion_requires_a_valid_key() {
     let r = s
         .client
         .post(s.u("/api/v1/events"))
-        .bearer_auth("obs_not_a_real_key")
+        .bearer_auth("vyr_not_a_real_key")
         .json(&json!({"message": "x"}))
         .send()
         .await

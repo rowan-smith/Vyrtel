@@ -1,15 +1,15 @@
 # Development convenience only. Production needs nothing but `docker run`
-# (see README). This builds the image locally and keeps data in ./observer-data.
+# (see README). This builds the image locally and keeps data in ./vyrtel-data.
 services:
-  observer:
+  vyrtel:
     build: .
-    image: observer:dev
+    image: vyrtel:dev
     ports:
       - "8080:8080"
     volumes:
-      - ./observer-data:/data
+      - ./vyrtel-data:/data
     environment:
-      OBSERVER_LOG_LEVEL: info
-      # OBSERVER_AUTH_ENABLED: "true"
-      # OBSERVER_AUTH_ADMIN_PASSWORD: change-me
+      VYRTEL_LOG_LEVEL: info
+      # VYRTEL_AUTH_ENABLED: "true"
+      # VYRTEL_AUTH_ADMIN_PASSWORD: change-me
     restart: unless-stopped

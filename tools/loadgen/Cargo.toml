@@ -1,6 +1,6 @@
 [package]
 name = "loadgen"
-description = "Generates realistic structured telemetry against an Observer server"
+description = "Generates realistic structured telemetry against a Vyrtel server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

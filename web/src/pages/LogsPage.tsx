@@ -46,7 +46,7 @@ export function LogsPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [newIds, setNewIds] = useState<Set<string>>(new Set());
   const [live, setLive] = useState(false);
-  const [showFilters, setShowFilters] = useState(() => loadPref('observer.filters', true));
+  const [showFilters, setShowFilters] = useState(() => loadPref('vyrtel.filters', true));
   const [facets, setFacets] = useState<{ fields: Facet[]; sampled: number }>({ fields: [], sampled: 0 });
   const [facetsLoading, setFacetsLoading] = useState(false);
   const [histogram, setHistogram] = useState<HistogramBucket[]>([]);
@@ -167,7 +167,7 @@ export function LogsPage() {
             aria-pressed={showFilters}
             onClick={() => {
               setShowFilters((v) => {
-                savePref('observer.filters', !v);
+                savePref('vyrtel.filters', !v);
                 return !v;
               });
             }}

@@ -24,7 +24,7 @@ use sha2::{Digest, Sha256};
 use crate::error::ApiError;
 use crate::state::SharedState;
 
-pub const SESSION_COOKIE: &str = "observer_session";
+pub const SESSION_COOKIE: &str = "vyrtel_session";
 
 #[derive(Debug, Clone)]
 pub enum Principal {
@@ -49,7 +49,7 @@ pub fn random_token(bytes: usize) -> String {
 
 /// Generate an API key: returns (plaintext, display prefix, hash).
 pub fn new_api_key() -> (String, String, String) {
-    let key = format!("obs_{}", random_token(32));
+    let key = format!("vyr_{}", random_token(32));
     let prefix = key[..12].to_string();
     let hash = sha256_hex(&key);
     (key, prefix, hash)
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn api_keys() {
         let (key, prefix, hash) = new_api_key();
-        assert!(key.starts_with("obs_") && key.len() == 68);
+        assert!(key.starts_with("vyr_") && key.len() == 68);
         assert!(key.starts_with(&prefix));
         assert_eq!(hash, sha256_hex(&key));
         assert_ne!(new_api_key().0, key);
@@ -226,7 +226,7 @@ mod tests {
         h.insert(header::AUTHORIZATION, HeaderValue::from_static("Basic Zm9v"));
         assert_eq!(api_key_from(&h), None);
         let mut h = HeaderMap::new();
-        h.insert(header::COOKIE, HeaderValue::from_static("a=1; observer_session=tok; b=2"));
+        h.insert(header::COOKIE, HeaderValue::from_static("a=1; vyrtel_session=tok; b=2"));
         assert_eq!(session_from(&h).as_deref(), Some("tok"));
     }
 }

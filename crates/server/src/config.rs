@@ -1,4 +1,4 @@
-//! Configuration: defaults ← TOML file ← `OBSERVER_*` environment ← CLI.
+//! Configuration: defaults ← TOML file ← `VYRTEL_*` environment ← CLI.
 //!
 //! Every option is documented in docs/configuration.md.
 
@@ -307,7 +307,7 @@ impl Default for QuerySection {
 #[serde(default, deny_unknown_fields)]
 pub struct AuthSection {
     /// When false (the default), the UI and API are open. Enable before
-    /// exposing Observer beyond a trusted network.
+    /// exposing Vyrtel beyond a trusted network.
     pub enabled: bool,
     pub admin_username: String,
     /// Plaintext admin password from config/env. Hashed into the metadata
@@ -371,27 +371,27 @@ pub struct Config {
 
 /// Every supported environment variable, for docs and `--help`.
 pub const ENV_VARS: &[&str] = &[
-    "OBSERVER_SERVER_BIND",
-    "OBSERVER_STORAGE_PATH",
-    "OBSERVER_STORAGE_MAX_MEMORY",
-    "OBSERVER_STORAGE_SEGMENT_TARGET_SIZE",
-    "OBSERVER_STORAGE_SEGMENT_MAX_AGE",
-    "OBSERVER_STORAGE_DURABILITY",
-    "OBSERVER_STORAGE_FSYNC_INTERVAL",
-    "OBSERVER_STORAGE_COMPACTION",
-    "OBSERVER_RETENTION_LOGS",
-    "OBSERVER_RETENTION_TRACES",
-    "OBSERVER_RETENTION_METRICS",
-    "OBSERVER_INGEST_MAX_REQUEST_SIZE",
-    "OBSERVER_INGEST_QUEUE_CAPACITY",
-    "OBSERVER_QUERY_TIMEOUT",
-    "OBSERVER_QUERY_MAX_CONCURRENT",
-    "OBSERVER_AUTH_ENABLED",
-    "OBSERVER_AUTH_ADMIN_USERNAME",
-    "OBSERVER_AUTH_ADMIN_PASSWORD",
-    "OBSERVER_ALERTS_ENABLED",
-    "OBSERVER_LOG_LEVEL",
-    "OBSERVER_LOG_FORMAT",
+    "VYRTEL_SERVER_BIND",
+    "VYRTEL_STORAGE_PATH",
+    "VYRTEL_STORAGE_MAX_MEMORY",
+    "VYRTEL_STORAGE_SEGMENT_TARGET_SIZE",
+    "VYRTEL_STORAGE_SEGMENT_MAX_AGE",
+    "VYRTEL_STORAGE_DURABILITY",
+    "VYRTEL_STORAGE_FSYNC_INTERVAL",
+    "VYRTEL_STORAGE_COMPACTION",
+    "VYRTEL_RETENTION_LOGS",
+    "VYRTEL_RETENTION_TRACES",
+    "VYRTEL_RETENTION_METRICS",
+    "VYRTEL_INGEST_MAX_REQUEST_SIZE",
+    "VYRTEL_INGEST_QUEUE_CAPACITY",
+    "VYRTEL_QUERY_TIMEOUT",
+    "VYRTEL_QUERY_MAX_CONCURRENT",
+    "VYRTEL_AUTH_ENABLED",
+    "VYRTEL_AUTH_ADMIN_USERNAME",
+    "VYRTEL_AUTH_ADMIN_PASSWORD",
+    "VYRTEL_ALERTS_ENABLED",
+    "VYRTEL_LOG_LEVEL",
+    "VYRTEL_LOG_FORMAT",
 ];
 
 fn parse_bool(s: &str) -> Result<bool, String> {
@@ -412,44 +412,44 @@ impl Config {
         Self::from_toml(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// Apply `OBSERVER_<SECTION>_<KEY>` overrides.
+    /// Apply `VYRTEL_<SECTION>_<KEY>` overrides.
     pub fn apply_env(&mut self, get: impl Fn(&str) -> Option<String>) -> Result<(), String> {
         let wrap = |k: &str, r: Result<(), String>| r.map_err(|e| format!("{k}: {e}"));
         for key in ENV_VARS {
             let Some(v) = get(key) else { continue };
             let r: Result<(), String> = (|| {
                 match *key {
-                    "OBSERVER_SERVER_BIND" => self.server.bind = v.clone(),
-                    "OBSERVER_STORAGE_PATH" => self.storage.path = PathBuf::from(&v),
-                    "OBSERVER_STORAGE_MAX_MEMORY" => self.storage.max_memory = ByteSize::parse(&v)?,
-                    "OBSERVER_STORAGE_SEGMENT_TARGET_SIZE" => self.storage.segment_target_size = ByteSize::parse(&v)?,
-                    "OBSERVER_STORAGE_SEGMENT_MAX_AGE" => self.storage.segment_max_age = parse_duration(&v)?,
-                    "OBSERVER_STORAGE_DURABILITY" => {
+                    "VYRTEL_SERVER_BIND" => self.server.bind = v.clone(),
+                    "VYRTEL_STORAGE_PATH" => self.storage.path = PathBuf::from(&v),
+                    "VYRTEL_STORAGE_MAX_MEMORY" => self.storage.max_memory = ByteSize::parse(&v)?,
+                    "VYRTEL_STORAGE_SEGMENT_TARGET_SIZE" => self.storage.segment_target_size = ByteSize::parse(&v)?,
+                    "VYRTEL_STORAGE_SEGMENT_MAX_AGE" => self.storage.segment_max_age = parse_duration(&v)?,
+                    "VYRTEL_STORAGE_DURABILITY" => {
                         self.storage.durability = match v.trim().to_ascii_lowercase().as_str() {
                             "normal" => Durability::Normal,
                             "strict" => Durability::Strict,
                             _ => return Err("must be 'normal' or 'strict'".into()),
                         }
                     }
-                    "OBSERVER_STORAGE_FSYNC_INTERVAL" => self.storage.fsync_interval = parse_duration(&v)?,
-                    "OBSERVER_STORAGE_COMPACTION" => self.storage.compaction = parse_bool(&v)?,
-                    "OBSERVER_RETENTION_LOGS" => self.retention.logs = parse_retention(&v)?,
-                    "OBSERVER_RETENTION_TRACES" => self.retention.traces = parse_retention(&v)?,
-                    "OBSERVER_RETENTION_METRICS" => self.retention.metrics = parse_retention(&v)?,
-                    "OBSERVER_INGEST_MAX_REQUEST_SIZE" => self.ingest.max_request_size = ByteSize::parse(&v)?,
-                    "OBSERVER_INGEST_QUEUE_CAPACITY" => {
+                    "VYRTEL_STORAGE_FSYNC_INTERVAL" => self.storage.fsync_interval = parse_duration(&v)?,
+                    "VYRTEL_STORAGE_COMPACTION" => self.storage.compaction = parse_bool(&v)?,
+                    "VYRTEL_RETENTION_LOGS" => self.retention.logs = parse_retention(&v)?,
+                    "VYRTEL_RETENTION_TRACES" => self.retention.traces = parse_retention(&v)?,
+                    "VYRTEL_RETENTION_METRICS" => self.retention.metrics = parse_retention(&v)?,
+                    "VYRTEL_INGEST_MAX_REQUEST_SIZE" => self.ingest.max_request_size = ByteSize::parse(&v)?,
+                    "VYRTEL_INGEST_QUEUE_CAPACITY" => {
                         self.ingest.queue_capacity = v.trim().parse().map_err(|_| "must be a number".to_string())?
                     }
-                    "OBSERVER_QUERY_TIMEOUT" => self.query.timeout = parse_duration(&v)?,
-                    "OBSERVER_QUERY_MAX_CONCURRENT" => {
+                    "VYRTEL_QUERY_TIMEOUT" => self.query.timeout = parse_duration(&v)?,
+                    "VYRTEL_QUERY_MAX_CONCURRENT" => {
                         self.query.max_concurrent = v.trim().parse().map_err(|_| "must be a number".to_string())?
                     }
-                    "OBSERVER_AUTH_ENABLED" => self.auth.enabled = parse_bool(&v)?,
-                    "OBSERVER_AUTH_ADMIN_USERNAME" => self.auth.admin_username = v.clone(),
-                    "OBSERVER_AUTH_ADMIN_PASSWORD" => self.auth.admin_password = Some(v.clone()),
-                    "OBSERVER_ALERTS_ENABLED" => self.alerts.enabled = parse_bool(&v)?,
-                    "OBSERVER_LOG_LEVEL" => self.log.level = v.clone(),
-                    "OBSERVER_LOG_FORMAT" => {
+                    "VYRTEL_AUTH_ENABLED" => self.auth.enabled = parse_bool(&v)?,
+                    "VYRTEL_AUTH_ADMIN_USERNAME" => self.auth.admin_username = v.clone(),
+                    "VYRTEL_AUTH_ADMIN_PASSWORD" => self.auth.admin_password = Some(v.clone()),
+                    "VYRTEL_ALERTS_ENABLED" => self.alerts.enabled = parse_bool(&v)?,
+                    "VYRTEL_LOG_LEVEL" => self.log.level = v.clone(),
+                    "VYRTEL_LOG_FORMAT" => {
                         self.log.format = match v.trim().to_ascii_lowercase().as_str() {
                             "text" => LogFormat::Text,
                             "json" => LogFormat::Json,
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn example_config_file_is_valid() {
-        let c = Config::from_toml(include_str!("../../../observer.example.toml")).unwrap();
+        let c = Config::from_toml(include_str!("../../../vyrtel.example.toml")).unwrap();
         c.validate().unwrap();
     }
 
@@ -617,11 +617,11 @@ mod tests {
     fn env_overrides() {
         let mut c = Config::default();
         let env = |k: &str| match k {
-            "OBSERVER_SERVER_BIND" => Some("127.0.0.1:9999".to_string()),
-            "OBSERVER_STORAGE_PATH" => Some("/tmp/x".to_string()),
-            "OBSERVER_STORAGE_DURABILITY" => Some("strict".to_string()),
-            "OBSERVER_RETENTION_LOGS" => Some("forever".to_string()),
-            "OBSERVER_AUTH_ENABLED" => Some("true".to_string()),
+            "VYRTEL_SERVER_BIND" => Some("127.0.0.1:9999".to_string()),
+            "VYRTEL_STORAGE_PATH" => Some("/tmp/x".to_string()),
+            "VYRTEL_STORAGE_DURABILITY" => Some("strict".to_string()),
+            "VYRTEL_RETENTION_LOGS" => Some("forever".to_string()),
+            "VYRTEL_AUTH_ENABLED" => Some("true".to_string()),
             _ => None,
         };
         c.apply_env(env).unwrap();
@@ -631,8 +631,8 @@ mod tests {
         assert_eq!(c.retention.logs, None);
         assert!(c.auth.enabled);
         let mut c = Config::default();
-        let err = c.apply_env(|k| (k == "OBSERVER_STORAGE_DURABILITY").then(|| "maybe".to_string())).unwrap_err();
-        assert!(err.contains("OBSERVER_STORAGE_DURABILITY"));
+        let err = c.apply_env(|k| (k == "VYRTEL_STORAGE_DURABILITY").then(|| "maybe".to_string())).unwrap_err();
+        assert!(err.contains("VYRTEL_STORAGE_DURABILITY"));
     }
 
     #[test]

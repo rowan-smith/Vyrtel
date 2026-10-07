@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
-using DotnetLive.Observatory;
+using DotnetLive.Vyrtel;
 using DotnetLive.Services;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -8,8 +8,8 @@ using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var observatoryEndpoint = builder.Configuration["Observatory:Endpoint"] ?? "http://localhost:8080";
-var observatoryApi = builder.Configuration["Observatory:Api"] ?? "";
+var vyrtelEndpoint = builder.Configuration["Vyrtel:Endpoint"] ?? "http://localhost:8080";
+var vyrtelApi = builder.Configuration["Vyrtel:Api"] ?? "";
 var serviceName = builder.Environment.ApplicationName;
 var environmentName = builder.Environment.EnvironmentName;
 
@@ -20,19 +20,19 @@ Log.Logger = new LoggerConfiguration()
     .Enrich.WithProperty("Application", serviceName)
     .Enrich.WithProperty("Environment", environmentName)
     .WriteTo.Console()
-    .WriteTo.Observatory(observatoryEndpoint, serviceName, environmentName, observatoryApi)
+    .WriteTo.Vyrtel(vyrtelEndpoint, serviceName, environmentName, vyrtelApi)
     .CreateLogger();
 
 builder.Host.UseSerilog();
 
-builder.Services.AddHttpClient("observatory", client =>
+builder.Services.AddHttpClient("vyrtel", client =>
 {
-    client.BaseAddress = new Uri(observatoryEndpoint.TrimEnd('/') + "/");
+    client.BaseAddress = new Uri(vyrtelEndpoint.TrimEnd('/') + "/");
     client.Timeout = TimeSpan.FromSeconds(5);
-    if (!string.IsNullOrWhiteSpace(observatoryApi))
+    if (!string.IsNullOrWhiteSpace(vyrtelApi))
     {
         client.DefaultRequestHeaders.Remove("X-Api-Key");
-        client.DefaultRequestHeaders.Add("X-Api-Key", observatoryApi);
+        client.DefaultRequestHeaders.Add("X-Api-Key", vyrtelApi);
     }
 });
 builder.Services.AddHttpClient();
@@ -50,7 +50,7 @@ builder.Services.AddOpenTelemetry()
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation());
 
-builder.Services.AddHostedService<ObservatoryMetricsPublisher>();
+builder.Services.AddHostedService<VyrtelMetricsPublisher>();
 builder.Services.AddHostedService<TrafficSimulator>();
 builder.Services.AddHostedService<TraceJsonExporter>();
 
@@ -243,7 +243,7 @@ app.MapGet("/", () => Results.Ok(new
 {
     service = serviceName,
     environment = environmentName,
-    observatory = observatoryEndpoint,
+    vyrtel = vyrtelEndpoint,
     endpoints = new[]
     {
         "/orders", "/orders/{id}", "/checkout", "/payments", "/payments/fail",
@@ -254,8 +254,8 @@ app.MapGet("/", () => Results.Ok(new
 try
 {
     Log.Information(
-        "DotnetLive starting → Observatory {Endpoint} as {Service}/{Environment}",
-        observatoryEndpoint,
+        "DotnetLive starting → Vyrtel {Endpoint} as {Service}/{Environment}",
+        vyrtelEndpoint,
         serviceName,
         environmentName);
     app.Run();
@@ -325,7 +325,7 @@ public sealed class TraceJsonExporter : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var endpoint = _config["Observatory:Endpoint"] ?? "http://localhost:8080";
+        var endpoint = _config["Vyrtel:Endpoint"] ?? "http://localhost:8080";
         var service = _env.ApplicationName;
         var environment = _env.EnvironmentName;
 
@@ -368,7 +368,7 @@ public sealed class TraceJsonExporter : BackgroundService
 
                 try
                 {
-                    var client = _httpClientFactory.CreateClient("observatory");
+                    var client = _httpClientFactory.CreateClient("vyrtel");
                     client.BaseAddress ??= new Uri(endpoint.TrimEnd('/') + "/");
                     using var response = await client.PostAsJsonAsync("v1/traces", payload, stoppingToken);
                     if (!response.IsSuccessStatusCode)

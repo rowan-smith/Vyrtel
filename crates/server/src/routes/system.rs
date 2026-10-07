@@ -96,7 +96,7 @@ pub async fn storage_stats(State(state): State<SharedState>) -> ApiResult<Json<V
             "hits": stats.cache.hits,
             "misses": stats.cache.misses,
         },
-        "notes": "rawBytes is the uncompressed size in Observer's binary event encoding (sealed segments plus WAL).",
+        "notes": "rawBytes is the uncompressed size in Vyrtel's binary event encoding (sealed segments plus WAL).",
     })))
 }
 
@@ -126,7 +126,7 @@ pub async fn info(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
         .map(|s| s.segment_data_bytes + s.segment_index_bytes + s.wal_bytes)
         .sum();
     Ok(Json(json!({
-        "name": "Observer",
+        "name": "Vyrtel",
         "version": env!("CARGO_PKG_VERSION"),
         "startedAt": state.started_ts,
         "uptimeSeconds": state.started_at.elapsed().as_secs(),

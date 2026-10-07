@@ -32,7 +32,7 @@ jobs:
       - name: Release build
         run: cargo build --release --locked -p server
       - name: Binary size
-        run: ls -l target/release/observer
+        run: ls -l target/release/vyrtel
 
   security:
     name: Dependency checks
@@ -120,15 +120,15 @@ jobs:
           context: .
           push: false
           load: true
-          tags: observer:ci
+          tags: vyrtel:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Smoke test
         run: |
-          docker run -d --name observer -p 8080:8080 observer:ci
+          docker run -d --name vyrtel -p 8080:8080 vyrtel:ci
           for i in $(seq 1 30); do curl -fs localhost:8080/health && break; sleep 1; done
           curl -fs -X POST localhost:8080/api/v1/events -H 'content-type: application/json' -d '{"level":"Error","message":"docker smoke"}'
           curl -fs -X POST localhost:8080/api/v1/query/logs -H 'content-type: application/json' -d '{"query":"message = \"docker smoke\""}' | grep -q 'docker smoke'
-          docker exec observer /observer healthcheck
-          docker inspect --format '{{.State.Health.Status}}' observer
-          docker logs observer
+          docker exec vyrtel /vyrtel healthcheck
+          docker inspect --format '{{.State.Health.Status}}' vyrtel
+          docker logs vyrtel

@@ -67,7 +67,7 @@ pub async fn evaluate_and_record(state: &SharedState, alert: &Alert) -> ApiResul
         tracing::info!(alert = %alert.def.name, from = prev.as_str(), to = ev.status.as_str(), value = ?ev.value, "alert transition");
         if let Some(url) = alert.def.webhook_url.clone().filter(|u| !u.is_empty()) {
             let payload = json!({
-                "source": "observer",
+                "source": "vyrtel",
                 "alert": {
                     "id": alert.id,
                     "name": alert.def.name,

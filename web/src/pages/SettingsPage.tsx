@@ -24,7 +24,7 @@ function StorageTab() {
   return (
     <div>
       <div className="stats" data-testid="storage-stats">
-        <Stat label="Raw ingested" value={formatBytes(s.rawBytes)} hint="Uncompressed size in Observer's binary event encoding" />
+        <Stat label="Raw ingested" value={formatBytes(s.rawBytes)} hint="Uncompressed size in Vyrtel's binary event encoding" />
         <Stat label="Stored" value={formatBytes(s.storedBytes)} hint="Segments + indexes + WAL + metadata on disk" />
         <Stat label="Compression" value={s.compressionRatio ? `${s.compressionRatio.toFixed(1)}×` : '–'} hint="Sealed segments: raw / (data + index)" />
         <Stat label="Segments" value={formatCount(s.segmentCount)} />

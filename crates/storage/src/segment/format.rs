@@ -27,8 +27,8 @@ use crate::encoding::{Reader, Writer};
 use crate::error::DecodeError;
 use crate::index::{Bitmap, Bloom, Hll};
 
-pub const SEGMENT_MAGIC: &[u8; 8] = b"OBSVSEG1";
-pub const FOOTER_MAGIC: &[u8; 8] = b"OBSVSEND";
+pub const SEGMENT_MAGIC: &[u8; 8] = b"VYRTSEG1";
+pub const FOOTER_MAGIC: &[u8; 8] = b"VYRTSEND";
 pub const FORMAT_VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 32;
 pub const FOOTER_LEN: usize = 56;

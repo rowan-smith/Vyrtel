@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! file   := header record*
-//! header := magic "OBSVWAL1" (8) | format u16 | signal u8 | reserved [u8; 5] | wal id u64
+//! header := magic "VYRTWAL1" (8) | format u16 | signal u8 | reserved [u8; 5] | wal id u64
 //! record := version u8 | length u32 | payload [length] | crc32 u32
 //! ```
 //!
@@ -25,7 +25,7 @@ use telemetry::Signal;
 use crate::error::{IoContext, Result};
 use crate::fsutil;
 
-pub const WAL_MAGIC: &[u8; 8] = b"OBSVWAL1";
+pub const WAL_MAGIC: &[u8; 8] = b"VYRTWAL1";
 pub const WAL_FORMAT_VERSION: u16 = 1;
 pub const RECORD_VERSION: u8 = 1;
 pub const HEADER_LEN: u64 = 24;

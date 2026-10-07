@@ -52,7 +52,7 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
     });
   } catch (e) {
     if ((e as Error).name === 'AbortError') throw e;
-    throw new ApiError(0, 'network', 'Cannot reach the Observer server.');
+    throw new ApiError(0, 'network', 'Cannot reach the Vyrtel server.');
   }
   if (res.status === 204) return undefined as T;
   const text = await res.text();

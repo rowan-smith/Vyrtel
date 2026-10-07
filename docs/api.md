@@ -296,7 +296,7 @@ POST   /api/v1/alerts/{id}/evaluate   evaluate immediately
   "threshold": 100,
   "windowSecs": 300,
   "intervalSecs": 60,
-  "webhookUrl": "https://example.com/hooks/observer",
+  "webhookUrl": "https://example.com/hooks/vyrtel",
   "enabled": true
 }
 ```
@@ -308,7 +308,7 @@ change is recorded and POSTed to the webhook (3 attempts, 10 s timeout):
 
 ```json
 {
-  "source": "observer",
+  "source": "vyrtel",
   "alert": { "id": 1, "name": "Payment error spike", "query": "...", "condition": "count > 100", "windowSeconds": 300 },
   "status": "FIRING",
   "previousStatus": "OK",
@@ -342,6 +342,6 @@ GET /api/v1/system/config        effective configuration (secrets omitted)
 }
 ```
 
-`rawBytes` is the uncompressed size of events in Observer's binary encoding
+`rawBytes` is the uncompressed size of events in Vyrtel's binary encoding
 (sealed segments plus WAL); `compressionRatio` is raw ÷ (data + index) for
 sealed segments.

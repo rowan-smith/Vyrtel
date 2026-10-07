@@ -1,7 +1,7 @@
 # DotnetLive
 
-ASP.NET Core demo that pushes live telemetry into Observer. It is a sample
-producer, not part of the Observer build.
+ASP.NET Core demo that pushes live telemetry into Vyrtel. It is a sample
+producer, not part of the Vyrtel build.
 
 ## What it sends
 
@@ -13,7 +13,7 @@ producer, not part of the Observer build.
 
 ## Run
 
-Start Observer first (authentication is off by default):
+Start Vyrtel first (authentication is off by default):
 
 ```bash
 cargo run -p server
@@ -31,11 +31,11 @@ The app listens on http://127.0.0.1:5088 and continuously simulates traffic
 
 ## Config
 
-`appsettings.json` only needs the Observer endpoint and an optional API key:
+`appsettings.json` only needs the Vyrtel endpoint and an optional API key:
 
 ```json
 {
-  "Observatory": {
+  "Vyrtel": {
     "Endpoint": "http://localhost:8080",
     "Api": ""
   }
@@ -44,5 +44,5 @@ The app listens on http://127.0.0.1:5088 and continuously simulates traffic
 
 - **Service name** comes from the host application name.
 - **Environment** comes from the host environment (`Development`, `Production`, …).
-- **Api** is needed only when Observer runs with `auth.enabled = true`; create
+- **Api** is needed only when Vyrtel runs with `auth.enabled = true`; create
   an ingest key under Settings → API keys. It is sent as `X-Api-Key`.

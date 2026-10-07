@@ -8,10 +8,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 // E2E runs against the real server binary with a throwaway data directory.
 // Build it first: `npm run build` (UI) then `cargo build -p server`.
-const exe = process.platform === 'win32' ? 'observer.exe' : 'observer';
-const bin = process.env.OBSERVER_BIN ?? path.resolve(here, '..', 'target', 'debug', exe);
-const port = Number(process.env.OBSERVER_E2E_PORT ?? 18765);
-const dataDir = process.env.OBSERVER_E2E_DATA ?? fs.mkdtempSync(path.join(os.tmpdir(), 'observer-e2e-'));
+const exe = process.platform === 'win32' ? 'vyrtel.exe' : 'vyrtel';
+const bin = process.env.VYRTEL_BIN ?? path.resolve(here, '..', 'target', 'debug', exe);
+const port = Number(process.env.VYRTEL_E2E_PORT ?? 18765);
+const dataDir = process.env.VYRTEL_E2E_DATA ?? fs.mkdtempSync(path.join(os.tmpdir(), 'vyrtel-e2e-'));
 
 export default defineConfig({
   testDir: 'tests/e2e',

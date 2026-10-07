@@ -4,22 +4,22 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace DotnetLive.Observatory;
+namespace DotnetLive.Vyrtel;
 
-public sealed class ObservatoryMetricsPublisher : BackgroundService
+public sealed class VyrtelMetricsPublisher : BackgroundService
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConfiguration _config;
     private readonly IHostEnvironment _env;
-    private readonly ILogger<ObservatoryMetricsPublisher> _logger;
+    private readonly ILogger<VyrtelMetricsPublisher> _logger;
     private readonly MeterListener _listener;
     private readonly ConcurrentMetricBuffer _buffer = new();
 
-    public ObservatoryMetricsPublisher(
+    public VyrtelMetricsPublisher(
         IHttpClientFactory httpClientFactory,
         IConfiguration config,
         IHostEnvironment env,
-        ILogger<ObservatoryMetricsPublisher> logger)
+        ILogger<VyrtelMetricsPublisher> logger)
     {
         _httpClientFactory = httpClientFactory;
         _config = config;
@@ -61,7 +61,7 @@ public sealed class ObservatoryMetricsPublisher : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var endpoint = _config["Observatory:Endpoint"] ?? "http://localhost:8080";
+        var endpoint = _config["Vyrtel:Endpoint"] ?? "http://localhost:8080";
         var service = _env.ApplicationName;
         var environment = _env.EnvironmentName;
 
@@ -111,7 +111,7 @@ public sealed class ObservatoryMetricsPublisher : BackgroundService
                         },
                     };
 
-                    var client = _httpClientFactory.CreateClient("observatory");
+                    var client = _httpClientFactory.CreateClient("vyrtel");
                     client.BaseAddress ??= new Uri(endpoint.TrimEnd('/') + "/");
                     using var response = await client.PostAsJsonAsync(
                         "v1/metrics",

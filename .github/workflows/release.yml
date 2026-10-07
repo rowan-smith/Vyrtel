@@ -34,10 +34,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, name: observer-linux-x86_64 }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, name: observer-linux-arm64 }
-          - { os: macos-14, target: aarch64-apple-darwin, name: observer-macos-arm64 }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc, name: observer-windows-x86_64 }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, name: vyrtel-linux-x86_64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, name: vyrtel-linux-arm64 }
+          - { os: macos-14, target: aarch64-apple-darwin, name: vyrtel-macos-arm64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, name: vyrtel-windows-x86_64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +59,7 @@ jobs:
           mkdir -p dist
           ext=""
           if [[ "${{ matrix.target }}" == *windows* ]]; then ext=".exe"; fi
-          cp "target/${{ matrix.target }}/release/observer${ext}" "dist/${{ matrix.name }}${ext}"
+          cp "target/${{ matrix.target }}/release/vyrtel${ext}" "dist/${{ matrix.name }}${ext}"
           cd dist
           if command -v sha256sum >/dev/null; then sha256sum ./* > "../${{ matrix.name }}.sha256"; else shasum -a 256 ./* > "../${{ matrix.name }}.sha256"; fi
           mv "../${{ matrix.name }}.sha256" .
@@ -75,7 +75,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: observer-*
+          pattern: vyrtel-*
           merge-multiple: true
       - name: Combined checksums
         run: |

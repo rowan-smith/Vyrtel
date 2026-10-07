@@ -9,15 +9,13 @@ use clap::{Parser, Subcommand};
 use server::App;
 use server::config::{ByteSize, Config, LogFormat};
 
-/// Observer: small, fast, self-hosted observability (logs, traces, metrics).
+/// Vyrtel: small, fast, self-hosted observability (logs, traces, metrics).
 #[derive(Parser)]
-#[command(name = "observer", version, about, long_about = None)]
-#[command(
-    after_help = "Configuration precedence: defaults < config file < OBSERVER_* environment variables < flags.\n\
-                        See docs/configuration.md for every option."
-)]
+#[command(name = "vyrtel", version, about, long_about = None)]
+#[command(after_help = "Configuration precedence: defaults < config file < VYRTEL_* environment variables < flags.\n\
+                        See docs/configuration.md for every option.")]
 struct Cli {
-    /// Path to a TOML config file (default: ./observer.toml if present).
+    /// Path to a TOML config file (default: ./vyrtel.toml if present).
     #[arg(long, short = 'c', global = true)]
     config: Option<PathBuf>,
     /// Data directory (overrides storage.path).
@@ -29,7 +27,7 @@ struct Cli {
     /// Global memory budget, e.g. 512MB (overrides storage.max_memory).
     #[arg(long, global = true)]
     memory_limit: Option<String>,
-    /// Log level filter, e.g. info, debug, observer=debug.
+    /// Log level filter, e.g. info, debug, vyrtel=debug.
     #[arg(long, global = true)]
     log_level: Option<String>,
     /// Log output format.
@@ -54,7 +52,7 @@ fn load_config(cli: &Cli) -> anyhow::Result<Config> {
     let mut config = match &cli.config {
         Some(p) => Config::load_file(p).map_err(anyhow::Error::msg)?,
         None => {
-            let default = PathBuf::from("observer.toml");
+            let default = PathBuf::from("vyrtel.toml");
             if default.exists() { Config::load_file(&default).map_err(anyhow::Error::msg)? } else { Config::default() }
         }
     };
@@ -80,8 +78,8 @@ fn load_config(cli: &Cli) -> anyhow::Result<Config> {
 
 fn init_logging(config: &Config) {
     use tracing_subscriber::EnvFilter;
-    // Observer's own logs go to stderr/stdout only. They are never fed back
-    // into Observer's ingestion pipeline.
+    // Vyrtel's own logs go to stderr/stdout only. They are never fed back
+    // into Vyrtel's ingestion pipeline.
     let filter = EnvFilter::try_new(&config.log.level).unwrap_or_else(|_| EnvFilter::new("info"));
     let builder = tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr);
     match config.log.format {
@@ -134,7 +132,7 @@ fn main() -> ExitCode {
     let config = match load_config(&cli) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("observer: configuration error: {e:#}");
+            eprintln!("vyrtel: configuration error: {e:#}");
             return ExitCode::from(2);
         }
     };
@@ -150,7 +148,7 @@ fn main() -> ExitCode {
     let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("observer: cannot start runtime: {e}");
+            eprintln!("vyrtel: cannot start runtime: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -165,11 +163,11 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("observer: {e:#}");
+            eprintln!("vyrtel: {e:#}");
             let text = format!("{e:#}").to_ascii_lowercase();
             if text.contains("permission denied") || text.contains("access is denied") {
                 eprintln!(
-                    "hint: the data directory must be writable by the user running Observer                      (in Docker the image runs as uid 65532; see docs/configuration.md)"
+                    "hint: the data directory must be writable by the user running Vyrtel                      (in Docker the image runs as uid 65532; see docs/configuration.md)"
                 );
             }
             ExitCode::FAILURE

@@ -1,4 +1,4 @@
-//! Load generator for Observer.
+//! Load generator for Vyrtel.
 //!
 //! ```text
 //! cargo run --release -p loadgen -- --target http://localhost:8080 --rate 10000 --duration 60s
@@ -20,9 +20,9 @@ use rand::{SeedableRng, seq::SliceRandom};
 use serde_json::json;
 
 #[derive(Parser, Clone)]
-#[command(name = "loadgen", about = "Generate realistic telemetry load against Observer")]
+#[command(name = "loadgen", about = "Generate realistic telemetry load against Vyrtel")]
 struct Args {
-    /// Observer base URL.
+    /// Vyrtel base URL.
     #[arg(long, default_value = "http://localhost:8080")]
     target: String,
     /// Target events per second (total across workers).
@@ -50,7 +50,7 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     traces_every: u64,
     /// API key, if the server requires one.
-    #[arg(long, env = "OBSERVER_API_KEY")]
+    #[arg(long, env = "VYRTEL_API_KEY")]
     api_key: Option<String>,
     /// RNG seed for reproducible data.
     #[arg(long, default_value_t = 42)]

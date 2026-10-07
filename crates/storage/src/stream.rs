@@ -222,14 +222,14 @@ impl Stream {
             let wal = rec.wal;
             let next_event = rec.next_event_id;
             std::thread::Builder::new()
-                .name(format!("observer-wal-{name}"))
+                .name(format!("vyrtel-wal-{name}"))
                 .spawn(move || Writer::new(shared, wal, next_event, maint_tx).run(rx))
                 .map_err(|e| StorageError::Unavailable(format!("spawn writer: {e}")))?
         };
         let maintenance = {
             let shared = shared.clone();
             std::thread::Builder::new()
-                .name(format!("observer-maint-{name}"))
+                .name(format!("vyrtel-maint-{name}"))
                 .spawn(move || maintenance_loop(shared, maint_rx))
                 .map_err(|e| StorageError::Unavailable(format!("spawn maintenance: {e}")))?
         };

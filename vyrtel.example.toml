@@ -1,4 +1,4 @@
-# Example Observer configuration. Copy to observer.toml (picked up
+# Example Vyrtel configuration. Copy to vyrtel.toml (picked up
 # automatically from the working directory) or pass --config <file>.
 # Every key is optional; see docs/configuration.md.
 

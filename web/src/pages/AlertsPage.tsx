@@ -65,7 +65,7 @@ function AlertForm({ initial, onSave, onClose }: { initial: AlertInput; onSave: 
         </div>
         <label>
           <span className="label">Webhook URL (optional)</span>
-          <input className="input" value={a.webhookUrl ?? ''} onChange={(e) => setA({ ...a, webhookUrl: e.target.value })} placeholder="https://example.com/hooks/observer" />
+          <input className="input" value={a.webhookUrl ?? ''} onChange={(e) => setA({ ...a, webhookUrl: e.target.value })} placeholder="https://example.com/hooks/vyrtel" />
         </label>
         <label className="checkbox">
           <input type="checkbox" checked={a.enabled} onChange={(e) => setA({ ...a, enabled: e.target.checked })} /> Enabled

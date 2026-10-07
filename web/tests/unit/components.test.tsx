@@ -143,7 +143,7 @@ describe('ErrorBanner', () => {
   it('renders generic errors and nothing when there is no error', () => {
     const { container, rerender } = render(<ErrorBanner error={null} />);
     expect(container).toBeEmptyDOMElement();
-    rerender(<ErrorBanner error={new ApiError(0, 'network', 'Cannot reach the Observer server.')} />);
-    expect(screen.getByRole('alert')).toHaveTextContent('Cannot reach the Observer server.');
+    rerender(<ErrorBanner error={new ApiError(0, 'network', 'Cannot reach the Vyrtel server.')} />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Cannot reach the Vyrtel server.');
   });
 });

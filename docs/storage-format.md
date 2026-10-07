@@ -1,6 +1,6 @@
 # Storage format
 
-This document is the reference for every byte Observer writes to disk. If you
+This document is the reference for every byte Vyrtel writes to disk. If you
 change the format, update this file in the same commit and bump the relevant
 version number. Code lives in `crates/storage`.
 
@@ -98,7 +98,7 @@ Trailing bytes after the last event are a decode error.
 
 ```
 file   := header record*
-header := "OBSVWAL1" (8) | u16 format (=1) | u8 signal | 5 × reserved | u64 wal_id   (24 bytes)
+header := "VYRTWAL1" (8) | u16 format (=1) | u8 signal | 5 × reserved | u64 wal_id   (24 bytes)
 record := u8 record_version (=1) | u32 length | payload[length] | u32 crc32
 ```
 
@@ -144,7 +144,7 @@ the writer truncates back to the last good offset before the next append.
 
 | Offset | Size | Field                                |
 |-------:|-----:|--------------------------------------|
-|      0 |    8 | magic `OBSVSEG1`                     |
+|      0 |    8 | magic `VYRTSEG1`                     |
 |      8 |    2 | format version (1)                   |
 |     10 |    1 | signal (1 logs, 2 traces, 3 metrics) |
 |     11 |    5 | reserved (0)                         |
@@ -160,7 +160,7 @@ the writer truncates back to the last good offset before the next append.
 |     40 |    2 | format version (1)                                            |
 |     42 |    2 | reserved                                                      |
 |     44 |    4 | CRC-32 of bytes 0..44                                         |
-|     48 |    8 | magic `OBSVSEND`                                              |
+|     48 |    8 | magic `VYRTSEND`                                              |
 
 ### Blocks and columns
 

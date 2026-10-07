@@ -250,7 +250,7 @@ fn partial_segment_in_segment_dir_is_quarantined_and_rebuilt_from_wal() {
     }
     let wal_path = only_wal(d.path());
     let id = wal::parse_wal_file_name(wal_path.file_name().unwrap().to_str().unwrap()).unwrap();
-    std::fs::write(seg_dir(d.path()).join(segment_file_name(id)), b"OBSVSEG1 truncated").unwrap();
+    std::fs::write(seg_dir(d.path()).join(segment_file_name(id)), b"VYRTSEG1 truncated").unwrap();
 
     let s = Storage::open(config(d.path()), None).unwrap();
     assert_eq!(messages(&s), ["one", "two"]);

@@ -93,7 +93,7 @@ impl App {
 
         let ingest_slots = (budgets.ingest / config.ingest.max_request_size.0.max(1)).clamp(2, 1024) as usize;
         let http = reqwest::Client::builder()
-            .user_agent(concat!("observer/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("vyrtel/", env!("CARGO_PKG_VERSION")))
             .build()
             .context("building HTTP client")?;
 
@@ -138,7 +138,7 @@ impl App {
         let host = if bound.ip().is_unspecified() { "0.0.0.0".to_string() } else { bound.ip().to_string() };
         let url = format!("http://{host}:{}", bound.port());
         let mut out = format!(
-            "Observer {}\n\n\
+            "Vyrtel {}\n\n\
              Data directory      {}\n\
              HTTP                {url}\n\
              OTLP HTTP           {url}/v1/*\n\

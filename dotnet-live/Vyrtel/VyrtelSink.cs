@@ -5,20 +5,20 @@ using System.Text.Json.Serialization;
 using Serilog.Core;
 using Serilog.Events;
 
-namespace DotnetLive.Observatory;
+namespace DotnetLive.Vyrtel;
 
-public sealed class ObservatorySink : ILogEventSink, IDisposable
+public sealed class VyrtelSink : ILogEventSink, IDisposable
 {
     private readonly HttpClient _http;
     private readonly string _service;
     private readonly string _environment;
-    private readonly ConcurrentQueue<ObservatoryEvent> _queue = new();
+    private readonly ConcurrentQueue<VyrtelEvent> _queue = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _worker;
     private readonly int _batchSize;
     private readonly TimeSpan _flushInterval;
 
-    public ObservatorySink(
+    public VyrtelSink(
         HttpClient http,
         string endpoint,
         string service,
@@ -46,7 +46,7 @@ public sealed class ObservatorySink : ILogEventSink, IDisposable
         _queue.Enqueue(Map(logEvent));
     }
 
-    private ObservatoryEvent Map(LogEvent logEvent)
+    private VyrtelEvent Map(LogEvent logEvent)
     {
         var attributes = new Dictionary<string, object?>();
         foreach (var (key, value) in logEvent.Properties)
@@ -54,11 +54,11 @@ public sealed class ObservatorySink : ILogEventSink, IDisposable
             attributes[key] = Simplify(value);
         }
 
-        ObservatoryException? exception = null;
+        VyrtelException? exception = null;
         if (logEvent.Exception is not null)
         {
             // Native Exception.ToString() — same text Serilog gets from LogError(ex, "…")
-            exception = new ObservatoryException
+            exception = new VyrtelException
             {
                 Type = logEvent.Exception.GetType().FullName,
                 Message = logEvent.Exception.Message,
@@ -67,7 +67,7 @@ public sealed class ObservatorySink : ILogEventSink, IDisposable
         }
 
         var activity = System.Diagnostics.Activity.Current;
-        return new ObservatoryEvent
+        return new VyrtelEvent
         {
             Timestamp = logEvent.Timestamp.UtcDateTime,
             Level = MapLevel(logEvent.Level),
@@ -108,7 +108,7 @@ public sealed class ObservatorySink : ILogEventSink, IDisposable
 
     private async Task RunAsync()
     {
-        var buffer = new List<ObservatoryEvent>(_batchSize);
+        var buffer = new List<VyrtelEvent>(_batchSize);
         while (!_cts.IsCancellationRequested)
         {
             try
@@ -149,12 +149,12 @@ public sealed class ObservatorySink : ILogEventSink, IDisposable
         }
     }
 
-    private async Task FlushAsync(List<ObservatoryEvent> batch)
+    private async Task FlushAsync(List<VyrtelEvent> batch)
     {
         using var response = await _http.PostAsJsonAsync(
             "api/v1/events",
             batch,
-            ObservatoryJson.Options,
+            VyrtelJson.Options,
             _cts.Token);
         response.EnsureSuccessStatusCode();
     }
@@ -167,9 +167,9 @@ public sealed class ObservatorySink : ILogEventSink, IDisposable
     }
 }
 
-public static class ObservatorySinkExtensions
+public static class VyrtelSinkExtensions
 {
-    public static Serilog.LoggerConfiguration Observatory(
+    public static Serilog.LoggerConfiguration Vyrtel(
         this Serilog.Configuration.LoggerSinkConfiguration sinkConfiguration,
         string endpoint,
         string service,
@@ -177,12 +177,12 @@ public static class ObservatorySinkExtensions
         string? apiKey = null)
     {
         var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        var sink = new ObservatorySink(http, endpoint, service, environment, apiKey);
+        var sink = new VyrtelSink(http, endpoint, service, environment, apiKey);
         return sinkConfiguration.Sink(sink);
     }
 }
 
-internal sealed class ObservatoryEvent
+internal sealed class VyrtelEvent
 {
     public DateTime Timestamp { get; set; }
     public string Level { get; set; } = "information";
@@ -192,18 +192,18 @@ internal sealed class ObservatoryEvent
     public string? TraceId { get; set; }
     public string? SpanId { get; set; }
     public string? MessageTemplate { get; set; }
-    public ObservatoryException? Exception { get; set; }
+    public VyrtelException? Exception { get; set; }
     public Dictionary<string, object?> Properties { get; set; } = new();
 }
 
-internal sealed class ObservatoryException
+internal sealed class VyrtelException
 {
     public string? Type { get; set; }
     public string? Message { get; set; }
     public string? StackTrace { get; set; }
 }
 
-internal static class ObservatoryJson
+internal static class VyrtelJson
 {
     public static readonly JsonSerializerOptions Options = new()
     {

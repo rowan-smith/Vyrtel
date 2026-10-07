@@ -1,6 +1,6 @@
 # Architecture
 
-Observer is **one process** with **one data directory**. Crates are code
+Vyrtel is **one process** with **one data directory**. Crates are code
 boundaries, not network boundaries.
 
 ```mermaid
@@ -11,7 +11,7 @@ flowchart LR
         UI[Browser UI]
     end
 
-    subgraph observer[observer process]
+    subgraph vyrtel[vyrtel process]
         HTTP[server: axum HTTP\nauth · routing · SSE]
         ING[ingest: parse & map\nnative JSON · OTLP]
         Q[query: parser · planner · executor]
@@ -172,5 +172,5 @@ its threads. Unsealed data is not sealed at shutdown — WAL replay restores
 it on the next start, which keeps shutdown fast. A data-directory lock
 (`data/.lock`) prevents two processes from using the same directory.
 
-Observer's own diagnostics go to stderr via `tracing` (text or JSON). They
-are deliberately **not** ingested into Observer.
+Vyrtel's own diagnostics go to stderr via `tracing` (text or JSON). They
+are deliberately **not** ingested into Vyrtel.

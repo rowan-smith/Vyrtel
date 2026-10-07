@@ -48,7 +48,7 @@ function LoginPage({ onLogin }: { onLogin: (a: AuthState) => void }) {
         }}
       >
         <h1>
-          <Logo /> Observer
+          <Logo /> Vyrtel
         </h1>
         <label>
           <span className="label">Username</span>
@@ -121,7 +121,7 @@ export function App() {
       <div className="login">
         <div className="card login-card">
           <h1>
-            <Logo /> Observer
+            <Logo /> Vyrtel
           </h1>
           <div className="error-banner">{authError}</div>
           <button className="btn" onClick={refresh}>
@@ -139,7 +139,7 @@ export function App() {
     <div className="app">
       <header className="topbar">
         <Link to="/logs" className="brand">
-          <Logo /> Observer
+          <Logo /> Vyrtel
         </Link>
         <nav className="nav" aria-label="Main">
           {NAV.map(([p, label]) => (

@@ -1,4 +1,4 @@
-//! The Observer server: one process with HTTP API, OTLP ingestion, query
+//! The Vyrtel server: one process with HTTP API, OTLP ingestion, query
 //! engine, storage, metadata, background jobs and the embedded web UI.
 
 pub mod alerts;

@@ -7,7 +7,7 @@ use rust_embed::RustEmbed;
 use crate::error::ApiError;
 
 #[derive(RustEmbed)]
-#[folder = "$OBSERVER_WEB_DIST"]
+#[folder = "$VYRTEL_WEB_DIST"]
 struct Assets;
 
 pub async fn static_handler(uri: Uri) -> Response {

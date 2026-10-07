@@ -193,7 +193,7 @@ fn lock_data_dir(dir: &Path) -> Result<File> {
     match f.try_lock() {
         Ok(()) => Ok(f),
         Err(std::fs::TryLockError::WouldBlock) => {
-            Err(StorageError::Unavailable("data directory is in use by another Observer process".into()))
+            Err(StorageError::Unavailable("data directory is in use by another Vyrtel process".into()))
         }
         Err(std::fs::TryLockError::Error(e)) => Err(e).ctx(&path),
     }

@@ -1,6 +1,6 @@
 //! Ingestion formats → common telemetry model.
 //!
-//! * [`native`] — Observer's JSON / NDJSON event format (CLEF-compatible)
+//! * [`native`] — Vyrtel's JSON / NDJSON event format (CLEF-compatible)
 //! * [`otlp`] — OpenTelemetry OTLP/HTTP logs, traces and metrics, in both
 //!   protobuf and JSON encodings
 //!
