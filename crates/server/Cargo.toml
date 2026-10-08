@@ -39,6 +39,10 @@ tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+# Embeds the app icon and version info into vyrtel.exe (Windows hosts only; see build.rs).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [dev-dependencies]
 flate2.workspace = true
 prost.workspace = true

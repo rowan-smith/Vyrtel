@@ -1,4 +1,5 @@
-//! Locate the built web UI (`web/dist`) for embedding.
+//! Locate the built web UI (`web/dist`) for embedding, and on Windows give
+//! `vyrtel.exe` its icon and version info.
 //!
 //! If the UI has not been built (e.g. a backend-only `cargo test`), a tiny
 //! placeholder page is embedded instead so the server still compiles and
@@ -30,4 +31,29 @@ fn main() {
         out
     };
     println!("cargo:rustc-env=VYRTEL_WEB_DIST={}", dir.display());
+
+    windows_resources(&manifest);
 }
+
+/// Embeds the Trace V app icon (the same multi-size `.ico` the web UI serves as
+/// its favicon) and file/product details into the Windows executable. Linux
+/// binaries have no icon, and macOS only shows icons for `.app` bundles.
+#[cfg(windows)]
+fn windows_resources(manifest: &std::path::Path) {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let icon = manifest.join("../../web/public/favicon.ico");
+    println!("cargo:rerun-if-changed={}", icon.display());
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon(icon.to_str().expect("icon path is UTF-8"))
+        .set("ProductName", "Vyrtel")
+        .set("FileDescription", "Vyrtel: self-hosted observability")
+        .set("LegalCopyright", "MIT licence")
+        .set("OriginalFilename", "vyrtel.exe")
+        .set("InternalName", "vyrtel");
+    res.compile().expect("embedding the Windows icon (needs the Windows SDK's rc.exe or windres)");
+}
+
+#[cfg(not(windows))]
+fn windows_resources(_manifest: &std::path::Path) {}
