@@ -1,0 +1,140 @@
+name: User story
+description: A scoped user outcome with verifiable acceptance criteria.
+title: '[Story] '
+labels:
+- type:story
+- needs-triage
+body:
+- type: markdown
+  attributes:
+    value: Use one deliverable user outcome per ticket. Do not paste secrets or private telemetry. See
+      docs/ticketing.md for refinement and scheduling rules.
+- type: input
+  id: role
+  attributes:
+    label: User role
+    description: Who benefits?
+    placeholder: Operator, investigator, integrator, administrator...
+  validations:
+    required: true
+- type: textarea
+  id: goal
+  attributes:
+    label: Goal
+    description: What capability or action do they need?
+    placeholder: I want to...
+  validations:
+    required: true
+- type: textarea
+  id: benefit
+  attributes:
+    label: Benefit
+    description: Why does it matter?
+    placeholder: So that...
+  validations:
+    required: true
+- type: textarea
+  id: problem
+  attributes:
+    label: Problem and context
+    description: Describe the current limitation and affected workflow.
+  validations:
+    required: true
+- type: textarea
+  id: acceptance
+  attributes:
+    label: Acceptance criteria
+    description: Use observable Given/When/Then conditions, including errors or edge cases.
+    placeholder: '- [ ] Given ..., when ..., then ...
+
+      - [ ] Given ..., when ..., then ...'
+  validations:
+    required: true
+- type: dropdown
+  id: area
+  attributes:
+    label: Primary area
+    description: Choose the owning area; maintainers apply the area label.
+    options:
+    - alerts
+    - api
+    - dashboards
+    - docs
+    - ingest
+    - metrics
+    - operations
+    - performance
+    - query
+    - release
+    - security
+    - storage
+    - traces
+    - web
+  validations:
+    required: true
+- type: dropdown
+  id: priority
+  attributes:
+    label: Requested priority
+    description: Maintainers assign the final priority label and Project field.
+    options:
+    - P0 — Urgent / release blocker
+    - P1 — High / milestone core
+    - P2 — Normal
+    - P3 — Low / discovery
+  validations:
+    required: false
+- type: dropdown
+  id: estimate
+  attributes:
+    label: Estimate
+    description: Provisional relative sizing; unknown is valid until refinement.
+    options:
+    - Unknown
+    - '1'
+    - '2'
+    - '3'
+    - '5'
+    - 8 — split before Ready
+  validations:
+    required: false
+- type: textarea
+  id: dependencies
+  attributes:
+    label: Dependencies
+    description: Link blockers, related issues and constraints; distinguish blocks from related.
+    placeholder: 'Blocked by #...
+
+      Related to #...'
+  validations:
+    required: false
+- type: textarea
+  id: out_of_scope
+  attributes:
+    label: Out of scope
+    description: Explicitly exclude adjacent work.
+    placeholder: This ticket does not include...
+  validations:
+    required: false
+- type: input
+  id: milestone
+  attributes:
+    label: Suggested milestone
+    description: Maintainers assign the native milestone after triage.
+    placeholder: 0.1.2 / 0.1.3 / 0.2.0 / later
+  validations:
+    required: false
+- type: textarea
+  id: validation
+  attributes:
+    label: Validation approach
+    description: Describe test evidence and any accessibility, security or performance expectations.
+  validations:
+    required: true
+- type: textarea
+  id: notes
+  attributes:
+    label: Notes and attachments
+    description: Links to design, telemetry samples with sensitive data removed, or investigation notes.
+  validations:
+    required: false
