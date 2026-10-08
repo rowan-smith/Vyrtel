@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation and configuration
+    url: https://github.com/rowan-smith/Vyrtel/blob/main/docs/configuration.md
+    about: Review configuration and supported workflows before filing a report.

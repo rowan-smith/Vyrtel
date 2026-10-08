@@ -1,0 +1,129 @@
+name: Feature request
+description: Describe a user problem and proposed capability for triage.
+title: '[Feature] '
+labels:
+- type:feature
+- needs-triage
+body:
+- type: input
+  id: requested_by
+  attributes:
+    label: Requested by
+    description: Team or role; personal contact details are optional.
+    placeholder: Operator / team / customer role
+  validations:
+    required: false
+- type: input
+  id: role
+  attributes:
+    label: User role
+    description: Who experiences the limitation?
+  validations:
+    required: true
+- type: textarea
+  id: problem
+  attributes:
+    label: Problem statement
+    description: Who is affected, how often, and what is currently difficult?
+  validations:
+    required: true
+- type: textarea
+  id: use_case
+  attributes:
+    label: Use case
+    description: Describe when and why the capability is needed.
+  validations:
+    required: true
+- type: textarea
+  id: solution
+  attributes:
+    label: Proposed solution
+    description: Describe desired behaviour; alternatives are welcome.
+  validations:
+    required: true
+- type: textarea
+  id: story
+  attributes:
+    label: User story
+    description: State role, capability and benefit.
+    placeholder: As a ..., I want ..., so that ...
+  validations:
+    required: true
+- type: textarea
+  id: impact
+  attributes:
+    label: User or business impact
+    description: Affected users, frequency, value and current workaround.
+  validations:
+    required: true
+- type: textarea
+  id: acceptance
+  attributes:
+    label: Acceptance criteria
+    description: Include normal behaviour, errors/edge cases and relevant permissions/accessibility/performance.
+    placeholder: '- [ ] Given ..., when ..., then ...'
+  validations:
+    required: true
+- type: textarea
+  id: success
+  attributes:
+    label: Success metrics
+    description: Use an observable outcome or measurement plan; do not invent a target.
+  validations:
+    required: true
+- type: dropdown
+  id: priority
+  attributes:
+    label: Requested priority
+    description: Maintainers assign the final priority label and Project field.
+    options:
+    - P0 — Urgent / release blocker
+    - P1 — High / milestone core
+    - P2 — Normal
+    - P3 — Low / discovery
+  validations:
+    required: false
+- type: dropdown
+  id: estimate
+  attributes:
+    label: Estimate
+    description: Provisional relative sizing; unknown is valid until refinement.
+    options:
+    - Unknown
+    - '1'
+    - '2'
+    - '3'
+    - '5'
+    - 8 — split before Ready
+  validations:
+    required: false
+- type: textarea
+  id: dependencies
+  attributes:
+    label: Dependencies
+    description: Link blockers, related issues and constraints; distinguish blocks from related.
+    placeholder: 'Blocked by #...
+
+      Related to #...'
+  validations:
+    required: false
+- type: textarea
+  id: out_of_scope
+  attributes:
+    label: Out of scope
+    description: Explicitly exclude adjacent work.
+    placeholder: This ticket does not include...
+  validations:
+    required: false
+- type: textarea
+  id: attachments
+  attributes:
+    label: Attachments and notes
+    description: Designs, examples or research with sensitive information removed.
+  validations:
+    required: false
+- type: markdown
+  attributes:
+    value: Initial request status is New / needs-triage. Maintainers move it through Under review → Planned
+      → In progress → Shipped, or close it as Declined with a reason. Project status is authoritative;
+      selecting a priority in this form does not automatically assign Project fields or labels.

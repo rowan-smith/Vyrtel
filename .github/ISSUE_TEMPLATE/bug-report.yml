@@ -1,0 +1,167 @@
+name: Bug report
+description: Report an observed defect with reproduction and evidence.
+title: '[Bug] '
+labels:
+- type:bug
+- needs-triage
+body:
+- type: markdown
+  attributes:
+    value: 'Title format: [component] [action] causes [specific problem]. Report observed behaviour; do
+      not include passwords, API keys or private telemetry.'
+- type: textarea
+  id: description
+  attributes:
+    label: Description
+    description: What went wrong, where, and when?
+  validations:
+    required: true
+- type: input
+  id: version
+  attributes:
+    label: Application version
+    description: Include binary version or commit SHA.
+    placeholder: Vyrtel 0.1.1
+  validations:
+    required: true
+- type: dropdown
+  id: environment
+  attributes:
+    label: Deployment environment
+    description: Choose the affected environment.
+    options:
+    - Production
+    - Staging
+    - Development
+    - Local test
+  validations:
+    required: true
+- type: input
+  id: device
+  attributes:
+    label: Device or hardware
+    description: Include CPU architecture and memory where relevant.
+    placeholder: amd64/arm64, workstation/server...
+  validations:
+    required: false
+- type: input
+  id: os
+  attributes:
+    label: Operating system
+    description: Include OS version.
+    placeholder: Linux / Windows / macOS and version
+  validations:
+    required: true
+- type: input
+  id: browser
+  attributes:
+    label: Browser
+    description: If a UI issue, include browser and version.
+    placeholder: Chrome / Firefox / Safari and version
+  validations:
+    required: false
+- type: input
+  id: location
+  attributes:
+    label: URL or screen
+    description: Remove credentials and private host details if necessary.
+    placeholder: Logs / Settings / endpoint...
+  validations:
+    required: false
+- type: dropdown
+  id: user_type
+  attributes:
+    label: User or authentication type
+    description: No identity or secret values required.
+    options:
+    - Open access
+    - Administrator session
+    - Ingest API key
+    - Admin API key
+    - Unknown
+  validations:
+    required: false
+- type: dropdown
+  id: reproducibility
+  attributes:
+    label: Reproducibility
+    description: How reliably does it occur?
+    options:
+    - Always
+    - Sometimes
+    - Once
+  validations:
+    required: true
+- type: textarea
+  id: steps
+  attributes:
+    label: Steps to reproduce
+    description: Use numbered steps starting from known initial state.
+    placeholder: '1. Start Vyrtel with...
+
+      2. ...
+
+      3. ...'
+  validations:
+    required: true
+- type: textarea
+  id: expected
+  attributes:
+    label: Expected result
+    description: Describe observable correct behaviour.
+  validations:
+    required: true
+- type: textarea
+  id: actual
+  attributes:
+    label: Actual result
+    description: Include exact error text with secrets removed.
+  validations:
+    required: true
+- type: dropdown
+  id: severity
+  attributes:
+    label: Reported severity
+    description: Impact, not scheduling priority. Maintainers confirm severity.
+    options:
+    - Critical — data loss, security exposure or total outage
+    - High — core workflow unavailable without reasonable workaround
+    - Medium — partial failure or usable workaround
+    - Low — minor visual or usability defect
+  validations:
+    required: true
+- type: dropdown
+  id: priority
+  attributes:
+    label: Requested priority
+    description: Maintainers assign the final priority label and Project field.
+    options:
+    - P0 — Urgent / release blocker
+    - P1 — High / milestone core
+    - P2 — Normal
+    - P3 — Low / discovery
+  validations:
+    required: false
+- type: textarea
+  id: workaround
+  attributes:
+    label: Workaround
+    description: Temporary mitigation or 'None known'.
+    placeholder: None known
+  validations:
+    required: false
+- type: textarea
+  id: evidence
+  attributes:
+    label: Evidence
+    description: Attach screenshots/recordings, exact error text, relevant redacted server/console logs,
+      and minimal reproduction files.
+  validations:
+    required: false
+- type: textarea
+  id: additional
+  attributes:
+    label: Additional notes
+    description: Recent changes, affected users, patterns and related tickets.
+  validations:
+    required: false
