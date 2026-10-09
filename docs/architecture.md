@@ -73,7 +73,7 @@ sequenceDiagram
     else accepted
         Q->>W: batch
         W->>W: assign ids, encode, append WAL record
-        W->>W: fsync (strict mode; group commit)
+        W->>W: fsync (strict mode, group commit)
         W->>A: publish batch (queryable)
         W->>L: broadcast (bounded ring)
         W-->>H: ack

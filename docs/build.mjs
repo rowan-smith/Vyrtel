@@ -65,17 +65,42 @@ const brand = (base) => `
 
 const githubIcon = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.76 2.69 1.25 3.35.96.1-.75.4-1.25.73-1.54-2.55-.29-5.24-1.28-5.24-5.68 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.62 1.59.23 2.76.11 3.05.74.8 1.18 1.83 1.18 3.08 0 4.41-2.69 5.39-5.25 5.67.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5z"/></svg>`;
 
-const header = (base, current) => `
+const chevron = `<svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const sunIcon = `<svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
+const moonIcon = `<svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>`;
+
+/** Docs pages grouped for the menus: filled in once the docs are parsed (see build()). */
+let docNav = [];
+
+/** The grouped list of docs pages, shared by the header dropdown and the docs page picker. */
+const docMenu = (base, currentSlug) =>
+  `<div class="dropdown-panel">${docNav
+    .map(
+      (g) => `<div class="dd-group"><h3>${g.group}</h3>${g.pages
+        .map((d) => `<a href="${base}docs/${d.slug}.html"${d.slug === currentSlug ? ' aria-current="page"' : ''}>${d.title}</a>`)
+        .join('')}</div>`,
+    )
+    .join('')}</div>`;
+
+const themeToggle = (cls) =>
+  `<button class="theme-toggle ${cls}" type="button" data-theme-toggle aria-label="Switch colour theme">${sunIcon}${moonIcon}</button>`;
+
+const header = (base, current, currentSlug) => `
 <header class="site-header">
   <div class="wrap header-inner">
     ${brand(base)}
+    ${themeToggle('theme-toggle-mobile')}
     <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu"><span></span><span></span></button>
     <nav id="site-nav" class="site-nav" aria-label="Main">
       <a href="${base}index.html#features"${current === 'features' ? ' aria-current="page"' : ''}>Features</a>
-      <a href="${base}docs/overview.html"${current === 'docs' ? ' aria-current="page"' : ''}>Docs</a>
+      <details class="dropdown nav-dropdown">
+        <summary${current === 'docs' ? ' aria-current="page"' : ''}>Docs ${chevron}</summary>
+        ${docMenu(base, currentSlug)}
+      </details>
       <a href="${base}index.html#download">Download</a>
       <a href="${repoUrl}/releases">Releases</a>
       <a class="nav-source" href="${repoUrl}">${githubIcon}<span>Source</span></a>
+      ${themeToggle('theme-toggle-desktop')}
       <a class="button button-primary nav-cta" href="${base}index.html#download">Get Vyrtel</a>
     </nav>
   </div>
@@ -122,11 +147,11 @@ const footer = (base) => `
 
 const head = (base, title, description) => `
 <meta charset="utf-8">
-<script>document.documentElement.classList.add('js')</script>
+<script>(function(){var d=document.documentElement,t=null;try{t=localStorage.getItem('vyrtel-theme')}catch(e){}if(t==='light'||t==='dark')d.setAttribute('data-theme',t);d.classList.add('js')})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
 <meta name="description" content="${description}">
-<meta name="theme-color" content="#07131F">
+<meta name="theme-color" content="#F6F8FB">
 <meta property="og:type" content="website">
 <meta property="og:title" content="${title}">
 <meta property="og:description" content="${description}">
@@ -187,6 +212,15 @@ marked.use({
   walkTokens(t) {
     if (t.type === 'link' || t.type === 'image') t.href = rewrite(t.href);
   },
+  renderer: {
+    // Mermaid diagrams are drawn in the browser by assets/mermaid.min.js (loaded only on pages
+    // that have one, and re-themed with the site); the source stays readable without JS.
+    code({ text, lang }) {
+      if (lang !== 'mermaid') return false;
+      const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return `<figure class="diagram"><pre class="mermaid">${esc}</pre></figure>\n`;
+    },
+  },
 });
 
 function docSource(d) {
@@ -200,8 +234,8 @@ function docSource(d) {
   return src;
 }
 
-function renderDocs() {
-  const rendered = DOCS.map((d) => {
+function parseDocs() {
+  return DOCS.map((d) => {
     currentSource = d.file;
     const html = marked.parse(docSource(d));
     const headings = getHeadingList();
@@ -209,20 +243,15 @@ function renderDocs() {
     const title = d.title ?? h1?.raw ?? d.slug;
     return { ...d, title, html, toc: headings.filter((h) => h.level === 2) };
   });
+}
 
-  const groups = [...new Set(rendered.map((d) => d.group))];
+function renderDocs(rendered) {
   const template = fs.readFileSync(path.join(here, 'site/doc.html'), 'utf8');
   fs.mkdirSync(path.join(out, 'docs'), { recursive: true });
 
   rendered.forEach((d, i) => {
-    const sidebar = groups
-      .map(
-        (g) => `<div class="side-group"><h2>${g}</h2>${rendered
-          .filter((x) => x.group === g)
-          .map((x) => `<a href="${x.slug}.html"${x.slug === d.slug ? ' aria-current="page"' : ''}>${x.title}</a>`)
-          .join('')}</div>`,
-      )
-      .join('');
+    // The docs navigation is a dropdown ("page picker") rather than a full sidebar.
+    const picker = `<details class="dropdown doc-picker"><summary><span class="doc-picker-group">${d.group}</span><span class="doc-picker-title">${d.title}</span>${chevron}</summary>${docMenu('../', d.slug)}</details>`;
     const toc = d.toc.length
       ? `<nav class="toc" aria-label="On this page"><h2>On this page</h2>${d.toc.map((h) => `<a href="#${h.id}">${h.text}</a>`).join('')}</nav>`
       : '';
@@ -231,9 +260,9 @@ function renderDocs() {
     const pager = `<nav class="pager" aria-label="Pages">${prev ? `<a class="prev" href="${prev.slug}.html"><span>Previous</span>${prev.title}</a>` : '<span></span>'}${next ? `<a class="next" href="${next.slug}.html"><span>Next</span>${next.title}</a>` : ''}</nav>`;
     const page = fill(template, {
       HEAD: head('../', `${d.title} · Vyrtel docs`, `Vyrtel documentation: ${d.title}.`),
-      HEADER: header('../', 'docs'),
+      HEADER: header('../', 'docs', d.slug),
       FOOTER: footer('../'),
-      SIDEBAR: sidebar,
+      PICKER: picker,
       TOC: toc,
       CONTENT: d.html,
       PAGER: pager,
@@ -260,6 +289,9 @@ function build() {
   fs.rmSync(out, { recursive: true, force: true });
   fs.mkdirSync(out, { recursive: true });
 
+  const docs = parseDocs();
+  docNav = [...new Set(docs.map((d) => d.group))].map((group) => ({ group, pages: docs.filter((d) => d.group === group) }));
+
   const vars = {
     REPO: repo,
     REPO_URL: repoUrl,
@@ -269,7 +301,7 @@ function build() {
   };
   const index = fill(fs.readFileSync(path.join(here, 'site/index.html'), 'utf8'), {
     ...vars,
-    HEAD: head('', 'Vyrtel: View. Trace. Understand.', 'Self-hosted logs, traces and metrics in one ~11 MB binary. No cluster, no database, no external services.'),
+    HEAD: head('', 'Vyrtel: View. Trace. Understand.', 'Developer-friendly observability: launch one ~11 MB binary and send logs, traces and metrics. Small, fast, light and full featured.'),
     HEADER: header('', 'home'),
     FOOTER: footer(''),
   });
@@ -290,7 +322,9 @@ function build() {
   copy(path.join(fonts, '@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2'), 'assets/fonts/plex-mono-400.woff2');
   copy(path.join(fonts, '@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2'), 'assets/fonts/plex-mono-500.woff2');
 
-  const n = renderDocs();
+  copy(path.join(here, 'node_modules/mermaid/dist/mermaid.min.js'), 'assets/mermaid.min.js');
+
+  const n = renderDocs(docs);
   console.log(`Built ${path.relative(root, out)}: front page + ${n} docs pages for ${repo} (v${version}), site URL ${siteUrl}`);
 }
 

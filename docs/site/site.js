@@ -25,6 +25,141 @@
     }
   });
 
+  // ---------- dropdowns (<details class="dropdown">): one open at a time, close on outside click/Esc ----------
+  const dropdowns = [...document.querySelectorAll('details.dropdown')];
+  const closeDropdowns = (except) =>
+    dropdowns.forEach((d) => {
+      if (d !== except) d.open = false;
+    });
+  dropdowns.forEach((d) => d.addEventListener('toggle', () => d.open && closeDropdowns(d)));
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('details.dropdown')) closeDropdowns();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const open = dropdowns.find((d) => d.open);
+    if (open) {
+      open.open = false;
+      open.querySelector('summary')?.focus();
+    }
+  });
+
+  // ---------- theme: system preference by default, the toggle remembers an explicit choice ----------
+  const root = document.documentElement;
+  const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+  const effectiveTheme = () => root.getAttribute('data-theme') || (systemDark.matches ? 'dark' : 'light');
+  const themeMeta = document.querySelector('meta[name="theme-color"]');
+  const syncTheme = () => {
+    const t = effectiveTheme();
+    themeMeta?.setAttribute('content', t === 'dark' ? '#0A1622' : '#F6F8FB');
+    document.querySelectorAll('[data-theme-toggle]').forEach((b) => {
+      b.setAttribute('aria-label', t === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+      b.title = b.getAttribute('aria-label');
+    });
+    document.dispatchEvent(new CustomEvent('vyrtel:theme', { detail: t }));
+  };
+  document.querySelectorAll('[data-theme-toggle]').forEach((b) =>
+    b.addEventListener('click', () => {
+      const next = effectiveTheme() === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try {
+        localStorage.setItem('vyrtel-theme', next);
+      } catch {
+        // storage unavailable: the choice lasts for this page only
+      }
+      syncTheme();
+    }),
+  );
+  systemDark.addEventListener('change', () => {
+    if (!root.getAttribute('data-theme')) syncTheme();
+  });
+  syncTheme();
+
+  // ---------- Mermaid diagrams: load the renderer only on pages that have one ----------
+  const diagrams = [...document.querySelectorAll('pre.mermaid')];
+  if (diagrams.length) {
+    diagrams.forEach((el) => {
+      el.dataset.source = el.textContent;
+    });
+    const assets = new URL('.', document.currentScript?.src || location.href);
+    const css = (name) => getComputedStyle(root).getPropertyValue(name).trim();
+    let ready = null;
+    const loadMermaid = () =>
+      (ready ??= new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = new URL('mermaid.min.js', assets).href;
+        s.onload = () => resolve(window.mermaid);
+        s.onerror = reject;
+        document.head.appendChild(s);
+      }));
+    // Diagram colours come from the site's own theme tokens, so they match light and dark.
+    const render = async () => {
+      const mermaid = await loadMermaid();
+      const dark = effectiveTheme() === 'dark';
+      const accent = css('--accent-text');
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        // Natural size (14px text); wide diagrams scroll sideways inside their frame instead of
+        // shrinking until the labels are unreadable.
+        flowchart: { useMaxWidth: false },
+        sequence: { useMaxWidth: false },
+        // Flat shapes, like the rest of the brand: no drop shadows or glows.
+        themeCSS: '.node rect, .node polygon, .node circle, .node path, .cluster rect, .actor { filter: none !important; }',
+        theme: 'base',
+        darkMode: dark,
+        fontFamily: css('--sans'),
+        themeVariables: {
+          fontFamily: css('--sans'),
+          fontSize: '14px',
+          background: css('--bg-raised'),
+          primaryColor: css('--bg-tint'),
+          primaryBorderColor: accent,
+          primaryTextColor: css('--text'),
+          secondaryColor: dark ? '#1b1f4a' : '#ecebff',
+          secondaryBorderColor: css('--iris'),
+          tertiaryColor: css('--bg-raised'),
+          tertiaryBorderColor: css('--line-strong'),
+          lineColor: css('--muted'),
+          textColor: css('--text'),
+          mainBkg: css('--bg-tint'),
+          nodeBorder: accent,
+          clusterBkg: css('--bg'),
+          clusterBorder: css('--line-strong'),
+          titleColor: css('--text'),
+          edgeLabelBackground: css('--bg-raised'),
+          actorBkg: css('--bg-tint'),
+          actorBorder: accent,
+          actorTextColor: css('--text'),
+          actorLineColor: css('--line-strong'),
+          signalColor: css('--text-dim'),
+          signalTextColor: css('--text'),
+          labelBoxBkgColor: css('--bg-tint'),
+          labelBoxBorderColor: css('--line-strong'),
+          labelTextColor: css('--text'),
+          loopTextColor: css('--text'),
+          noteBkgColor: dark ? '#2b2512' : '#fff6dc',
+          noteBorderColor: css('--warn'),
+          noteTextColor: css('--text'),
+          activationBkgColor: css('--bg-tint'),
+          activationBorderColor: css('--iris'),
+          sequenceNumberColor: css('--bg'),
+        },
+      });
+      diagrams.forEach((el) => {
+        el.removeAttribute('data-processed');
+        el.textContent = el.dataset.source;
+      });
+      await mermaid.run({ nodes: diagrams });
+    };
+    render().catch(() => {
+      // Renderer unavailable: the diagram source stays visible as text.
+    });
+    document.addEventListener('vyrtel:theme', () => {
+      if (ready) render().catch(() => {});
+    });
+  }
+
   // ---------- copy buttons ----------
   const copyText = async (button, text) => {
     try {
@@ -42,7 +177,7 @@
   };
   document.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', () => copyText(b, b.dataset.copy)));
   // Docs code blocks get a copy button too.
-  document.querySelectorAll('.prose pre').forEach((pre) => {
+  document.querySelectorAll('.prose pre:not(.mermaid)').forEach((pre) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'copy';

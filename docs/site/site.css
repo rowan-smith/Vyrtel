@@ -37,6 +37,7 @@
   --critical: #ff6b7a;
   --info: #59c7ff;
 
+  /* Light theme (default). Dark overrides follow below; brand colours above never change. */
   --bg: var(--paper);
   --bg-raised: #ffffff;
   --bg-tint: #edf2f7;
@@ -44,9 +45,19 @@
   --text-dim: #2a3b4f;
   --muted: #5a6b80;
   --line: #dde4ec;
+  --line-strong: var(--line-strong);
   --link: var(--mint-dark);
+  --accent-text: var(--mint-dark);
   --brand-node: var(--paper);
   --brand-node-ring: var(--midnight);
+  --solid-bg: var(--midnight);
+  --solid-bg-hover: #10263a;
+  --solid-text: var(--paper);
+  --panel: var(--midnight);
+  --panel-edge: transparent;
+  --section-dark: var(--midnight);
+  --shadow-rgb: 7, 19, 31;
+  color-scheme: light;
 
   --sans: 'Inter Variable', Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
@@ -61,6 +72,52 @@
   --ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
   --wrap: 1180px;
   --header-h: 64px;
+}
+
+:root[data-theme='dark'] {
+  --bg: #0a1622;
+  --bg-raised: #0f2132;
+  --bg-tint: #0d1c2b;
+  --text: var(--paper);
+  --text-dim: #d3dce6;
+  --muted: #a8b6c8;
+  --line: #1d3448;
+  --line-strong: #2b4a66;
+  --link: var(--mint);
+  --accent-text: var(--mint);
+  --brand-node-ring: #0a1622;
+  --solid-bg: var(--paper);
+  --solid-bg-hover: #ffffff;
+  --solid-text: var(--midnight);
+  --panel: #07111b;
+  --panel-edge: #1d3448;
+  --section-dark: #050d16;
+  --shadow-rgb: 0, 0, 0;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0a1622;
+    --bg-raised: #0f2132;
+    --bg-tint: #0d1c2b;
+    --text: var(--paper);
+    --text-dim: #d3dce6;
+    --muted: #a8b6c8;
+    --line: #1d3448;
+    --line-strong: #2b4a66;
+    --link: var(--mint);
+    --accent-text: var(--mint);
+    --brand-node-ring: #0a1622;
+    --solid-bg: var(--paper);
+    --solid-bg-hover: #ffffff;
+    --solid-text: var(--midnight);
+    --panel: #07111b;
+    --panel-edge: #1d3448;
+    --section-dark: #050d16;
+    --shadow-rgb: 0, 0, 0;
+    color-scheme: dark;
+  }
 }
 
 *,
@@ -255,12 +312,12 @@ h3 {
 }
 
 .button-dark {
-  background: var(--midnight);
-  color: var(--paper);
+  background: var(--solid-bg);
+  color: var(--solid-text);
 }
 
 .button-dark:hover {
-  background: #10263a;
+  background: var(--solid-bg-hover);
 }
 
 .button-primary {
@@ -279,7 +336,7 @@ h3 {
 }
 
 .button-ghost:hover {
-  border-color: #c3cfdc;
+  border-color: var(--line-strong);
 }
 
 .button-ghost-dark {
@@ -302,7 +359,7 @@ h3 {
   position: sticky;
   top: 0;
   z-index: 50;
-  background: color-mix(in srgb, var(--paper) 82%, transparent);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
   backdrop-filter: saturate(1.4) blur(14px);
   border-bottom: 1px solid transparent;
   transition: border-color var(--motion-base) var(--ease);
@@ -404,7 +461,7 @@ h3 {
   align-items: center;
   gap: 8px;
   margin: 0 0 14px;
-  color: var(--mint-dark);
+  color: var(--accent-text);
   font: 600 13px/1 var(--mono);
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -430,7 +487,7 @@ h3 {
 }
 
 .section-dark {
-  background: var(--midnight);
+  background: var(--section-dark);
   color: var(--paper);
   --muted: var(--muted-dark);
   --line: var(--line-dark);
@@ -576,7 +633,7 @@ h3 {
 }
 
 .command .prompt {
-  color: var(--mint-dark);
+  color: var(--accent-text);
   user-select: none;
 }
 
@@ -603,7 +660,7 @@ h3 {
 }
 
 .copy:hover {
-  border-color: var(--mint-dark);
+  border-color: var(--accent-text);
 }
 
 .command-dark .copy:hover {
@@ -611,8 +668,8 @@ h3 {
 }
 
 .copy.is-copied {
-  color: var(--mint-dark);
-  border-color: var(--mint-dark);
+  color: var(--accent-text);
+  border-color: var(--accent-text);
 }
 
 .command-dark .copy.is-copied {
@@ -624,11 +681,11 @@ h3 {
 .trace-card {
   padding: 30px 30px 26px;
   border-radius: var(--radius-lg);
-  background: var(--midnight);
+  background: var(--panel);
   color: var(--paper);
   box-shadow:
-    0 30px 80px -30px rgba(7, 19, 31, 0.55),
-    0 0 0 1px rgba(7, 19, 31, 0.06);
+    0 30px 80px -30px rgba(var(--shadow-rgb), 0.55),
+    0 0 0 1px var(--panel-edge);
 }
 
 .trace-card-head {
@@ -863,7 +920,7 @@ h3 {
   display: block;
   padding: 10px 12px;
   border-radius: var(--radius-sm);
-  background: var(--midnight);
+  background: var(--panel);
   color: var(--paper);
   font-size: 12.5px;
   overflow-x: auto;
@@ -896,15 +953,17 @@ h3 {
 }
 
 .tour-tabs button[aria-selected='true'] {
-  background: var(--midnight);
-  color: var(--paper);
+  background: var(--solid-bg);
+  color: var(--solid-text);
 }
 
 .window {
   overflow: hidden;
   border-radius: var(--radius-lg);
-  background: var(--midnight);
-  box-shadow: 0 40px 100px -40px rgba(7, 19, 31, 0.6);
+  background: var(--panel);
+  box-shadow:
+    0 40px 100px -40px rgba(var(--shadow-rgb), 0.6),
+    0 0 0 1px var(--panel-edge);
 }
 
 .window-bar {
@@ -988,8 +1047,8 @@ h3 {
 
 .card:hover {
   transform: translateY(-4px);
-  border-color: color-mix(in srgb, var(--mint-dark) 45%, var(--line));
-  box-shadow: 0 18px 44px -20px rgba(7, 19, 31, 0.25);
+  border-color: color-mix(in srgb, var(--accent-text) 45%, var(--line));
+  box-shadow: 0 18px 44px -20px rgba(var(--shadow-rgb), 0.25);
 }
 
 .card:hover::before {
@@ -999,7 +1058,7 @@ h3 {
 .card-featured {
   grid-column: span 2;
   border-color: color-mix(in srgb, var(--iris) 45%, var(--line));
-  background: linear-gradient(180deg, color-mix(in srgb, var(--iris) 8%, #fff), #fff 60%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--iris) 8%, var(--bg-raised)), var(--bg-raised) 60%);
 }
 
 .card-featured::after {
@@ -1011,7 +1070,7 @@ h3 {
 }
 
 .card-eyebrow {
-  color: var(--mint-dark);
+  color: var(--accent-text);
   font: 600 12px/1 var(--mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1033,9 +1092,11 @@ h3 {
 .code-panel {
   overflow: hidden;
   border-radius: var(--radius-lg);
-  background: var(--midnight);
+  background: var(--panel);
   color: var(--paper);
-  box-shadow: 0 30px 80px -36px rgba(7, 19, 31, 0.55);
+  box-shadow:
+    0 30px 80px -36px rgba(var(--shadow-rgb), 0.55),
+    0 0 0 1px var(--panel-edge);
 }
 
 .code-panel-head {
@@ -1188,7 +1249,7 @@ h3 {
 
 .stack li {
   padding: 13px 16px;
-  border: 1px dashed #c3cfdc;
+  border: 1px dashed var(--line-strong);
   border-radius: var(--radius-sm);
   background: var(--bg-raised);
   color: var(--muted);
@@ -1205,7 +1266,8 @@ h3 {
   padding: 40px 30px;
   margin-bottom: 16px;
   border-radius: var(--radius-lg);
-  background: var(--midnight);
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--panel-edge);
   color: var(--paper);
   font-size: 17px;
   line-height: 1.7;
@@ -1324,13 +1386,13 @@ h3 {
 
 .doc-link:hover {
   transform: translateY(-3px);
-  border-color: color-mix(in srgb, var(--mint-dark) 45%, var(--line));
+  border-color: color-mix(in srgb, var(--accent-text) 45%, var(--line));
   text-decoration: none;
 }
 
 .doc-link strong::after {
   content: ' →';
-  color: var(--mint-dark);
+  color: var(--accent-text);
 }
 
 .doc-link span {
@@ -1345,7 +1407,7 @@ h3 {
   background:
     radial-gradient(600px 400px at 15% 0%, color-mix(in srgb, var(--mint) 18%, transparent), transparent 70%),
     radial-gradient(600px 400px at 85% 100%, color-mix(in srgb, var(--iris) 22%, transparent), transparent 70%),
-    var(--midnight);
+    var(--section-dark);
   color: var(--paper);
   text-align: center;
 }
@@ -1414,12 +1476,11 @@ h3 {
 
 .docs-layout {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr) 200px;
-  gap: 48px;
-  padding: 40px 0 80px;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 56px;
+  padding: 32px 0 80px;
 }
 
-.docs-sidebar,
 .docs-toc {
   position: sticky;
   top: calc(var(--header-h) + 24px);
@@ -1428,15 +1489,10 @@ h3 {
   overflow-y: auto;
 }
 
-.side-menu summary {
-  display: none;
+.docs-nav {
+  margin-bottom: 28px;
 }
 
-.side-group {
-  margin-bottom: 24px;
-}
-
-.side-group h2,
 .toc h2 {
   margin: 0 0 8px;
   color: var(--muted);
@@ -1445,7 +1501,6 @@ h3 {
   text-transform: uppercase;
 }
 
-.side-group a,
 .toc a {
   display: block;
   padding: 5px 10px;
@@ -1455,16 +1510,9 @@ h3 {
   font-size: 15px;
 }
 
-.side-group a:hover,
 .toc a:hover {
   background: var(--bg-tint);
   text-decoration: none;
-}
-
-.side-group a[aria-current='page'] {
-  background: color-mix(in srgb, var(--mint) 14%, transparent);
-  color: var(--mint-dark);
-  font-weight: 600;
 }
 
 .toc a {
@@ -1514,7 +1562,7 @@ h3 {
   padding: 2px 6px;
   border-radius: 6px;
   background: var(--bg-tint);
-  color: var(--midnight);
+  color: var(--text);
 }
 
 .prose pre {
@@ -1523,7 +1571,8 @@ h3 {
   padding: 18px 20px;
   overflow-x: auto;
   border-radius: var(--radius-md);
-  background: var(--midnight);
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--panel-edge);
   color: #d5dde7;
   font-size: 13.5px;
   line-height: 1.65;
@@ -1577,7 +1626,7 @@ h3 {
 .prose img {
   margin: 20px 0;
   border-radius: var(--radius-md);
-  box-shadow: 0 20px 50px -28px rgba(7, 19, 31, 0.5);
+  box-shadow: 0 20px 50px -28px rgba(var(--shadow-rgb), 0.5);
 }
 
 .prose td img {
@@ -1618,7 +1667,7 @@ h3 {
 }
 
 .pager a:hover {
-  border-color: color-mix(in srgb, var(--mint-dark) 45%, var(--line));
+  border-color: color-mix(in srgb, var(--accent-text) 45%, var(--line));
   text-decoration: none;
 }
 
@@ -1633,11 +1682,331 @@ h3 {
   grid-column: 2;
 }
 
+/* ---------- dropdowns (header "Docs" menu, docs page picker) ---------- */
+
+.dropdown {
+  position: relative;
+}
+
+.dropdown > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.dropdown > summary::-webkit-details-marker {
+  display: none;
+}
+
+.dropdown .chevron {
+  transition: transform var(--motion-base) var(--ease);
+}
+
+.dropdown[open] .chevron {
+  transform: rotate(180deg);
+}
+
+.dropdown-panel {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 8px);
+  left: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 20px;
+  width: min(680px, calc(100vw - 32px));
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  box-shadow: 0 24px 60px -24px rgba(var(--shadow-rgb), 0.35);
+}
+
+.dd-group {
+  min-width: 0;
+  margin-bottom: 10px;
+}
+
+.dd-group h3 {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font: 600 11.5px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dd-group a {
+  display: block;
+  padding: 5px 8px;
+  margin-left: -8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 14.5px;
+  font-weight: 500;
+}
+
+.dd-group a:hover {
+  background: var(--bg-tint);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.dd-group a[aria-current='page'] {
+  background: color-mix(in srgb, var(--mint) 14%, transparent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+/* The header menu opens leftwards from "Docs" so it stays on screen. */
+.nav-dropdown > .dropdown-panel {
+  left: auto;
+  right: 0;
+}
+
+.nav-dropdown > summary {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 15px;
+  font-weight: 500;
+  transition:
+    background var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+
+.nav-dropdown > summary:hover,
+.nav-dropdown[open] > summary,
+.nav-dropdown > summary[aria-current='page'] {
+  background: var(--bg-tint);
+  color: var(--text);
+}
+
+/* The docs page picker: the current page, opening onto every page. */
+.doc-picker > summary {
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  font-size: 15px;
+  transition: border-color var(--motion-fast) var(--ease);
+}
+
+.doc-picker > summary:hover,
+.doc-picker[open] > summary {
+  border-color: var(--line-strong);
+}
+
+.doc-picker-group {
+  color: var(--muted);
+  font: 600 12px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.doc-picker-group::after {
+  content: '/';
+  margin-left: 10px;
+  color: var(--line-strong);
+}
+
+.doc-picker-title {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ---------- theme toggle ---------- */
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition:
+    background var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+
+.theme-toggle:hover {
+  background: var(--bg-tint);
+  color: var(--text);
+}
+
+.theme-toggle-mobile {
+  display: none;
+  margin-left: auto;
+}
+
+.theme-toggle-mobile + .nav-toggle {
+  margin-left: 6px;
+}
+
+/* Show the icon of the theme you'd switch *to*. */
+.theme-toggle .icon-sun {
+  display: none;
+}
+
+:root[data-theme='dark'] .theme-toggle .icon-sun {
+  display: block;
+}
+
+:root[data-theme='dark'] .theme-toggle .icon-moon {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .theme-toggle .icon-sun {
+    display: block;
+  }
+  :root:not([data-theme='light']) .theme-toggle .icon-moon {
+    display: none;
+  }
+}
+
+/* ---------- diagrams (Mermaid) ---------- */
+
+.prose .diagram {
+  margin: 24px 0;
+  padding: 20px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+}
+
+.prose .diagram pre.mermaid {
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: pre;
+}
+
+.prose .diagram pre.mermaid[data-processed='true'] {
+  text-align: center;
+  white-space: normal;
+  line-height: normal;
+}
+
+/* Mermaid sizes its SVG itself (width 100%, max-width = natural size); just don't let other image
+   rules interfere. */
+.prose .diagram svg {
+  display: inline-block;
+}
+
+/* ---------- selling points ---------- */
+
+.pillars {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+.pillars > * {
+  min-width: 0;
+}
+
+.pillar {
+  position: relative;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+}
+
+.pillar-wide {
+  grid-column: span 2;
+}
+
+.pillar-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  margin-bottom: 16px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--mint) 14%, transparent);
+  color: var(--accent-text);
+}
+
+.pillar:nth-child(even) .pillar-icon {
+  background: color-mix(in srgb, var(--iris) 14%, transparent);
+  color: var(--iris);
+}
+
+.pillar h3 {
+  margin: 0 0 8px;
+  font-size: 19px;
+}
+
+.pillar p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.pillar code {
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* Planned, not shipped: visibly different from the shipped pillars. */
+.pillar-roadmap {
+  border-style: dashed;
+  border-color: var(--line-strong);
+  background: transparent;
+}
+
+.roadmap-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--iris) 14%, transparent);
+  color: var(--iris);
+  font: 600 11.5px/1.5 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.pillar .pillar-link {
+  margin-top: 12px;
+}
+
+.pillar-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.pillar-tags span {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 1100px) {
   .docs-layout {
-    grid-template-columns: 200px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
   .docs-toc {
     display: none;
@@ -1702,9 +2071,9 @@ h3 {
     align-items: stretch;
     gap: 2px;
     padding: 12px 16px 20px;
-    background: var(--paper);
+    background: var(--bg);
     border-bottom: 1px solid var(--line);
-    box-shadow: 0 20px 40px -24px rgba(7, 19, 31, 0.3);
+    box-shadow: 0 20px 40px -24px rgba(var(--shadow-rgb), 0.3);
   }
   .js .site-nav:not(.is-open) {
     display: none;
@@ -1714,29 +2083,42 @@ h3 {
   }
 
   .docs-layout {
-    grid-template-columns: 1fr;
-    gap: 16px;
     padding-top: 20px;
   }
-  .docs-sidebar {
+
+  /* Inside the mobile menu sheet the docs dropdown expands in place. */
+  .nav-dropdown .dropdown-panel {
     position: static;
-    max-height: none;
+    width: auto;
+    margin: 4px 0 8px;
+    box-shadow: none;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .side-menu {
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: var(--bg-raised);
-    padding: 4px 16px;
+  .theme-toggle-desktop {
+    display: none;
   }
-  .side-menu summary {
-    display: block;
-    padding: 10px 0;
-    font-weight: 600;
-    cursor: pointer;
+  .theme-toggle-mobile {
+    display: inline-flex;
+  }
+  .pillars {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .pillar-wide {
+    grid-column: span 2;
   }
 }
 
 @media (max-width: 560px) {
+  .pillars {
+    grid-template-columns: 1fr;
+  }
+  .pillar-wide {
+    grid-column: auto;
+  }
+  .dropdown-panel,
+  .nav-dropdown .dropdown-panel {
+    grid-template-columns: 1fr;
+  }
   .cards,
   .downloads {
     grid-template-columns: 1fr;
@@ -1765,7 +2147,9 @@ h3 {
   html {
     scroll-behavior: auto;
   }
-  *,
+  /* SVG content is excluded: Mermaid lays diagrams out using its own transitions, and forcing them
+     to ~0 makes it compute a huge, mostly empty canvas. */
+  *:not(svg, svg *),
   *::before,
   *::after {
     transition-duration: 0.01ms !important;
