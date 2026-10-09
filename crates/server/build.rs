@@ -49,7 +49,7 @@ fn windows_resources(manifest: &std::path::Path) {
     res.set_icon(icon.to_str().expect("icon path is UTF-8"))
         .set("ProductName", "Vyrtel")
         .set("FileDescription", "Vyrtel: self-hosted observability")
-        .set("LegalCopyright", "MIT licence")
+        .set("LegalCopyright", "Copyright (c) 2026 Rowan Smith. MIT licence")
         .set("OriginalFilename", "vyrtel.exe")
         .set("InternalName", "vyrtel");
     res.compile().expect("embedding the Windows icon (needs the Windows SDK's rc.exe or windres)");

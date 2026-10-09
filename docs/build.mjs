@@ -108,6 +108,7 @@ const footer = (base) => `
         <h2>Project</h2>
         <a href="${repoUrl}">Source code</a>
         <a href="${repoUrl}/issues">Issues</a>
+        <a href="${base}docs/contributing.html">Contributing</a>
         <a href="${repoUrl}/blob/main/LICENSE">License (MIT)</a>
         <a href="${base}docs/brand.html">Brand guide</a>
       </div>
@@ -151,6 +152,9 @@ const DOCS = [
   { slug: 'storage-format', file: 'docs/storage-format.md', group: 'Internals' },
   { slug: 'development', file: 'docs/development.md', group: 'Contributing' },
   { slug: 'testing', file: 'docs/testing.md', group: 'Contributing' },
+  { slug: 'contributing', file: 'CONTRIBUTING.md', group: 'Project' },
+  { slug: 'cla-individual', file: 'docs/cla/individual.md', title: 'Individual CLA', group: 'Project' },
+  { slug: 'cla-corporate', file: 'docs/cla/corporate.md', title: 'Corporate CLA', group: 'Project' },
   { slug: 'roadmap', file: 'docs/roadmap.md', group: 'Project' },
   { slug: 'brand', file: 'docs/brand/README.md', title: 'Brand guide', group: 'Project' },
 ];

@@ -226,6 +226,13 @@ Adaptive indexing from the recorded query statistics, full-text message
 index, per-service retention, OTLP/gRPC, richer alert routing, object-storage
 tiering. See [docs/roadmap.md](docs/roadmap.md).
 
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get started. All
+contributors sign a Contributor License Agreement once: the [Individual CLA](docs/cla/individual.md),
+plus the [Corporate CLA](docs/cla/corporate.md) when contributing on behalf of an employer. The CLA
+bot walks you through it on your first pull request.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
