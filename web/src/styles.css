@@ -38,6 +38,7 @@
   --c-fatal: #ff3d5e;
   --val-number: #aba5ff;
   --val-boolean: #f4a6c8;
+  --val-string: #c4bfff;
   --series-0: #39e6c2;
   --series-1: #7c72ff;
   --series-2: #59c7ff;
@@ -85,6 +86,7 @@
     --c-debug: #5b50e6;
     --val-number: #5b50e6;
     --val-boolean: #b4237a;
+    --val-string: #4d42d9;
     --series-0: #0e9e85;
     --series-1: #5b50e6;
     --series-2: #1a8fd1;
@@ -433,6 +435,68 @@ h3 {
   background: var(--bg-active);
 }
 
+/* Square icon buttons in toolbars (side-panel toggle, time range). */
+.btn-icon {
+  justify-content: center;
+  min-width: 36px;
+  padding: 0 9px;
+  color: var(--text-dim);
+}
+
+.btn-icon:hover {
+  color: var(--text);
+}
+
+.btn-icon.btn-active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
+}
+
+.range-short {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.range-menu {
+  position: relative;
+  display: flex;
+}
+
+.menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 170px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  box-shadow: 0 14px 34px -14px rgba(0, 0, 0, 0.45);
+}
+
+.menu-item {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--text-dim);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-item:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.menu-item[aria-checked='true'] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .btn-danger {
   color: var(--error);
 }
@@ -737,76 +801,169 @@ h3 {
 
 /* ---------- logs ---------- */
 
+/* The Logs page fills the window: the log list scrolls inside its own column and the side panel
+   runs from under the toolbar to the bottom of the screen. */
+.logs-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
 .logs-layout {
+  flex: 1;
+  min-height: 0;
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
 }
 
-.logs-layout.with-filters {
-  grid-template-columns: 240px minmax(0, 1fr);
-}
-
-.filter-panel {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-raised);
-  align-self: start;
-  max-height: calc(100vh - 140px);
+.logs-main {
+  min-height: 0;
   overflow: auto;
-  position: sticky;
-  top: 0;
 }
 
-.filter-head {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
+.logs-layout.with-side {
+  grid-template-columns: minmax(0, 1fr) 220px;
+}
+
+/* ---------- logs side panel: "Pinned" columns and "Filters" ---------- */
+
+.logs-side {
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0 8px;
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+/* Docked: the panel sits flush against the right and bottom edges of the window (reaching
+   through the page's 16px padding), with square corners. */
+.logs-page {
+  padding-bottom: 0;
+}
+
+.logs-layout.with-side .logs-side {
+  margin-right: -16px;
+}
+
+.side-section + .side-section {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.side-title {
+  margin: 0;
+  padding: 6px 0;
+  color: var(--text);
+  font-size: 13px;
   font-weight: 600;
 }
 
-.facet {
-  padding: 8px 10px 4px;
-  border-bottom: 1px solid var(--border);
+.side-action {
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: none;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  cursor: pointer;
 }
 
-.facet ul {
+.side-action:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.side-note {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.side-empty {
+  padding: 4px 14px 8px;
+}
+
+.side-group {
+  margin-top: 8px;
+}
+
+.side-group-name {
+  margin: 0;
+  padding: 2px 12px 3px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.side-list {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.facet-name {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-}
-
-.facet-value {
+.side-option {
   display: flex;
-  width: 100%;
-  justify-content: space-between;
+  align-items: center;
   gap: 8px;
-  background: none;
+  width: 100%;
+  padding: 4px 12px;
+  font-size: 12px;
   border: 0;
-  padding: 2px 4px;
-  border-radius: 4px;
-  cursor: pointer;
+  border-radius: 0;
+  background: none;
+  color: var(--text-dim);
   text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease);
 }
 
-.facet-value:hover {
+.side-option:hover {
   background: var(--bg-hover);
+  color: var(--text);
 }
 
-.facet-text {
+.side-option.is-on {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+/* Hollow ring when off, filled mint when on. */
+.side-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--muted);
+  border-radius: 50%;
+}
+
+.side-option.is-on .side-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.side-label {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.facet-count {
+.side-count {
   color: var(--muted);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -906,17 +1063,19 @@ h3 {
 }
 
 .log-line {
+  position: relative;
   display: grid;
-  grid-template-columns: max-content 56px minmax(60px, 140px) minmax(0, 1fr);
+  grid-template-columns: var(--log-cols, max-content 64px minmax(60px, 140px) minmax(0, 1fr));
   gap: 12px;
   width: 100%;
   text-align: left;
   background: none;
   border: 0;
-  padding: 4px 10px;
+  padding: 2px 10px 2px 24px;
   cursor: pointer;
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: 11.5px;
+  line-height: 1.55;
   align-items: baseline;
 }
 
@@ -928,6 +1087,36 @@ h3 {
   background: var(--bg-active);
 }
 
+.log-chevron {
+  position: absolute;
+  left: 7px;
+  top: 50%;
+  margin-top: -6px;
+  color: var(--muted);
+  opacity: 0;
+  transition:
+    opacity var(--motion-fast) var(--ease),
+    transform var(--motion-fast) var(--ease);
+}
+
+.log-line:hover .log-chevron,
+.log-line:focus-visible .log-chevron {
+  opacity: 1;
+}
+
+.log.is-expanded .log-chevron {
+  opacity: 1;
+  color: var(--text);
+  transform: rotate(90deg);
+}
+
+.log-field {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
 .log-time {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
@@ -935,7 +1124,7 @@ h3 {
 
 .log-level {
   font-weight: 700;
-  font-size: 11px;
+  font-size: 10.5px;
 }
 
 .log-service {
@@ -953,7 +1142,7 @@ h3 {
 
 .log-exc {
   color: var(--error);
-  font-size: 11px;
+  font-size: 10.5px;
 }
 
 .lvl-trace {
@@ -989,8 +1178,9 @@ h3 {
 }
 
 .log-details {
-  padding: 8px 12px 12px 22px;
-  background: var(--bg-raised);
+  padding: 8px 12px 10px 24px;
+  font-size: 12px;
+  background: color-mix(in srgb, var(--bg-active) 35%, var(--bg-raised));
   border-top: 1px solid var(--border);
 }
 
@@ -1004,8 +1194,9 @@ h3 {
 .detail-label {
   color: var(--muted);
   font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
   padding-top: 2px;
 }
 
@@ -1056,6 +1247,10 @@ h3 {
 
 .val-number {
   color: var(--val-number);
+}
+
+.val-string {
+  color: var(--val-string);
 }
 
 .val-boolean {
@@ -1550,18 +1745,41 @@ h3 {
 }
 
 @media (max-width: 760px) {
-  .logs-layout.with-filters {
+  /* Narrow screens: the side panel sits above the list, and rows keep only the essentials
+     (time, level, message) whatever is pinned. */
+  .logs-layout.with-side {
     grid-template-columns: 1fr;
   }
-  .filter-panel {
-    position: static;
-    max-height: 260px;
+  .logs-page {
+    height: auto;
+    padding-bottom: 16px;
+  }
+  .logs-layout.with-side .logs-side {
+    margin-right: 0;
+    border: 1px solid var(--border);
+  }
+  .logs-main {
+    overflow: visible;
+  }
+  .logs-side {
+    order: -1;
+    max-height: 300px;
   }
   .log-line {
-    grid-template-columns: max-content 48px minmax(0, 1fr);
+    display: flex;
+    gap: 10px;
   }
-  .log-service {
+  .log-service,
+  .log-field {
     display: none;
+  }
+  .log-time,
+  .log-level {
+    flex: none;
+  }
+  .log-message {
+    flex: 1;
+    min-width: 0;
   }
   .grid .panel {
     grid-column: span 12 !important;

@@ -38,10 +38,9 @@ function setup(error?: boolean, logCount = 2) {
       const q = (body as { query: string }).query;
       return { events: q.includes('nothing') ? [] : [first, second], diagnostics: diag, continuationToken: null };
     },
-    '/api/v1/query/logs/histogram': () => ({ buckets: [{ start: '2026-10-06T10:00:00Z', count: 2, levels: [0, 0, 0, 1, 0, 1, 0] }], total: 2, stepMs: 60000 }),
     '/api/v1/query/logs/facets': () => ({
       sampled: 2,
-      fields: [{ field: 'service', count: 2, truncated: false, values: [{ value: 'payments', count: 2 }] }],
+      fields: [{ field: 'environment', count: 2, truncated: false, values: [{ value: 'production', count: 2 }] }],
     }),
   });
   return calls;
@@ -87,15 +86,15 @@ describe('LogsPage', () => {
     expect(within(details).getByTestId('prop-customerId')).toHaveTextContent('481');
   });
 
-  it('adds a filter from the filter panel to the query', async () => {
+  it('adds a filter from the side panel to the query', async () => {
     const calls = setup();
     renderWithRouter(<LogsPage />, '/logs?q=level%20%3D%20Error');
     await screen.findByText('first event');
-    const panel = await screen.findByRole('complementary', { name: 'Filters' });
-    await userEvent.click(await within(panel).findByRole('button', { name: /payments/ }));
-    await waitFor(() => expect(new URLSearchParams(window.location.search).get('q')).toBe('level = Error and service = "payments"'));
+    const panel = await screen.findByRole('complementary', { name: 'Columns and filters' });
+    await userEvent.click(await within(panel).findByRole('button', { name: /production/ }));
+    await waitFor(() => expect(new URLSearchParams(window.location.search).get('q')).toBe('level = Error and environment = "production"'));
     await waitFor(() =>
-      expect(calls.some((c) => c.url === '/api/v1/query/logs' && (c.body as { query: string }).query === 'level = Error and service = "payments"')).toBe(true),
+      expect(calls.some((c) => c.url === '/api/v1/query/logs' && (c.body as { query: string }).query === 'level = Error and environment = "production"')).toBe(true),
     );
   });
 
@@ -147,10 +146,9 @@ describe('LogsPage', () => {
     setup();
     renderWithRouter(<LogsPage />, '/logs?q=message%20%3D%20%22nothing%22');
     expect(await screen.findByText('No matching events')).toBeInTheDocument();
-    // No histogram band, "0 results" diagnostics line or empty filter panel alongside it.
-    expect(screen.queryByRole('img', { name: 'Events over time' })).not.toBeInTheDocument();
+    // No "0 results" diagnostics line or empty side panel alongside it.
     expect(screen.queryByTestId('diagnostics')).not.toBeInTheDocument();
-    expect(screen.queryByRole('complementary', { name: 'Filters' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('complementary', { name: 'Columns and filters' })).not.toBeInTheDocument();
     // The query bar stays so the query or time range can be changed.
     expect(screen.getByRole('textbox', { name: 'Query' })).toBeInTheDocument();
   });

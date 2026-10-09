@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ErrorBanner } from '../../src/components/common';
-import { FilterPanel } from '../../src/components/FilterPanel';
+import { LogsSidebar } from '../../src/components/LogsSidebar';
 import { LogRow } from '../../src/components/LogRow';
 import { PropertyTree } from '../../src/components/PropertyTree';
 import { LiveToggle, QueryBar } from '../../src/components/QueryBar';
@@ -59,7 +59,8 @@ describe('LogRow', () => {
     const line = screen.getByRole('button', { name: /payment provider timed out/i });
     expect(line).toHaveAttribute('aria-expanded', 'false');
     expect(within(line).getByText('ERROR')).toBeInTheDocument();
-    expect(within(line).getByText('payments')).toBeInTheDocument();
+    // Default columns are timestamp, level and message.
+    expect(within(line).queryByText('payments')).not.toBeInTheDocument();
     expect(screen.queryByTestId('log-details')).not.toBeInTheDocument();
     await userEvent.click(line);
     expect(onToggle).toHaveBeenCalled();
@@ -109,28 +110,43 @@ describe('PropertyTree', () => {
   });
 });
 
-describe('FilterPanel', () => {
-  it('selecting a value reports field and value', async () => {
-    const onSelect = vi.fn();
-    render(
-      <FilterPanel
-        sampled={100}
-        onSelect={onSelect}
-        facets={[
-          { field: 'level', count: 100, truncated: false, values: [{ value: 'Error', count: 381 }, { value: 'Warning', count: 142 }] },
-          { field: 'customerId', count: 50, truncated: false, values: [{ value: 481, count: 50 }] },
-          { field: 'bad key with spaces', count: 5, truncated: false, values: [{ value: 'x', count: 5 }] },
-        ]}
-      />,
-    );
-    expect(screen.getByText('Level')).toBeInTheDocument();
+describe('LogsSidebar', () => {
+  const facets = [
+    { field: 'level', count: 100, truncated: false, values: [{ value: 'Error', count: 381 }, { value: 'Warning', count: 142 }] },
+    { field: 'environment', count: 100, truncated: false, values: [{ value: 'production', count: 90 }] },
+    { field: 'customerId', count: 50, truncated: false, values: [{ value: 481, count: 50 }] },
+  ];
+  const renderSidebar = (query: string, columns = ['timestamp', 'level', 'message']) => {
+    const onFilter = vi.fn();
+    const onColumnsChange = vi.fn();
+    render(<LogsSidebar facets={facets} sampled={100} query={query} columns={columns} onFilter={onFilter} onColumnsChange={onColumnsChange} />);
+    return { onFilter, onColumnsChange };
+  };
+
+  it('filters act like radio buttons: pick to filter, pick again to clear', async () => {
+    const { onFilter } = renderSidebar('level = "Error"');
+    const levels = screen.getByRole('list', { name: 'Levels' });
     expect(screen.getByText('381')).toBeInTheDocument();
-    // Fields that cannot be expressed in the query language are hidden.
-    expect(screen.queryByText('bad key with spaces')).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: /Error/ }));
-    expect(onSelect).toHaveBeenCalledWith('level', 'Error');
-    await userEvent.click(screen.getByRole('button', { name: /481/ }));
-    expect(onSelect).toHaveBeenLastCalledWith('customerId', 481);
+    // Only levels and environments are offered as filters for now.
+    expect(screen.getByRole('list', { name: 'Environments' })).toBeInTheDocument();
+    expect(screen.queryByText('481')).not.toBeInTheDocument();
+    const error = within(levels).getByRole('button', { name: /Error/ });
+    expect(error).toHaveAttribute('aria-pressed', 'true');
+    await userEvent.click(error);
+    expect(onFilter).toHaveBeenCalledWith('level', null);
+    await userEvent.click(within(levels).getByRole('button', { name: /Warning/ }));
+    expect(onFilter).toHaveBeenLastCalledWith('level', 'Warning');
+  });
+
+  it('offers timestamp, level and message as columns', async () => {
+    const { onColumnsChange } = renderSidebar('', ['timestamp', 'level']);
+    const cols = screen.getByRole('list', { name: 'Columns' });
+    expect(within(cols).getAllByRole('button').map((b) => b.textContent)).toEqual(['Timestamp', 'Level', 'Message']);
+    expect(within(cols).getByRole('button', { name: 'Message' })).toHaveAttribute('aria-pressed', 'false');
+    await userEvent.click(within(cols).getByRole('button', { name: 'Message' }));
+    expect(onColumnsChange).toHaveBeenCalledWith(['timestamp', 'level', 'message']);
+    await userEvent.click(within(cols).getByRole('button', { name: 'Level' }));
+    expect(onColumnsChange).toHaveBeenLastCalledWith(['timestamp']);
   });
 });
 

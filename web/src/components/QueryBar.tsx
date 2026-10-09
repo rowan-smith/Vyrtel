@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import { RANGE_PRESETS } from '../lib/query';
@@ -8,12 +8,15 @@ export function QueryBar({
   onRun,
   placeholder = 'level = "Error" and service = "payments"',
   running,
+  leading,
   children,
 }: {
   query: string;
   onRun: (query: string) => void;
   placeholder?: string;
   running?: boolean;
+  /** Controls placed before the query input (e.g. the Logs side-panel toggle). */
+  leading?: ReactNode;
   children?: ReactNode;
 }) {
   const [text, setText] = useState(query);
@@ -29,6 +32,7 @@ export function QueryBar({
         onRun(text.trim());
       }}
     >
+      {leading}
       <input
         className="query-input"
         aria-label="Query"
@@ -72,14 +76,66 @@ export function LiveToggle({ live, status, onChange }: { live: boolean; status?:
   );
 }
 
+/** The time range as a clock button with a menu. Off the default hour it also shows a short label. */
 export function RangeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false);
+        ref.current?.querySelector<HTMLButtonElement>('button')?.focus();
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  const current = RANGE_PRESETS.find((r) => r.key === value) ?? RANGE_PRESETS[2];
+  const short = current.key === 'all' ? 'All' : current.key;
   return (
-    <select className="select" aria-label="Time range" value={value} onChange={(e) => onChange(e.target.value)}>
-      {RANGE_PRESETS.map((r) => (
-        <option key={r.key} value={r.key}>
-          {r.label}
-        </option>
-      ))}
-    </select>
+    <div className="range-menu" ref={ref}>
+      <button
+        type="button"
+        className="btn btn-icon"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Time range: ${current.label}`}
+        title={`Time range: ${current.label}`}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v5l3 2" />
+        </svg>
+        {current.key !== '1h' && <span className="range-short">{short}</span>}
+      </button>
+      {open && (
+        <div className="menu" role="menu" aria-label="Time range">
+          {RANGE_PRESETS.map((r) => (
+            <button
+              key={r.key}
+              type="button"
+              role="menuitemradio"
+              aria-checked={r.key === current.key}
+              className="menu-item"
+              onClick={() => {
+                onChange(r.key);
+                setOpen(false);
+              }}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

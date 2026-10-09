@@ -1,38 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 
 import { api } from '../lib/api';
-import type { Diagnostics, Facet, HistogramBucket, Json, TelemetryEvent } from '../lib/types';
-import { andQuery, boundedWindow, clause, rangeWindow } from '../lib/query';
+import type { Diagnostics, Facet, Json, TelemetryEvent } from '../lib/types';
+import { columnTemplate, loadColumns, orderColumns, saveColumns } from '../lib/columns';
+import { andQuery, clause, filteredFields, rangeWindow, setFieldFilter } from '../lib/query';
 import { useRouter } from '../lib/router';
 import { useHasData } from '../lib/useHasData';
 import { useLiveTail } from '../lib/useLiveTail';
 import { DiagnosticsPanel } from '../components/Diagnostics';
-import { FilterPanel } from '../components/FilterPanel';
-import { HistogramChart } from '../components/Charts';
 import { LiveToggle, QueryBar, RangeSelect } from '../components/QueryBar';
+import { LogsSidebar } from '../components/LogsSidebar';
 import { LogRow } from '../components/LogRow';
 import { Empty, ErrorBanner, Spinner } from '../components/common';
 
 const PAGE = 200;
 /** Live mode keeps at most this many rows on screen. */
 const MAX_ROWS = 1000;
-
-function loadPref(key: string, fallback: boolean): boolean {
-  try {
-    const v = localStorage.getItem(key);
-    return v == null ? fallback : v === '1';
-  } catch {
-    return fallback;
-  }
-}
-
-function savePref(key: string, v: boolean) {
-  try {
-    localStorage.setItem(key, v ? '1' : '0');
-  } catch {
-    /* storage unavailable */
-  }
-}
 
 export function LogsPage() {
   const hasData = useHasData('logs');
@@ -62,10 +46,9 @@ function LogsView() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [newIds, setNewIds] = useState<Set<string>>(new Set());
   const [live, setLive] = useState(false);
-  const [showFilters, setShowFilters] = useState(() => loadPref('vyrtel.filters', true));
+  const [columns, setColumns] = useState<string[]>(loadColumns);
   const [facets, setFacets] = useState<{ fields: Facet[]; sampled: number }>({ fields: [], sampled: 0 });
   const [facetsLoading, setFacetsLoading] = useState(false);
-  const [histogram, setHistogram] = useState<HistogramBucket[]>([]);
   const [runId, setRunId] = useState(0);
   const abort = useRef<AbortController | null>(null);
 
@@ -106,26 +89,33 @@ function LogsView() {
       .finally(() => {
         if (!ctrl.signal.aborted) setLoading(false);
       });
-    api
-      .histogram('logs', { query, buckets: 80, ...boundedWindow(range) }, ctrl.signal)
-      .then((h) => setHistogram(h.buckets))
-      .catch(() => setHistogram([]));
     return () => ctrl.abort();
   }, [query, range, runId]);
 
   useEffect(() => {
-    if (!showFilters) return;
     const ctrl = new AbortController();
     setFacetsLoading(true);
-    api
-      .facets('logs', { query, sample: 2000, ...rangeWindow(range) }, ctrl.signal)
-      .then((f) => setFacets({ fields: f.fields, sampled: f.sampled }))
+    const win = rangeWindow(range);
+    // A field you've filtered on lists its values as if that one filter weren't applied (but the
+    // others still are), so you can see and switch to the alternatives.
+    const own = filteredFields(query);
+    Promise.all([
+      api.facets('logs', { query, sample: 2000, ...win }, ctrl.signal),
+      ...own.map((field) => api.facets('logs', { query: setFieldFilter(query, field, null), sample: 2000, ...win }, ctrl.signal)),
+    ])
+      .then(([main, ...others]) => {
+        const fields = main.fields.map((f) => {
+          const i = own.indexOf(f.field);
+          return (i >= 0 && others[i].fields.find((x) => x.field === f.field)) || f;
+        });
+        setFacets({ fields, sampled: main.sampled });
+      })
       .catch(() => setFacets({ fields: [], sampled: 0 }))
       .finally(() => {
         if (!ctrl.signal.aborted) setFacetsLoading(false);
       });
     return () => ctrl.abort();
-  }, [query, range, runId, showFilters]);
+  }, [query, range, runId]);
 
   const onLive = useCallback((incoming: TelemetryEvent[]) => {
     // Newest first, like the result list.
@@ -149,6 +139,15 @@ function LogsView() {
     if (c) setUrl(andQuery(query, c), range);
   };
 
+  /** Side-panel filters: one value per field; `null` clears it. */
+  const setFilter = (field: string, value: Json | null) => setUrl(setFieldFilter(query, field, value), range);
+
+  const changeColumns = (cols: string[]) => {
+    setColumns(cols);
+    saveColumns(cols);
+  };
+  const shownColumns = orderColumns(columns);
+
   const loadMore = async () => {
     if (!token) return;
     setLoading(true);
@@ -171,36 +170,25 @@ function LogsView() {
       return n;
     });
 
-  // With nothing to show, show only the "no events" message: no empty histogram band, "0 results"
+  // With nothing to show, show only the "no events" message: no "0 results"
   // diagnostics line or empty filter panel.
   const hasResults = events.length > 0;
 
   return (
     <div className="page logs-page">
       <div className="toolbar">
-        <QueryBar query={query} onRun={run} running={loading}>
-          <LiveToggle live={live} status={liveStatus} onChange={setLive} />
+        <QueryBar
+          query={query}
+          onRun={run}
+          running={loading}
+        >
           <RangeSelect value={range} onChange={(r) => setUrl(query, r)} />
-          <button
-            type="button"
-            className={`btn ${showFilters ? 'btn-active' : ''}`}
-            aria-pressed={showFilters}
-            onClick={() => {
-              setShowFilters((v) => {
-                savePref('vyrtel.filters', !v);
-                return !v;
-              });
-            }}
-          >
-            Filters
-          </button>
+          <LiveToggle live={live} status={liveStatus} onChange={setLive} />
         </QueryBar>
       </div>
       <ErrorBanner error={error} query={query} />
-      <div className={`logs-layout ${showFilters && hasResults ? 'with-filters' : ''}`}>
-        {showFilters && hasResults && <FilterPanel facets={facets.fields} sampled={facets.sampled} loading={facetsLoading} onSelect={(f, v) => addFilter(f, v)} />}
+      <div className={`logs-layout ${hasResults ? 'with-side' : ''}`}>
         <section className="logs-main" aria-label="Log events">
-          {hasResults && histogram.length > 0 && <HistogramChart buckets={histogram} />}
           {(hasResults || loading) && (
             <div className="results-head">
               {hasResults && <DiagnosticsPanel diagnostics={diagnostics} count={events.length} />}
@@ -208,7 +196,7 @@ function LogsView() {
               {live && dropped > 0 && <span className="muted small">{dropped} live events skipped (too fast to display)</span>}
             </div>
           )}
-          <div className="log-list" data-testid="log-list">
+          <div className="log-list" data-testid="log-list" style={{ '--log-cols': columnTemplate(shownColumns) } as CSSProperties}>
             {events.map((e) => (
               <LogRow
                 key={e.id}
@@ -217,6 +205,7 @@ function LogsView() {
                 onToggle={() => toggle(e.id)}
                 onFilter={addFilter}
                 isNew={newIds.has(e.id)}
+                columns={shownColumns}
               />
             ))}
           </div>
@@ -233,6 +222,17 @@ function LogsView() {
             </div>
           )}
         </section>
+        {hasResults && (
+          <LogsSidebar
+            facets={facets.fields}
+            sampled={facets.sampled}
+            loading={facetsLoading}
+            query={query}
+            columns={columns}
+            onColumnsChange={changeColumns}
+            onFilter={setFilter}
+          />
+        )}
       </div>
     </div>
   );

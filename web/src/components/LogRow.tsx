@@ -2,7 +2,8 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 
 import type { TelemetryEvent } from '../lib/types';
-import { formatDateTime, formatTime, isToday, levelClass, levelShort } from '../lib/format';
+import { DEFAULT_COLUMNS, columnLabel, columnValue } from '../lib/columns';
+import { formatDateTime, formatTime, isToday, levelClass, levelShort, valueText } from '../lib/format';
 import { Link } from '../lib/router';
 import { PropertyTree } from './PropertyTree';
 import type { FilterAction } from './PropertyTree';
@@ -14,26 +15,62 @@ export function LogRow({
   onToggle,
   onFilter,
   isNew,
+  columns = DEFAULT_COLUMNS,
 }: {
   event: TelemetryEvent;
   expanded: boolean;
   onToggle: () => void;
   onFilter?: FilterAction;
   isNew?: boolean;
+  /** Column keys in display order (see lib/columns); the grid template comes from the list. */
+  columns?: string[];
 }) {
   const time = isToday(event.timestamp) ? formatTime(event.timestamp) : formatDateTime(event.timestamp);
+  const cell = (key: string) => {
+    switch (key) {
+      case 'timestamp':
+        return (
+          <span key={key} className="log-time" title={event.timestamp}>
+            {time}
+          </span>
+        );
+      case 'level':
+        return (
+          <span key={key} className={`log-level ${levelClass(event.level)}`}>
+            {levelShort(event.level)}
+          </span>
+        );
+      case 'service':
+        return (
+          <span key={key} className="log-service">
+            {event.service ?? ''}
+          </span>
+        );
+      case 'message':
+        return (
+          <span key={key} className="log-message">
+            {event.message}
+            {event.exception && !expanded && <span className="log-exc"> {event.exception.type ?? 'exception'}</span>}
+          </span>
+        );
+      default: {
+        const v = columnValue(event, key);
+        const text = v === undefined ? '' : valueText(v);
+        return (
+          <span key={key} className="log-field" title={text ? `${columnLabel(key)}: ${text}` : undefined}>
+            {text}
+          </span>
+        );
+      }
+    }
+  };
   return (
     <div className={`log ${expanded ? 'is-expanded' : ''} ${isNew ? 'is-new' : ''}`} data-testid="log-row">
       <button type="button" className="log-line" aria-expanded={expanded} onClick={onToggle}>
-        <span className="log-time" title={event.timestamp}>
-          {time}
-        </span>
-        <span className={`log-level ${levelClass(event.level)}`}>{levelShort(event.level)}</span>
-        <span className="log-service">{event.service ?? ''}</span>
-        <span className="log-message">
-          {event.message}
-          {event.exception && !expanded && <span className="log-exc"> {event.exception.type ?? 'exception'}</span>}
-        </span>
+        <svg className="log-chevron" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+          <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        {columns.map(cell)}
       </button>
       {expanded && <LogDetails event={event} onFilter={onFilter} />}
     </div>

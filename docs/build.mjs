@@ -11,6 +11,7 @@
 // All URLs are relative, so the site works at https://<owner>.github.io/<repo>/ or any other base.
 
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -152,6 +153,7 @@ const head = (base, title, description) => `
 <title>${title}</title>
 <meta name="description" content="${description}">
 <meta name="theme-color" content="#F6F8FB">
+<meta name="color-scheme" content="light dark">
 <meta property="og:type" content="website">
 <meta property="og:title" content="${title}">
 <meta property="og:description" content="${description}">
@@ -161,8 +163,16 @@ const head = (base, title, description) => `
 <link rel="icon" type="image/svg+xml" href="${base}favicon.svg">
 <link rel="apple-touch-icon" href="${base}apple-touch-icon.png">
 <link rel="preload" href="${base}assets/fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="${base}assets/site.css">
-<script src="${base}assets/site.js" defer></script>`;
+<link rel="stylesheet" href="${base}assets/site.css?v=${assetVersion.css}">
+<script src="${base}assets/site.js?v=${assetVersion.js}" defer></script>`;
+
+/**
+ * Content fingerprints for the CSS and JS, appended to their URLs (`site.css?v=…`). The host
+ * (Cloudflare in front of GitHub Pages) lets browsers keep these files for hours while HTML is
+ * always fresh, so without this a returning visitor gets new markup with stale styles.
+ */
+const assetVersion = { css: 'dev', js: 'dev' };
+const fingerprint = (text) => createHash('sha256').update(text).digest('hex').slice(0, 10);
 
 const fill = (s, vars) => s.replace(/\{\{([A-Z_]+)\}\}/g, (m, k) => (k in vars ? vars[k] : m));
 
@@ -298,7 +308,14 @@ function build() {
     SITE_URL: siteUrl,
     VERSION: version,
     IMAGE: image,
+    MERMAID_VERSION: JSON.parse(fs.readFileSync(path.join(here, 'node_modules/mermaid/package.json'), 'utf8')).version,
   };
+  // Fingerprint the assets first: every page's <head> links to them by content hash.
+  const css = fs.readFileSync(path.join(here, 'site/site.css'), 'utf8');
+  const js = fill(fs.readFileSync(path.join(here, 'site/site.js'), 'utf8'), vars);
+  assetVersion.css = fingerprint(css);
+  assetVersion.js = fingerprint(js);
+
   const index = fill(fs.readFileSync(path.join(here, 'site/index.html'), 'utf8'), {
     ...vars,
     HEAD: head('', 'Vyrtel: View. Trace. Understand.', 'Developer-friendly observability: launch one ~11 MB binary and send logs, traces and metrics. Small, fast, light and full featured.'),
@@ -307,8 +324,8 @@ function build() {
   });
   fs.writeFileSync(path.join(out, 'index.html'), index);
   fs.mkdirSync(path.join(out, 'assets'), { recursive: true });
-  fs.writeFileSync(path.join(out, 'assets/site.css'), fs.readFileSync(path.join(here, 'site/site.css')));
-  fs.writeFileSync(path.join(out, 'assets/site.js'), fill(fs.readFileSync(path.join(here, 'site/site.js'), 'utf8'), vars));
+  fs.writeFileSync(path.join(out, 'assets/site.css'), css);
+  fs.writeFileSync(path.join(out, 'assets/site.js'), js);
   // GitHub Pages: serve files as-is (no Jekyll processing).
   fs.writeFileSync(path.join(out, '.nojekyll'), '');
 
