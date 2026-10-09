@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/brand/vyrtel-lockup-tagline-dark.svg">
-    <img alt="Vyrtel. View. Trace. Understand." src="docs/brand/vyrtel-lockup-tagline-light.svg" height="110">
+    <img alt="Vyrtel. View. Trace. Understand." src="docs/brand/vyrtel-lockup-tagline-light.svg" height="210">
   </picture>
 </p>
 
