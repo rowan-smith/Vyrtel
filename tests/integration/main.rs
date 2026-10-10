@@ -8,6 +8,7 @@ mod admission;
 mod api;
 mod auth;
 mod crash;
+mod ingest_limits;
 mod live;
 mod signals;
 mod storage_flows;

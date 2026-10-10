@@ -15,12 +15,12 @@ Every error has the same shape:
 
 | Status | `code` | When |
 |-------:|--------|------|
-| 400 | `invalid_request`, `invalid_json`, `invalid_payload`, `invalid_event`, `invalid_query` | malformed input (`position` for queries, `index` for batch events) |
+| 400 | `invalid_request`, `invalid_json`, `invalid_payload`, `invalid_event`, `invalid_encoding`, `invalid_query` | malformed input (`position` for queries, `index` for batch events); `invalid_encoding` for a gzip body that cannot be decoded |
 | 401 | `unauthorized` | missing/invalid API key or session |
 | 403 | `forbidden` | an ingest-only key used on a read/admin endpoint |
 | 404 | `not_found` | unknown resource or endpoint |
-| 413 | `payload_too_large` | body over `ingest.max_request_size`, or a batch larger than the queue |
-| 415 | `unsupported_media_type` | content type not accepted |
+| 413 | `payload_too_large` | ingest body over `ingest.max_request_size` after gzip decoding (`limitBytes` gives the limit), or a batch larger than the queue ([details](#request-size-and-encoding)) |
+| 415 | `unsupported_media_type` | content type or `Content-Encoding` not accepted |
 | 422 | `query_too_expensive` | the query would read more than `query.max_scan_bytes` |
 | 429 | `rate_limited` | every ingest slot busy (`ingest.max_concurrent`) or the ingest queue full — retry after `Retry-After` seconds ([details](#ingest-limits-and-retries)) |
 | 503 | `unavailable` | storage unavailable / too many concurrent queries |
@@ -68,6 +68,7 @@ SHA-256 hash is stored.
 ```
 POST /api/v1/events
 Content-Type: application/json | application/x-ndjson
+Content-Encoding: gzip (optional)
 ```
 
 Body: a single event object, an array of events, `{"events": [...]}`, or
@@ -104,7 +105,10 @@ NDJSON (one object per line). Response: `{"accepted": <n>}`.
 
 Property values may be any JSON. The same property can change type between
 events; nothing is rejected for that. Batches are all-or-nothing: if one
-event is invalid the request fails with `invalid_event` and its `index`.
+event is invalid the request fails with `invalid_event` and its `index`,
+and a request rejected for any other reason (size, encoding, malformed
+JSON) stores nothing either. Size and encoding rules are under
+[request size and encoding](#request-size-and-encoding).
 The response is sent only after the batch is in the write-ahead log (and
 fsynced with `durability = "strict"`) and visible to queries.
 
@@ -120,7 +124,10 @@ Content-Encoding: gzip (optional)
 
 Point any OpenTelemetry SDK or Collector `otlphttp` exporter at
 `http://<host>:8080`. Responses use the request's encoding; records that
-cannot be stored (e.g. spans without ids) are reported via `partialSuccess`.
+cannot be stored (e.g. spans without ids) are dropped and reported via
+`partialSuccess`, and the rest of the request is stored. That is the only
+partial outcome: a request rejected with a 4xx stores nothing. Error
+responses (4xx/5xx) are the JSON error object above for both encodings.
 
 Mapping:
 
@@ -171,12 +178,71 @@ that, or past the size or time bound, the server drops the body and closes
 the connection. Treat a connection reset like a 429. `discarding` in
 `GET /api/v1/system/info` shows how many rejected bodies are being kept.
 
+### Request size and encoding
+
+`ingest.max_request_size` (default 16 MB) bounds every ingest body, both
+the bytes after gzip decoding and the bytes on the wire. A body of exactly
+the limit is accepted; one byte more is rejected.
+
+* Send bodies uncompressed (no `Content-Encoding`, or `identity`) or
+  gzip-compressed (`Content-Encoding: gzip`; `x-gzip` and any letter case
+  work too). Any other encoding (`br`, `deflate`, `zstd`, or several
+  stacked such as `gzip, br`) gets `415 unsupported_media_type` before the
+  body is read.
+* gzip is decoded as it arrives. Decoding stops as soon as the decoded size
+  passes the limit and the request gets `413 payload_too_large`, so a small
+  compressed "bomb" never makes the server inflate more than the limit (plus
+  one 64 KB read).
+* An uncompressed body whose `Content-Length` is over the limit gets the 413
+  from its headers, before any of it is read.
+* Concatenated gzip members (`cat a.gz b.gz`) form one stream and every
+  member is decoded. A truncated stream, a CRC mismatch, anything other than
+  gzip after the last member, or an empty body labelled gzip gets
+  `400 invalid_encoding` with the decoder's reason.
+* After a 413 or `invalid_encoding`, the unread rest of the upload is
+  discarded within the same bounds as after a 429 (below), so a client still
+  sending receives the error rather than a reset connection. These responses
+  carry `Connection: close`; send the next request on a new connection (HTTP
+  clients do this automatically).
+* A rejected request stores nothing. The whole body is read and decoded
+  before any of it is parsed, and native batches are all-or-nothing. OTLP
+  `partialSuccess` (see [OTLP/HTTP](#otlphttp)) is the only partial outcome.
+
+```
+HTTP/1.1 413 Payload Too Large
+Content-Type: application/json
+
+{"error":{"code":"payload_too_large","message":"request body exceeds the 16 MB limit (measured after gzip decoding); split the batch into smaller requests","limitBytes":16777216}}
+```
+
+```
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+
+{"error":{"code":"invalid_encoding","message":"gzip body could not be decoded (unexpected end of file); send complete gzip data: one or more members and nothing after the last"}}
+```
+
+A 413 is not retryable as is: split the batch and send the parts. With
+NDJSON, splitting on line boundaries keeps every event whole:
+
+```bash
+split -n l/4 -d big.ndjson part-          # four files, whole lines each
+for f in part-*; do
+  gzip -c "$f" | curl -s -X POST http://localhost:8080/api/v1/events \
+    -H 'Content-Type: application/x-ndjson' -H 'Content-Encoding: gzip' \
+    --data-binary @-
+done
+```
+
+### Status codes and retries
+
 | Status | `code` | Stage | Retry? |
 |-------:|--------|-------|--------|
+| 415 | `unsupported_media_type` | content type or `Content-Encoding`, checked before admission | no |
 | 429 | `rate_limited` | admission: all `max_concurrent` slots busy | yes, after `Retry-After` |
-| 413 | `payload_too_large` | body over `max_request_size` after gzip decoding | no — send smaller requests |
-| 400 | `invalid_request` / `invalid_payload` / `invalid_event` | body unreadable (bad gzip, client went away) or malformed | no — fix the payload |
-| 415 | `unsupported_media_type` | content type, checked before admission | no |
+| 413 | `payload_too_large` | body over `max_request_size`, decoded or on the wire | no — split the batch |
+| 400 | `invalid_encoding` | gzip body truncated, corrupt or followed by other data | no — resend a complete gzip body |
+| 400 | `invalid_request` / `invalid_payload` / `invalid_event` | body unreadable (client went away) or malformed | no — fix the payload |
 | 413 | `payload_too_large` | batch has more events than `queue_capacity` | no — split the batch |
 | 429 | `rate_limited` | submission: the signal's queue is full | yes, after `Retry-After` |
 | 503 | `unavailable` | no acknowledgement within `ack_timeout`, or storage stopping | yes, after `Retry-After`; the batch may already be stored |

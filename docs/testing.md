@@ -145,6 +145,17 @@ talks HTTP to it:
 * retention → restart → verify retained/deleted data;
 * API errors: invalid JSON, invalid events, invalid queries (with position),
   oversized requests, unsupported media types, unknown endpoints;
+* ingest size and encoding (`ingest_limits.rs`): decoded sizes of limit−1,
+  limit and limit+1 bytes on native JSON, NDJSON, OTLP JSON and OTLP
+  protobuf, plain and gzip (only the first two stored); a gzip bomb gets 413
+  while its upload is still in progress; an oversized `Content-Length` gets
+  413 before the body is read; empty gzip members cannot exceed the limit on
+  the wire; truncated, corrupt and trailing-garbage gzip get
+  `invalid_encoding`, unsupported encodings a structured 415; concatenated
+  members are all stored; rejected native batches (malformed final record,
+  truncated gzip, over the limit) store nothing; OTLP `partialSuccess` is the
+  documented partial outcome. Unit tests in `routes/ingest.rs` show decoding
+  stops after a small fraction of a 256 MB bomb;
 * ingest admission (`admission.rs`): a request holds its slot while parsed
   and queued, excess requests (plain and gzip) get 429 + `Retry-After`
   promptly without their bodies being read, every error frees the slot, and

@@ -18,7 +18,7 @@ traces = "14d"
 metrics = "30d"
 
 [ingest]
-max_request_size = "16MB"
+max_request_size = "16MB"    # per request, after gzip decoding; larger bodies get 413
 queue_capacity = 10000
 max_concurrent = 0           # requests in progress at once; 0 = derive from max_memory
 
