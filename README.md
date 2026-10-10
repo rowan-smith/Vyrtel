@@ -222,9 +222,14 @@ shape; see [docs/testing.md](docs/testing.md) for method):
 
 ## Roadmap
 
-Adaptive indexing from the recorded query statistics, full-text message
-index, per-service retention, OTLP/gRPC, richer alert routing, object-storage
-tiering. See [docs/roadmap.md](docs/roadmap.md).
+Current: **0.1.2 — Reliability and release confidence**. Next:
+**0.1.3 — Complete everyday workflows**. Planned 0.2 work covers shared
+search and a friendly query builder, metrics and SDK interoperability,
+retention and alert operations, privacy and user audit trails, dashboard
+authoring, and a SIEM starter. Ingest/Core node foundations follow in 0.3;
+object-storage tiering and replication remain discovery work.
+See [docs/roadmap.md](docs/roadmap.md) for the milestone sequence and links
+to the [planned backlog](https://github.com/users/rowan-smith/projects/2).
 
 ## Contributing
 
