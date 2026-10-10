@@ -41,8 +41,22 @@ impl TestServer {
         Self::launch(c, Some(dir)).await
     }
 
-    async fn launch(config: Config, dir: Option<tempfile::TempDir>) -> TestServer {
-        let app = App::build(config.clone()).expect("server starts");
+    pub async fn launch(config: Config, dir: Option<tempfile::TempDir>) -> TestServer {
+        // On Unix a process spawned by a parallel test (crash.rs starts the
+        // real binary) inherits our data-directory lock until it execs, so a
+        // restart can briefly see the lock as held. Retry only that error,
+        // and not for long: a lock that is really leaked still fails.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let app = loop {
+            match App::build(config.clone()) {
+                Ok(app) => break app,
+                Err(e) if format!("{e:#}").contains("in use by another Vyrtel process") => {
+                    assert!(std::time::Instant::now() < deadline, "server starts: {e:#}");
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(e) => panic!("server starts: {e:#}"),
+            }
+        };
         let state = app.state.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());

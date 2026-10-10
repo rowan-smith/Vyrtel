@@ -83,8 +83,14 @@ The OTLP fixtures contain `{{now-…}}` placeholders; see
   results ("▸ N results · 12 ms …").
 * `GET /api/v1/system/info` and `/api/v1/system/storage` show queue depths,
   active segment sizes, memory budgets and storage totals.
-* Damaged files found at startup are moved to `data/quarantine/` and logged
-  at WARN/ERROR with the reason.
+* Damaged files found at startup are moved to `data/quarantine/<signal>/`,
+  logged at WARN/ERROR with the reason and listed under
+  `signals.<signal>.recovery` in `/api/v1/system/storage`.
+* `cargo test -p storage --features crash-points --test crash` kills real
+  processes at named points in the write path. To reproduce one by hand,
+  run `VYRTEL_CRASH_AT=wal.after_ack cargo run --features
+  storage/crash-points`, ingest one event so it aborts, then start it normally (see
+  [Testing](testing.md#process-kill-tests)).
 * `vyrtel config` prints the effective configuration.
 
 ## Formatting and linting

@@ -122,6 +122,36 @@ the writer truncates back to the last good offset before the next append.
   crash), fsync every `fsync_interval` (default 1 s) and on rotation and
   shutdown (an OS crash or power loss can lose up to one interval).
 
+### Acknowledgement contract
+
+An *acknowledged* request is one whose ingest call returned success (HTTP
+2xx). What survives depends on how the process stopped:
+
+| Failure                                          | `strict`                                   | `normal`                                                       |
+|--------------------------------------------------|--------------------------------------------|----------------------------------------------------------------|
+| Clean shutdown (SIGTERM, Ctrl-C)                 | nothing lost                               | nothing lost                                                   |
+| Process killed or crashed (`kill -9`, OOM, panic) | nothing lost                               | nothing lost — acknowledged bytes are already in the OS        |
+| OS crash or power loss                           | nothing lost                               | up to `fsync_interval` of acknowledged requests may be lost    |
+| Disk corrupts bytes after they were written      | the damaged record and everything after it in that WAL are quarantined, not replayed (see recovery) | same                                                           |
+
+In every case, after recovery:
+
+* each acknowledged event that survived is visible **exactly once**, with
+  the event id it was acknowledged with — recovery never duplicates stored
+  records (it does not deduplicate separate requests that a client
+  retried);
+* a request is visible entirely or not at all; the only unacknowledged
+  requests that may appear are ones that reached the WAL but whose success
+  response was never delivered (the process died first, or a `strict`
+  fsync reported an error) — clients that retry such a request store it
+  twice;
+* nothing is fabricated from torn or corrupt bytes.
+
+When `normal` mode loses an unsynced tail to power loss, later events may
+reuse the ids of the lost ones (ids continue from the largest id that
+survived). Use `strict` if a client stores event ids and needs them to stay
+unique across power loss.
+
 ## Segment files (format version 1)
 
 ```
@@ -277,24 +307,73 @@ On startup, per stream (`crates/storage/src/recovery.rs`):
 
 1. Delete everything in `tmp/` (never committed).
 2. Open every `*.seg`. A segment that fails validation (magic, version,
-   footer CRC, summary CRC, bounds) is moved to `quarantine/` and logged.
+   footer CRC, summary CRC, bounds, id/signal mismatch) is moved to
+   `quarantine/<signal>/` and logged.
 3. Segments listed in another segment's `replaces` are deleted (a
    compaction committed but its cleanup was interrupted).
 4. For each WAL file in id order:
    * if segment `N` exists (or was replaced), the WAL is stale → delete it;
+   * a WAL whose header is unreadable, or names another signal or id, is
+     moved to `quarantine/<signal>/` whole;
    * otherwise replay records until the first incomplete or corrupt record.
-     The unusable tail is copied to `quarantine/` and the WAL is truncated to
-     the last valid record. Nothing after a bad record is interpreted.
+     The unusable tail is copied to `quarantine/<signal>/` and fsynced
+     **before** the WAL is truncated to the last valid record. Nothing after
+     a bad record is interpreted.
 5. Every replayed WAL except the newest is sealed into a segment
    immediately; the newest becomes the active WAL.
 6. The next file id is one past the largest id seen anywhere; the next event
    id is one past the largest event id seen.
 
-Guarantees, all covered by `crates/storage/tests/recovery.rs`:
+Recovery quarantines only on **proof of damage** (bad checksum, bad
+framing, truncation, undecodable content). Any other I/O error while reading
+a segment or WAL — permission denied, a failing device — stops startup with
+the error instead: moving a readable file aside would hide acknowledged
+telemetry. Fix the cause and start again.
+
+Every recovery is idempotent: crashing during recovery (for example after
+sealing an old WAL but before deleting it) and recovering again gives the
+same result.
+
+Guarantees, covered by `crates/storage/tests/recovery.rs` (file states a
+crash leaves) and `crates/storage/tests/crash.rs` (real process kills at
+every step, see [Testing](testing.md#crash-recovery-tests)):
 
 * committed telemetry never disappears because of a restart;
 * incomplete or corrupt records never appear as telemetry;
 * no event is duplicated by a crash between any two steps above.
+
+### Quarantine
+
+Damaged data is never deleted by recovery. Each item is preserved under
+`quarantine/<signal>/` — the directory names the affected signal:
+
+| File                                      | Kind      | Contents                                                       |
+|-------------------------------------------|-----------|----------------------------------------------------------------|
+| `<id>.seg.<unix-ms>`                      | `segment` | the whole damaged segment                                      |
+| `<id>.wal.<unix-ms>`                      | `wal`     | the whole WAL (unreadable header, or header for another stream) |
+| `<id>.wal.tail-<offset>.<unix-ms>`        | `walTail` | the exact bytes after the last valid record at `offset`       |
+
+A `-<n>` suffix is added if a name is already taken, so a later crash never
+overwrites earlier evidence. Newly created directories (including
+`quarantine/<signal>/` itself) are fsynced into their parent, so evidence
+written into them survives power loss too. Each item is logged once at startup (`ERROR`
+for whole files, `WARN` for tails) with `signal`, `kind`, `file`,
+`quarantined_to`, `bytes` and `reason`, and is listed under
+`signals.<signal>.recovery.quarantined` in
+[`GET /api/v1/system/storage`](api.md#system) until the next restart.
+
+What was lost:
+
+* `walTail` — only the records in the tail; everything before `offset` was
+  replayed.
+* `wal` — every event in that WAL.
+* `segment` — rebuilt from its WAL if the WAL still existed (the event count
+  is unchanged); otherwise its events are not visible.
+
+Quarantined files are never read again by Vyrtel. Keep them for diagnosis
+(`walTail` files are raw WAL records, see the format above) and delete them
+when no longer needed; `quarantineBytes` in the storage statistics shows how
+much space they use.
 
 ## Versioning
 

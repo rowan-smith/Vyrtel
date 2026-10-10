@@ -4,7 +4,7 @@ Testing is part of the implementation. Everything below runs in CI
 (`.github/workflows/ci.yml`).
 
 ```bash
-cargo test --workspace --all-features    # all Rust tests (~190, many property-based)
+cargo test --workspace --all-features    # all Rust tests (~210, many property-based; includes crash tests)
 cd web && npm test                       # frontend unit tests
 cd web && npm run e2e                    # Playwright (needs a built server, see below)
 cargo bench -p storage -p query          # Criterion benchmarks
@@ -58,7 +58,58 @@ states an interrupted process would:
   duplicates;
 * several WALs at startup → older ones sealed;
 * retention across restart, queue-full backpressure, strict durability,
-  data-directory locking.
+  data-directory locking;
+* quarantine evidence: a torn or corrupt final WAL record is preserved byte
+  for byte under `quarantine/<signal>/`, the report names signal, kind and
+  reason, and a second restart neither re-quarantines nor duplicates; damaged
+  segments and WALs with bad or foreign headers are moved whole; reasons
+  never contain host paths;
+* an unreadable-but-undamaged WAL or segment (mode 000 on Unix, an exclusive
+  share lock on Windows) stops startup with an I/O error naming the file,
+  leaves it byte-for-byte in place and quarantines nothing; once readable,
+  the acknowledged events come back (skipped when running as root, which
+  bypasses permissions).
+
+### Process-kill tests
+
+`crates/storage/tests/crash.rs` kills a **real process** mid-write. The test
+binary re-invokes itself as a child that ingests with several concurrent
+producers and keeps a durable client-side ledger (one fsynced line per
+acknowledged batch). The child is stopped either at a named crash point —
+`VYRTEL_CRASH_AT=<point>[:<n>]` makes the `crash-points` build `abort()` the
+n-th time it reaches `point`, which is as abrupt as `kill -9` — or by
+`kill`/`TerminateProcess` after a random delay. The parent then recovers the
+directory and checks, in both `strict` and `normal` durability:
+
+* every ledgered batch is visible exactly once with the ids it was
+  acknowledged with;
+* batches are whole; per producer they are contiguous and exceed the ledger
+  by at most the one batch in flight;
+* sealing/compaction crashes leave visible counts equal to the acknowledged
+  dataset, with nothing quarantined;
+* a second recovery is identical and new ids do not collide.
+
+| Test                              | Crash points                                                                                       |
+|-----------------------------------|----------------------------------------------------------------------------------------------------|
+| `kill_before_wal_sync`            | `wal.before_sync` — records written, not synced or acknowledged                                    |
+| `kill_after_wal_sync_before_ack`  | `wal.before_ack` — records synced (strict), not acknowledged                                       |
+| `kill_after_ack`                  | `wal.after_ack`                                                                                    |
+| `kill_during_rotation_and_seal`   | `rotate.after_wal_create`, `segment.before_rename`, `segment.after_rename`, `seal.before_wal_delete` |
+| `kill_during_compaction`          | `compact.before_input_delete`, `compact.mid_input_delete`, `segment.before_rename` (compaction output) |
+| `kill_during_recovery_seal`       | a crash during rotation, then `recovery.before_wal_delete` while recovering from it                 |
+| `random_kills_under_load`         | four kill/restart cycles on one directory at random moments (seed printed; `VYRTEL_CRASH_SEED` replays) |
+
+The points are listed in `crates/storage/src/crash.rs`; without the
+`crash-points` feature they compile to nothing. Run just these tests with:
+
+```bash
+cargo test -p storage --features crash-points --test crash
+```
+
+`tests/integration/crash.rs` does the same end to end: it kills the real
+`vyrtel` binary after HTTP acknowledgements (both durability modes),
+restarts it and checks every acknowledged event through the query API, plus
+the `recovery` section of `/api/v1/system/storage`.
 
 ## Storage correctness (indexed vs brute force)
 
@@ -84,6 +135,9 @@ starts a real server on an ephemeral port with a temporary data directory and
 talks HTTP to it:
 
 * start → ingest → query → restart → query the same events;
+* `kill -9` of the `vyrtel` binary after acknowledgements → restart → every
+  acknowledged event exactly once; quarantined WAL tails reported by the
+  storage API;
 * ingest → rotate segment → query (diagnostics show segment pruning);
 * OTLP logs (JSON and gzip protobuf) queried through the native API;
 * OTLP spans → trace search → trace by id → correlated logs;

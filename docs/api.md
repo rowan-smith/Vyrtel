@@ -345,3 +345,24 @@ GET /api/v1/system/config        effective configuration (secrets omitted)
 `rawBytes` is the uncompressed size of events in Vyrtel's binary encoding
 (sealed segments plus WAL); `compressionRatio` is raw ÷ (data + index) for
 sealed segments.
+
+Each `signals.<signal>` object includes `recovery`: what startup crash
+recovery did for that signal in this process's lifetime.
+
+```json
+"recovery": {
+  "segmentsLoaded": 12, "walRecordsReplayed": 340, "walEventsReplayed": 5100,
+  "segmentsSealed": 0, "staleWalsRemoved": 1, "replacedSegmentsRemoved": 0,
+  "walBytesDiscarded": 61,
+  "quarantined": [
+    { "signal": "logs", "kind": "walTail", "source": "000000000014.wal",
+      "file": "quarantine/logs/000000000014.wal.tail-48213.1791622413000",
+      "bytes": 61, "reason": "incomplete record at offset 48213 (torn write)" }
+  ]
+}
+```
+
+`kind` is `segment`, `wal` or `walTail`; `file` is relative to the data
+directory and `reason` never contains host paths. See
+[Quarantine](storage-format.md#quarantine) for what each kind means and what
+was lost. An empty `quarantined` list means recovery found no damage.

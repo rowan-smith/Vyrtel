@@ -11,6 +11,7 @@
 mod cache;
 pub mod codec;
 mod config;
+mod crash;
 pub mod encoding;
 mod error;
 pub mod fsutil;
@@ -24,6 +25,6 @@ pub mod wal;
 pub use cache::{CacheStats, IndexCache};
 pub use config::{CompactionConfig, Durability, StorageConfig, StreamConfig};
 pub use error::{DecodeError, Result, StorageError};
-pub use recovery::RecoveryReport;
+pub use recovery::{QuarantineKind, QuarantinedFile, RecoveryReport};
 pub use store::{Storage, StorageStats};
 pub use stream::{Ack, Batch, CommitHook, Committed, Done, StreamSnapshot, StreamStats};

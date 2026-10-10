@@ -10,20 +10,26 @@
 //! * Anything in `tmp/` is uncommitted and is deleted.
 //!
 //! Recovery never repairs data by guessing: unreadable segments and WAL
-//! tails are moved to `quarantine/` for inspection and logged loudly.
+//! tails are moved to `quarantine/<signal>/` for inspection, fsynced there
+//! before the original is removed or truncated, logged loudly and listed in
+//! [`RecoveryReport::quarantined`]. An I/O error that is not evidence of
+//! damage (permissions, a failing disk) aborts startup instead: moving a
+//! readable-but-unread WAL aside would hide acknowledged telemetry.
 
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use telemetry::{Signal, TelemetryEvent};
 
 use crate::codec;
-use crate::error::{IoContext, Result};
+use crate::crash;
+use crate::error::{IoContext, Result, StorageError};
 use crate::fsutil;
 use crate::segment::{Segment, SegmentWriteOptions, parse_segment_file_name, write_segment};
 use crate::stream::Batch;
-use crate::wal::{self, TailState, WalHeader, WalWriter, parse_wal_file_name, wal_file_name};
+use crate::wal::{self, ReplayError, TailState, WalHeader, WalReplay, WalWriter, parse_wal_file_name, wal_file_name};
 
 #[derive(Debug, Clone)]
 pub struct StreamDirs {
@@ -43,12 +49,50 @@ impl StreamDirs {
         }
     }
 
+    /// Durable creation matters: the first WAL is fsynced into `wal/<signal>/`
+    /// right after this, and strict mode acknowledges against it.
     pub fn create(&self) -> Result<()> {
         for d in [&self.wal, &self.segments, &self.tmp] {
-            std::fs::create_dir_all(d).ctx(d)?;
+            fsutil::create_dir_all_durable(d)?;
         }
         Ok(())
     }
+}
+
+/// What kind of evidence recovery moved aside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuarantineKind {
+    /// A whole segment file that failed validation. Its events are rebuilt
+    /// only if the WAL it was sealed from still exists.
+    Segment,
+    /// A whole WAL file whose header is unreadable or names another stream.
+    Wal,
+    /// The bytes after the last valid record of a WAL (a torn or corrupt
+    /// tail). The valid prefix was replayed.
+    WalTail,
+}
+
+impl QuarantineKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QuarantineKind::Segment => "segment",
+            QuarantineKind::Wal => "wal",
+            QuarantineKind::WalTail => "walTail",
+        }
+    }
+}
+
+/// One file (or WAL tail) that recovery preserved in `quarantine/<signal>/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuarantinedFile {
+    pub signal: Signal,
+    pub kind: QuarantineKind,
+    /// Name of the damaged file in its stream directory, e.g. `000000000003.wal`.
+    pub source: String,
+    /// Where the preserved bytes now live.
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -63,6 +107,8 @@ pub struct RecoveryReport {
     pub wal_bytes_discarded: u64,
     pub wal_files_quarantined: usize,
     pub segments_sealed: usize,
+    /// Everything moved to quarantine by this recovery, in discovery order.
+    pub quarantined: Vec<QuarantinedFile>,
 }
 
 pub struct Recovered {
@@ -74,11 +120,66 @@ pub struct Recovered {
     pub report: RecoveryReport,
 }
 
-fn quarantine(dirs: &StreamDirs, path: &Path) -> Result<()> {
-    std::fs::create_dir_all(&dirs.quarantine).ctx(&dirs.quarantine)?;
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
-    let dest = dirs.quarantine.join(format!("{name}.{}", telemetry::Timestamp::now().millis()));
-    fsutil::rename(path, &dest)
+/// A destination in the quarantine directory that does not exist yet, so a
+/// second crash never overwrites the evidence of the first.
+fn quarantine_dest(dirs: &StreamDirs, base: &str) -> Result<PathBuf> {
+    // A brand-new `quarantine/<signal>/` must itself survive power loss, or
+    // the evidence fsynced into it could vanish with it.
+    fsutil::create_dir_all_durable(&dirs.quarantine)?;
+    let stamp = telemetry::Timestamp::now().millis();
+    let mut n = 0u32;
+    loop {
+        let name = if n == 0 { format!("{base}.{stamp}") } else { format!("{base}.{stamp}-{n}") };
+        let dest = dirs.quarantine.join(name);
+        if !dest.exists() {
+            return Ok(dest);
+        }
+        n += 1;
+    }
+}
+
+/// Move a whole damaged file into quarantine and make the move durable.
+fn quarantine(
+    dirs: &StreamDirs,
+    signal: Signal,
+    kind: QuarantineKind,
+    path: &Path,
+    reason: String,
+    report: &mut RecoveryReport,
+) -> Result<()> {
+    let source = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
+    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let dest = quarantine_dest(dirs, &source)?;
+    fsutil::rename(path, &dest)?;
+    fsutil::sync_dir(&dirs.quarantine)?;
+    if let Some(parent) = path.parent() {
+        fsutil::sync_dir(parent)?;
+    }
+    tracing::error!(
+        signal = signal.as_str(),
+        kind = kind.as_str(),
+        file = %source,
+        quarantined_to = %dest.display(),
+        bytes,
+        reason = %reason,
+        "moved damaged file to quarantine"
+    );
+    report.quarantined.push(QuarantinedFile { signal, kind, source, path: dest, bytes, reason });
+    Ok(())
+}
+
+/// `Some(reason)` when an error proves a file's *content* is unusable, as
+/// opposed to the file being unreadable right now. The reason omits the
+/// path, which the report already names, so it is safe to show over the API.
+fn damage_reason(e: &StorageError) -> Option<String> {
+    match e {
+        StorageError::Corrupt { source, .. } => Some(format!("corrupt: {source}")),
+        StorageError::Compression(source) => Some(format!("compression: {source}")),
+        StorageError::Io { source, .. } if source.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Some(format!("truncated: {source}"))
+        }
+        _ => None,
+    }
 }
 
 fn list(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
@@ -109,20 +210,25 @@ pub fn recover(signal: Signal, dirs: &StreamDirs, seg_opts: &SegmentWriteOptions
             continue;
         };
         max_file_id = max_file_id.max(id);
-        match Segment::open(&path) {
+        let reason = match Segment::open(&path) {
             Ok(s) if s.summary.id == id && s.summary.signal == signal => {
                 segments.push(Arc::new(s));
+                continue;
             }
-            Ok(_) | Err(_) => {
-                tracing::error!(
-                    signal = signal.as_str(),
-                    segment = id,
-                    "segment failed validation; moving to quarantine"
-                );
-                quarantine(dirs, &path)?;
-                report.segments_quarantined += 1;
-            }
-        }
+            Ok(s) => format!(
+                "file name says segment {id} of {}, but its summary says segment {} of {}",
+                signal.as_str(),
+                s.summary.id,
+                s.summary.signal.as_str()
+            ),
+            Err(e) => match damage_reason(&e) {
+                Some(reason) => reason,
+                // Not proof of damage: refuse to start rather than hide data.
+                None => return Err(e),
+            },
+        };
+        quarantine(dirs, signal, QuarantineKind::Segment, &path, reason, &mut report)?;
+        report.segments_quarantined += 1;
     }
 
     // 2. Finish interrupted compactions: inputs listed in `replaces` that
@@ -173,20 +279,23 @@ pub fn recover(signal: Signal, dirs: &StreamDirs, seg_opts: &SegmentWriteOptions
         });
         let rep = match result {
             Ok(r) => r,
-            Err(_) => {
-                tracing::error!(signal = signal.as_str(), wal = id, "WAL header unreadable; moving to quarantine");
-                quarantine(dirs, &path)?;
+            Err(ReplayError::BadHeader) => {
+                let reason = "WAL header is missing, truncated or has an unknown magic or version".to_string();
+                quarantine(dirs, signal, QuarantineKind::Wal, &path, reason, &mut report)?;
                 report.wal_files_quarantined += 1;
                 continue;
             }
+            // Not proof of damage: refuse to start rather than hide data.
+            Err(ReplayError::Io(source)) => return Err(StorageError::Io { path, source }),
         };
         if rep.header != (WalHeader { signal, wal_id: id }) {
-            tracing::error!(
-                signal = signal.as_str(),
-                wal = id,
-                "WAL header does not match file name; moving to quarantine"
+            let reason = format!(
+                "file name says WAL {id} of {}, but its header says WAL {} of {}",
+                signal.as_str(),
+                rep.header.wal_id,
+                rep.header.signal.as_str()
             );
-            quarantine(dirs, &path)?;
+            quarantine(dirs, signal, QuarantineKind::Wal, &path, reason, &mut report)?;
             report.wal_files_quarantined += 1;
             continue;
         }
@@ -199,7 +308,7 @@ pub fn recover(signal: Signal, dirs: &StreamDirs, seg_opts: &SegmentWriteOptions
                 discarded_bytes = discarded,
                 "WAL ends with an incomplete or corrupt record; replaying only the valid prefix"
             );
-            preserve_tail(dirs, &path, rep.valid_len, id)?;
+            preserve_tail(dirs, signal, &path, &rep, &mut report)?;
             report.wal_bytes_discarded += discarded;
         }
         report.wal_files_replayed += 1;
@@ -223,6 +332,7 @@ pub fn recover(signal: Signal, dirs: &StreamDirs, seg_opts: &SegmentWriteOptions
             let w = write_segment(&dirs.segments, &dirs.tmp, id, signal, &refs, vec![], seg_opts)?;
             segments.push(Arc::new(Segment::open(&w.path)?));
             report.segments_sealed += 1;
+            crash::point("recovery.before_wal_delete");
         }
         fsutil::remove_file_if_exists(&path)?;
     }
@@ -243,14 +353,52 @@ pub fn recover(signal: Signal, dirs: &StreamDirs, seg_opts: &SegmentWriteOptions
 }
 
 /// Copy the unusable tail of a WAL into quarantine before it is truncated,
-/// so an operator can inspect what was lost.
-fn preserve_tail(dirs: &StreamDirs, path: &Path, valid_len: u64, id: u64) -> Result<()> {
+/// so an operator can inspect what was lost. The copy is fsynced before the
+/// caller truncates or deletes the WAL: the evidence must outlive the
+/// original even if the machine dies during recovery.
+fn preserve_tail(
+    dirs: &StreamDirs,
+    signal: Signal,
+    path: &Path,
+    rep: &WalReplay,
+    report: &mut RecoveryReport,
+) -> Result<()> {
     let bytes = std::fs::read(path).ctx(path)?;
-    if (valid_len as usize) < bytes.len() {
-        std::fs::create_dir_all(&dirs.quarantine).ctx(&dirs.quarantine)?;
-        let dest = dirs.quarantine.join(format!("{}.tail-{valid_len}", wal_file_name(id)));
-        std::fs::write(&dest, &bytes[valid_len as usize..]).ctx(&dest)?;
+    let valid_len = rep.valid_len as usize;
+    if valid_len >= bytes.len() {
+        return Ok(());
     }
+    let tail = &bytes[valid_len..];
+    let source = wal_file_name(rep.header.wal_id);
+    let dest = quarantine_dest(dirs, &format!("{source}.tail-{valid_len}"))?;
+    {
+        let mut f = std::fs::File::create(&dest).ctx(&dest)?;
+        f.write_all(tail).ctx(&dest)?;
+        f.sync_all().ctx(&dest)?;
+    }
+    fsutil::sync_dir(&dirs.quarantine)?;
+    let reason = match &rep.tail {
+        TailState::Clean => "bytes after the last valid record".to_string(),
+        TailState::Incomplete { offset } => format!("incomplete record at offset {offset} (torn write)"),
+        TailState::Corrupt { offset, reason } => format!("corrupt record at offset {offset}: {reason}"),
+    };
+    tracing::warn!(
+        signal = signal.as_str(),
+        kind = QuarantineKind::WalTail.as_str(),
+        file = %source,
+        quarantined_to = %dest.display(),
+        bytes = tail.len(),
+        reason = %reason,
+        "preserved unusable WAL tail in quarantine"
+    );
+    report.quarantined.push(QuarantinedFile {
+        signal,
+        kind: QuarantineKind::WalTail,
+        source,
+        path: dest,
+        bytes: tail.len() as u64,
+        reason,
+    });
     Ok(())
 }
 
@@ -263,4 +411,30 @@ pub fn clean_tmp(tmp: &Path) -> Result<usize> {
         n += 1;
     }
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DecodeError;
+
+    #[test]
+    fn only_proof_of_damage_leads_to_quarantine() {
+        let io = |kind: std::io::ErrorKind| StorageError::Io {
+            path: "/data/segments/logs/x.seg".into(),
+            source: kind.into(),
+        };
+        // Transient or environmental failures must stop startup instead:
+        // quarantining a readable file would hide acknowledged telemetry.
+        assert_eq!(damage_reason(&io(std::io::ErrorKind::PermissionDenied)), None);
+        assert_eq!(damage_reason(&io(std::io::ErrorKind::Other)), None);
+        assert_eq!(damage_reason(&StorageError::Unavailable("x".into())), None);
+
+        let truncated = damage_reason(&io(std::io::ErrorKind::UnexpectedEof)).unwrap();
+        assert!(truncated.starts_with("truncated"));
+        let corrupt = StorageError::Corrupt { what: "/data/segments/logs/x.seg".into(), source: DecodeError::Checksum };
+        let reason = damage_reason(&corrupt).unwrap();
+        assert_eq!(reason, "corrupt: checksum mismatch");
+        assert!(!truncated.contains("/data") && !reason.contains("/data"), "reasons never carry host paths");
+    }
 }

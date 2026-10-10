@@ -47,7 +47,7 @@ impl Storage {
     /// start the writer/maintenance threads.
     pub fn open(config: StorageConfig, hook: Option<CommitHook>) -> Result<Storage> {
         let dir = &config.data_dir;
-        std::fs::create_dir_all(dir).ctx(dir)?;
+        fsutil::create_dir_all_durable(dir)?;
         let lock = lock_data_dir(dir)?;
         {
             let sub = "indexes";

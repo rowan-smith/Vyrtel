@@ -11,6 +11,7 @@ use std::time::Duration;
 use storage::segment::{Segment, SegmentWriteOptions, segment_file_name, write_segment};
 use storage::wal::{self, wal_file_name};
 use storage::*;
+
 use telemetry::*;
 
 fn config(dir: &Path) -> StorageConfig {
@@ -437,4 +438,242 @@ fn commit_hook_sees_batches() {
     let s = Storage::open(config(d.path()), Some(hook)).unwrap();
     submit(&s, vec![log(1, "a"), log(2, "b")]);
     assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), (Signal::Logs, 2));
+}
+
+// ---- REL-01: quarantine preserves evidence and names the signal ----------
+
+fn quarantine_dir(dir: &Path, signal: Signal) -> std::path::PathBuf {
+    dir.join("quarantine").join(signal.as_str())
+}
+
+#[test]
+fn torn_final_record_is_preserved_byte_for_byte() {
+    let d = tempfile::tempdir().unwrap();
+    {
+        let s = Storage::open(config(d.path()), None).unwrap();
+        submit(&s, vec![log(1, "committed")]);
+        submit(&s, vec![log(2, "torn")]);
+    }
+    let path = only_wal(d.path());
+    let original = std::fs::read(&path).unwrap();
+    let cut = original.len() - 3;
+    let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    f.set_len(cut as u64).unwrap();
+    drop(f);
+    // Where the torn record starts: header + first record.
+    let first_len = u32::from_le_bytes(original[25..29].try_into().unwrap()) as usize;
+    let valid = wal::HEADER_LEN as usize + 9 + first_len;
+
+    let s = Storage::open(config(d.path()), None).unwrap();
+    assert_eq!(messages(&s), ["committed"]);
+    let r = s.recovery_report(Signal::Logs).clone();
+    assert_eq!(r.quarantined.len(), 1);
+    let q = &r.quarantined[0];
+    assert_eq!(q.signal, Signal::Logs);
+    assert_eq!(q.kind, QuarantineKind::WalTail);
+    assert_eq!(q.source, path.file_name().unwrap().to_str().unwrap());
+    assert!(q.reason.contains(&format!("incomplete record at offset {valid}")), "{}", q.reason);
+    assert!(q.path.starts_with(quarantine_dir(d.path(), Signal::Logs)));
+    assert_eq!(std::fs::read(&q.path).unwrap(), &original[valid..cut], "evidence is the exact discarded bytes");
+    assert_eq!(q.bytes, (cut - valid) as u64);
+    // Other signals are untouched and say so.
+    assert!(s.recovery_report(Signal::Traces).quarantined.is_empty());
+    assert_eq!(s.stats().logs.recovery.quarantined, r.quarantined);
+    drop(s);
+
+    // Restarting again neither re-quarantines nor duplicates, and the
+    // evidence from the first recovery is still there.
+    let s = Storage::open(config(d.path()), None).unwrap();
+    assert_eq!(messages(&s), ["committed"]);
+    assert!(s.recovery_report(Signal::Logs).quarantined.is_empty());
+    assert!(q.path.exists());
+}
+
+#[test]
+fn corrupt_final_record_names_the_reason() {
+    let d = tempfile::tempdir().unwrap();
+    {
+        let s = Storage::open(config(d.path()), None).unwrap();
+        submit(&s, vec![log(1, "good")]);
+        submit(&s, vec![log(2, "flipped")]);
+    }
+    let path = only_wal(d.path());
+    let mut bytes = std::fs::read(&path).unwrap();
+    let n = bytes.len();
+    bytes[n - 6] ^= 0x40; // inside the last record's payload
+    std::fs::write(&path, &bytes).unwrap();
+
+    let s = Storage::open(config(d.path()), None).unwrap();
+    assert_eq!(messages(&s), ["good"]);
+    let q = &s.recovery_report(Signal::Logs).quarantined[0];
+    assert_eq!(q.kind, QuarantineKind::WalTail);
+    assert!(q.reason.contains("checksum mismatch"), "{}", q.reason);
+    let tail = std::fs::read(&q.path).unwrap();
+    assert!(bytes.ends_with(&tail), "the corrupt record is preserved as found");
+}
+
+#[test]
+fn damaged_segment_is_quarantined_whole_under_its_signal() {
+    let d = tempfile::tempdir().unwrap();
+    drop(Storage::open(config(d.path()), None).unwrap());
+    // A traces segment with no WAL behind it: its events cannot be rebuilt,
+    // so the evidence must be kept and the signal named.
+    let garbage = b"VYRTSEG1 this is not a complete segment file at all".to_vec();
+    let seg = d.path().join("segments").join("traces").join(segment_file_name(7));
+    std::fs::write(&seg, &garbage).unwrap();
+
+    let s = Storage::open(config(d.path()), None).unwrap();
+    let r = s.recovery_report(Signal::Traces);
+    assert_eq!(r.segments_quarantined, 1);
+    let q = &r.quarantined[0];
+    assert_eq!((q.signal, q.kind), (Signal::Traces, QuarantineKind::Segment));
+    assert_eq!(q.source, segment_file_name(7));
+    assert!(q.path.starts_with(quarantine_dir(d.path(), Signal::Traces)));
+    assert_eq!(std::fs::read(&q.path).unwrap(), garbage);
+    assert!(!seg.exists());
+    // Reasons are shown over the API, so they never contain host paths.
+    assert!(!q.reason.contains(d.path().to_str().unwrap()), "{}", q.reason);
+    assert!(s.recovery_report(Signal::Logs).quarantined.is_empty());
+}
+
+#[test]
+fn wal_with_unreadable_header_is_quarantined_whole() {
+    let d = tempfile::tempdir().unwrap();
+    {
+        let s = Storage::open(config(d.path()), None).unwrap();
+        submit(&s, vec![log(1, "kept")]);
+    }
+    let first = only_wal(d.path());
+    let id = wal::parse_wal_file_name(first.file_name().unwrap().to_str().unwrap()).unwrap();
+    // An older WAL whose header was destroyed.
+    let damaged = wal_dir(d.path()).join(wal_file_name(id - 1));
+    std::fs::write(&damaged, b"definitely not a WAL header").unwrap();
+
+    let s = Storage::open(config(d.path()), None).unwrap();
+    assert_eq!(messages(&s), ["kept"]);
+    let r = s.recovery_report(Signal::Logs);
+    assert_eq!(r.wal_files_quarantined, 1);
+    let q = &r.quarantined[0];
+    assert_eq!(q.kind, QuarantineKind::Wal);
+    assert_eq!(std::fs::read(&q.path).unwrap(), b"definitely not a WAL header");
+}
+
+#[test]
+fn wal_header_for_another_signal_is_quarantined() {
+    let d = tempfile::tempdir().unwrap();
+    drop(Storage::open(config(d.path()), None).unwrap());
+    // A metrics WAL dropped into the logs directory (e.g. a botched restore).
+    let stray = wal_dir(d.path()).join(wal_file_name(0));
+    {
+        let w = wal::WalWriter::create(
+            &d.path().join("wal").join("metrics"),
+            &d.path().join("tmp"),
+            wal::WalHeader { signal: Signal::Metrics, wal_id: 0 },
+        )
+        .unwrap();
+        std::fs::copy(w.path(), &stray).unwrap();
+    }
+    let s = Storage::open(config(d.path()), None).unwrap();
+    let q = &s.recovery_report(Signal::Logs).quarantined[0];
+    assert_eq!((q.signal, q.kind), (Signal::Logs, QuarantineKind::Wal));
+    assert!(q.reason.contains("metrics"), "{}", q.reason);
+}
+
+// ---- REL-01: unreadable is not damaged ----------------------------------
+
+/// Keeps a file unreadable to Vyrtel, without touching its bytes, until
+/// dropped: mode 000 on Unix, an exclusive share lock on Windows.
+struct Unreadable {
+    #[cfg(unix)]
+    path: std::path::PathBuf,
+    #[cfg(windows)]
+    _lock: std::fs::File,
+}
+
+impl Unreadable {
+    /// `None` when the platform cannot deny the read (e.g. tests run as root).
+    fn new(path: &Path) -> Option<Unreadable> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let guard = Unreadable { path: path.to_path_buf() };
+            if std::fs::File::open(path).is_ok() {
+                eprintln!("skipping: running with privileges that bypass file permissions");
+                return None;
+            }
+            Some(guard)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(path).unwrap();
+            assert!(std::fs::File::open(path).is_err(), "share lock must deny reads");
+            Some(Unreadable { _lock: lock })
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o644));
+    }
+}
+
+/// Startup must fail with a non-damage I/O error, leave `path` byte-for-byte
+/// in place and quarantine nothing; once readable again, recovery succeeds.
+fn assert_unreadable_file_stops_startup(dir: &Path, path: &Path) {
+    let before = std::fs::read(path).unwrap();
+    {
+        let Some(_guard) = Unreadable::new(path) else { return };
+        match Storage::open(config(dir), None) {
+            Err(StorageError::Io { path: failed, source }) => {
+                assert_eq!(failed, path, "the error names the unreadable file");
+                assert_ne!(source.kind(), std::io::ErrorKind::UnexpectedEof);
+            }
+            Err(e) => panic!("expected an I/O error, got {e}"),
+            Ok(_) => panic!("startup must not continue past an unreadable file"),
+        }
+    }
+    assert_eq!(std::fs::read(path).unwrap(), before, "the original file is untouched");
+    let q = dir.join("quarantine");
+    assert!(
+        !q.exists()
+            || std::fs::read_dir(&q).unwrap().flatten().all(|s| std::fs::read_dir(s.path()).unwrap().count() == 0),
+        "nothing was quarantined"
+    );
+}
+
+#[test]
+fn unreadable_wal_stops_startup_and_keeps_the_wal() {
+    let d = tempfile::tempdir().unwrap();
+    {
+        let mut c = config(d.path());
+        c.durability = Durability::Strict;
+        let s = Storage::open(c, None).unwrap();
+        submit(&s, vec![log(1, "acknowledged")]);
+    }
+    let wal = only_wal(d.path());
+    assert_unreadable_file_stops_startup(d.path(), &wal);
+    // The acknowledged event was hidden from nobody: it is back once readable.
+    let s = Storage::open(config(d.path()), None).unwrap();
+    assert_eq!(messages(&s), ["acknowledged"]);
+    assert!(s.recovery_report(Signal::Logs).quarantined.is_empty());
+}
+
+#[test]
+fn unreadable_segment_stops_startup_and_keeps_the_segment() {
+    let d = tempfile::tempdir().unwrap();
+    {
+        let s = Storage::open(config(d.path()), None).unwrap();
+        submit(&s, vec![log(1, "sealed")]);
+        s.rotate_blocking(Signal::Logs).unwrap();
+    }
+    let seg = std::fs::read_dir(seg_dir(d.path())).unwrap().flatten().map(|e| e.path()).next().unwrap();
+    assert_unreadable_file_stops_startup(d.path(), &seg);
+    let s = Storage::open(config(d.path()), None).unwrap();
+    assert_eq!(messages(&s), ["sealed"]);
+    assert_eq!(s.recovery_report(Signal::Logs).segments_quarantined, 0);
 }

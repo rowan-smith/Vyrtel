@@ -59,7 +59,7 @@ admin_password = "change-me"     # or VYRTEL_AUTH_ADMIN_PASSWORD
 | `segment_target_size` | `64MB`    | `VYRTEL_STORAGE_SEGMENT_TARGET_SIZE` | Seal the active segment at this *uncompressed in-memory* size (capped by the memory budget). Compressed segment files are typically 5–15× smaller. |
 | `segment_max_age`     | `5m`      | `VYRTEL_STORAGE_SEGMENT_MAX_AGE`     | Seal the active segment after this long, even if small.                                                                                            |
 | `segment_max_events`  | `2000000` | –                                      | Seal after this many events.                                                                                                                       |
-| `durability`          | `normal`  | `VYRTEL_STORAGE_DURABILITY`          | `normal`: acknowledge after writing to the OS, fsync every `fsync_interval`. `strict`: fsync before every acknowledgement (group-committed).       |
+| `durability`          | `normal`  | `VYRTEL_STORAGE_DURABILITY`          | `normal`: acknowledge after writing to the OS, fsync every `fsync_interval`. `strict`: fsync before every acknowledgement (group-committed). See [Crash recovery](#crash-recovery-and-backups). |
 | `fsync_interval`      | `1s`      | `VYRTEL_STORAGE_FSYNC_INTERVAL`      | WAL fsync period in `normal` mode.                                                                                                                 |
 | `compaction`          | `true`    | `VYRTEL_STORAGE_COMPACTION`          | Merge small segments (e.g. sealed by age on quiet systems).                                                                                        |
 | `zstd_level`          | `3`       | –                                      | Compression level 1–22. Higher is smaller and slower to write.                                                                                     |
@@ -171,3 +171,51 @@ directory writable for that user first:
 mkdir -p vyrtel-data && sudo chown 65532:65532 vyrtel-data
 docker run -p 8080:8080 -v ./vyrtel-data:/data ghcr.io/rowan-smith/vyrtel:latest
 ```
+
+## Crash recovery and backups
+
+Vyrtel needs no repair step after a crash: start it again on the same data
+directory. Startup replays the write-ahead log, finishes any interrupted
+sealing or compaction and logs one `recovered stream` line per signal.
+
+**What survives** (full table in the
+[acknowledgement contract](storage-format.md#acknowledgement-contract)):
+
+| Durability | Process killed / crashed            | OS crash or power loss                              |
+|------------|-------------------------------------|-----------------------------------------------------|
+| `normal`   | every acknowledged request survives | up to `fsync_interval` (1 s) of acknowledged requests may be lost |
+| `strict`   | every acknowledged request survives | every acknowledged request survives                 |
+
+Either way each surviving event is visible exactly once with its original
+id, and a request is never half-applied. Choose `strict` when a lost second
+of telemetry on power failure is unacceptable; it costs one fsync per group
+of concurrent requests.
+
+**Checking a recovery.** After an unclean stop, look for these at startup:
+
+* `WARN recovery found damaged files; see the quarantine directory` — damage
+  was found. Each damaged item has its own `ERROR`/`WARN` line with
+  `signal`, `kind`, `reason` and `quarantined_to`.
+* `GET /api/v1/system/storage` → `signals.<signal>.recovery` lists the same
+  items (`quarantined`) and how much was replayed.
+* A startup that **fails** with an I/O error (permission denied, device
+  errors) is deliberate: Vyrtel refuses to set aside files it merely could
+  not read. Fix the permissions or disk and start again; nothing has been
+  changed.
+
+**Quarantine.** Damaged files are moved to `data/quarantine/<signal>/` and
+never deleted by Vyrtel. A torn final WAL record after a crash (`walTail`)
+is normal after power loss in `normal` mode and loses only that record;
+whole `segment` or `wal` items mean the disk or something outside Vyrtel
+altered the files. See [Quarantine](storage-format.md#quarantine) for what
+each kind lost. Copy the files somewhere for diagnosis if needed, then
+delete them; the directory's size is reported as `quarantineBytes`.
+
+**Backups.** Back up the whole data directory, either with the server
+stopped or from an atomic filesystem snapshot (LVM, ZFS, btrfs, cloud
+volume snapshots). A snapshot taken while running restores like a power
+loss: recovery applies and the contract above holds. Do not copy the
+directory file by file while Vyrtel runs — sealing can move events from a
+WAL into a segment between the two copies. To restore, stop Vyrtel, replace
+the data directory with the backup and start it. The on-disk format is
+unchanged in this release; no migration is needed.

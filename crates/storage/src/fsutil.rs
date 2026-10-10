@@ -29,6 +29,26 @@ pub fn sync_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Create `dir` and any missing ancestors, fsyncing the parent of every
+/// directory it creates. Without that, a power loss can drop a freshly
+/// created directory — and every file already made durable inside it.
+pub fn create_dir_all_durable(dir: &Path) -> Result<()> {
+    if dir.as_os_str().is_empty() || dir.is_dir() {
+        return Ok(());
+    }
+    let parent = dir.parent().filter(|p| !p.as_os_str().is_empty());
+    if let Some(p) = parent {
+        create_dir_all_durable(p)?;
+    }
+    match std::fs::create_dir(dir) {
+        Ok(()) => {}
+        // Another thread or process won the race; it owns the parent sync.
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists && dir.is_dir() => return Ok(()),
+        Err(e) => return Err(e).ctx(dir),
+    }
+    sync_dir(parent.unwrap_or(Path::new(".")))
+}
+
 /// Positional read that does not move a shared cursor, so many queries can
 /// read the same segment file concurrently through one handle.
 pub fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
@@ -74,4 +94,25 @@ pub fn dir_size(dir: &Path) -> u64 {
             _ => 0,
         })
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_dir_all_durable_creates_missing_ancestors_and_is_idempotent() {
+        let d = tempfile::tempdir().unwrap();
+        let nested = d.path().join("quarantine").join("logs");
+        create_dir_all_durable(&nested).unwrap();
+        assert!(nested.is_dir());
+        // Existing directories are left alone.
+        std::fs::write(nested.join("evidence"), b"x").unwrap();
+        create_dir_all_durable(&nested).unwrap();
+        assert_eq!(std::fs::read(nested.join("evidence")).unwrap(), b"x");
+        // A file in the way is an error, not silently accepted.
+        let blocked = d.path().join("evidence-file");
+        std::fs::write(&blocked, b"x").unwrap();
+        assert!(create_dir_all_durable(&blocked.join("sub")).is_err());
+    }
 }
