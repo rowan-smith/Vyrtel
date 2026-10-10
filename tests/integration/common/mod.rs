@@ -202,3 +202,103 @@ pub fn fixture(name: &str) -> String {
     out.push_str(rest);
     out
 }
+
+/// Ingest requests holding an admission permit right now.
+pub fn ingest_in_flight(s: &TestServer) -> usize {
+    s.state().ingest_max_concurrent - s.state().ingest_permits.available_permits()
+}
+
+/// Poll `cond` until it holds; panic after 10 s.
+pub async fn wait_until(what: &str, cond: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !cond() {
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// NDJSON with `n` events of roughly `pad` bytes each.
+pub fn ndjson_payload(n: usize, pad: usize) -> String {
+    let filler = "x".repeat(pad);
+    (0..n)
+        .map(|i| {
+            format!(
+                "{{\"message\":\"event {i}\",\"service\":\"load\",\"properties\":{{\"pad\":\"{filler}\",\"n\":{i}}}}}\n"
+            )
+        })
+        .collect()
+}
+
+pub fn gzip(data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(data).unwrap();
+    gz.finish().unwrap()
+}
+
+/// An HTTP/1.1 request over a raw socket, so a test controls exactly when
+/// body bytes arrive and when the client goes away.
+pub struct RawRequest {
+    pub tcp: tokio::net::TcpStream,
+}
+
+impl RawRequest {
+    /// Send the request line and headers for a body of `content_length`
+    /// bytes, and no body yet.
+    pub async fn open(s: &TestServer, path: &str, headers: &[(&str, &str)], content_length: usize) -> RawRequest {
+        use tokio::io::AsyncWriteExt;
+        let addr = s.url.trim_start_matches("http://");
+        let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut head = format!("POST {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+        for (k, v) in headers {
+            head.push_str(&format!("{k}: {v}\r\n"));
+        }
+        head.push_str(&format!("Content-Length: {content_length}\r\n\r\n"));
+        tcp.write_all(head.as_bytes()).await.unwrap();
+        RawRequest { tcp }
+    }
+
+    pub async fn send(&mut self, bytes: &[u8]) {
+        use tokio::io::AsyncWriteExt;
+        self.tcp.write_all(bytes).await.unwrap();
+        self.tcp.flush().await.unwrap();
+    }
+
+    /// The response status, if a status line arrives within `wait`.
+    pub async fn status_line(&mut self, wait: Duration) -> Option<u16> {
+        use tokio::io::AsyncReadExt;
+        let mut buf = [0u8; 64];
+        let n = tokio::time::timeout(wait, self.tcp.read(&mut buf)).await.ok()?.ok()?;
+        let text = String::from_utf8_lossy(&buf[..n]).to_string();
+        text.strip_prefix("HTTP/1.1 ")?.get(..3)?.parse().ok()
+    }
+
+    /// Read the whole response; returns the status code and the raw text.
+    pub async fn response(mut self) -> (u16, String) {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(30), self.tcp.read_to_end(&mut buf)).await;
+        let text = String::from_utf8_lossy(&buf).to_string();
+        let status = text.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+        (status, text)
+    }
+}
+
+/// Park the writer thread of `signal` until the returned sender is dropped,
+/// so submitted batches wait in the queue unacknowledged. Must be called
+/// while the signal's active buffer is empty: rotation then has nothing to
+/// seal and runs the callback on the writer thread itself.
+pub fn stall_writer(s: &TestServer, signal: telemetry::Signal) -> std::sync::mpsc::Sender<()> {
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    s.state().storage.stream(signal).rotate(Box::new(move |_| {
+        let _ = entered_tx.send(());
+        let _ = release_rx.recv();
+    }));
+    entered_rx.recv_timeout(Duration::from_secs(10)).expect("writer stalled");
+    release_tx
+}
+
+pub fn queue_depth(s: &TestServer, signal: telemetry::Signal) -> usize {
+    s.state().storage.stats().get(signal).queue_depth
+}

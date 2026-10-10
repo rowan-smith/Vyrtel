@@ -4,6 +4,7 @@
 mod common;
 
 mod admin;
+mod admission;
 mod api;
 mod auth;
 mod crash;

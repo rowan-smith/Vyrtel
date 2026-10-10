@@ -28,8 +28,17 @@ pub struct AppState {
     pub live: broadcast::Sender<LiveBatch>,
     pub live_permits: Arc<Semaphore>,
     pub query_permits: Arc<Semaphore>,
-    /// Bounds request bodies held in memory at once.
+    /// Ingest admission: one permit per request from before its body is
+    /// read until its write is acknowledged (see `routes::ingest`).
     pub ingest_permits: Arc<Semaphore>,
+    /// Total permits in `ingest_permits`.
+    pub ingest_max_concurrent: usize,
+    /// Ingest requests turned away because every permit was taken.
+    pub ingest_rejected: AtomicU64,
+    /// Bounds rejected ingest bodies being discarded at once.
+    pub discard_permits: Arc<Semaphore>,
+    /// Bounds rejected ingest bodies held at all (discarding or waiting).
+    pub discard_pending: Arc<Semaphore>,
     pub started_at: Instant,
     pub started_ts: Timestamp,
     pub received_bytes: AtomicU64,

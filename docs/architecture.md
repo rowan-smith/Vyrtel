@@ -63,6 +63,10 @@ sequenceDiagram
     participant L as Live subscribers
 
     C->>H: POST /api/v1/events (or /v1/logs …)
+    H->>H: take an ingest slot (no wait)
+    alt every slot busy
+        H-->>C: 429 + Retry-After (body discarded unread)
+    end
     H->>H: read body ≤ max_request_size (after gzip)
     H->>P: parse + map
     P-->>H: Vec<TelemetryEvent>
@@ -81,8 +85,14 @@ sequenceDiagram
     end
 ```
 
-* Every queue is bounded: request bodies (semaphore), events per signal
-  (`queue_capacity`), the writer channel, and the live-tail ring.
+* Every queue is bounded: requests in progress (`ingest.max_concurrent`
+  slots), events per signal (`queue_capacity`), the writer channel, and the
+  live-tail ring.
+* An ingest slot is held from before the body is read until the response is
+  ready, so it bounds bodies, decoded events and requests awaiting their
+  acknowledgement together. It is released however the request ends,
+  including client disconnects; a request abandoned mid-parse keeps it until
+  the parse (and its memory) is gone.
 * The writer drains whatever is queued into one group commit, so `strict`
   durability costs one fsync per group, not per request.
 * A request is acknowledged only after its WAL record is written (and
