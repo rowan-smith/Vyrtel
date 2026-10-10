@@ -578,3 +578,102 @@ fn wal_header_for_another_signal_is_quarantined() {
     assert_eq!((q.signal, q.kind), (Signal::Logs, QuarantineKind::Wal));
     assert!(q.reason.contains("metrics"), "{}", q.reason);
 }
+
+// ---- REL-01: unreadable is not damaged ----------------------------------
+
+/// Keeps a file unreadable to Vyrtel, without touching its bytes, until
+/// dropped: mode 000 on Unix, an exclusive share lock on Windows.
+struct Unreadable {
+    #[cfg(unix)]
+    path: std::path::PathBuf,
+    #[cfg(windows)]
+    _lock: std::fs::File,
+}
+
+impl Unreadable {
+    /// `None` when the platform cannot deny the read (e.g. tests run as root).
+    fn new(path: &Path) -> Option<Unreadable> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let guard = Unreadable { path: path.to_path_buf() };
+            if std::fs::File::open(path).is_ok() {
+                eprintln!("skipping: running with privileges that bypass file permissions");
+                return None;
+            }
+            Some(guard)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(path).unwrap();
+            assert!(std::fs::File::open(path).is_err(), "share lock must deny reads");
+            Some(Unreadable { _lock: lock })
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o644));
+    }
+}
+
+/// Startup must fail with a non-damage I/O error, leave `path` byte-for-byte
+/// in place and quarantine nothing; once readable again, recovery succeeds.
+fn assert_unreadable_file_stops_startup(dir: &Path, path: &Path) {
+    let before = std::fs::read(path).unwrap();
+    {
+        let Some(_guard) = Unreadable::new(path) else { return };
+        match Storage::open(config(dir), None) {
+            Err(StorageError::Io { path: failed, source }) => {
+                assert_eq!(failed, path, "the error names the unreadable file");
+                assert_ne!(source.kind(), std::io::ErrorKind::UnexpectedEof);
+            }
+            Err(e) => panic!("expected an I/O error, got {e}"),
+            Ok(_) => panic!("startup must not continue past an unreadable file"),
+        }
+    }
+    assert_eq!(std::fs::read(path).unwrap(), before, "the original file is untouched");
+    let q = dir.join("quarantine");
+    assert!(
+        !q.exists()
+            || std::fs::read_dir(&q).unwrap().flatten().all(|s| std::fs::read_dir(s.path()).unwrap().count() == 0),
+        "nothing was quarantined"
+    );
+}
+
+#[test]
+fn unreadable_wal_stops_startup_and_keeps_the_wal() {
+    let d = tempfile::tempdir().unwrap();
+    {
+        let mut c = config(d.path());
+        c.durability = Durability::Strict;
+        let s = Storage::open(c, None).unwrap();
+        submit(&s, vec![log(1, "acknowledged")]);
+    }
+    let wal = only_wal(d.path());
+    assert_unreadable_file_stops_startup(d.path(), &wal);
+    // The acknowledged event was hidden from nobody: it is back once readable.
+    let s = Storage::open(config(d.path()), None).unwrap();
+    assert_eq!(messages(&s), ["acknowledged"]);
+    assert!(s.recovery_report(Signal::Logs).quarantined.is_empty());
+}
+
+#[test]
+fn unreadable_segment_stops_startup_and_keeps_the_segment() {
+    let d = tempfile::tempdir().unwrap();
+    {
+        let s = Storage::open(config(d.path()), None).unwrap();
+        submit(&s, vec![log(1, "sealed")]);
+        s.rotate_blocking(Signal::Logs).unwrap();
+    }
+    let seg = std::fs::read_dir(seg_dir(d.path())).unwrap().flatten().map(|e| e.path()).next().unwrap();
+    assert_unreadable_file_stops_startup(d.path(), &seg);
+    let s = Storage::open(config(d.path()), None).unwrap();
+    assert_eq!(messages(&s), ["sealed"]);
+    assert_eq!(s.recovery_report(Signal::Logs).segments_quarantined, 0);
+}

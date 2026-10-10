@@ -49,9 +49,11 @@ impl StreamDirs {
         }
     }
 
+    /// Durable creation matters: the first WAL is fsynced into `wal/<signal>/`
+    /// right after this, and strict mode acknowledges against it.
     pub fn create(&self) -> Result<()> {
         for d in [&self.wal, &self.segments, &self.tmp] {
-            std::fs::create_dir_all(d).ctx(d)?;
+            fsutil::create_dir_all_durable(d)?;
         }
         Ok(())
     }
@@ -121,7 +123,9 @@ pub struct Recovered {
 /// A destination in the quarantine directory that does not exist yet, so a
 /// second crash never overwrites the evidence of the first.
 fn quarantine_dest(dirs: &StreamDirs, base: &str) -> Result<PathBuf> {
-    std::fs::create_dir_all(&dirs.quarantine).ctx(&dirs.quarantine)?;
+    // A brand-new `quarantine/<signal>/` must itself survive power loss, or
+    // the evidence fsynced into it could vanish with it.
+    fsutil::create_dir_all_durable(&dirs.quarantine)?;
     let stamp = telemetry::Timestamp::now().millis();
     let mut n = 0u32;
     loop {

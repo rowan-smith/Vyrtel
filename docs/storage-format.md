@@ -354,7 +354,9 @@ Damaged data is never deleted by recovery. Each item is preserved under
 | `<id>.wal.tail-<offset>.<unix-ms>`        | `walTail` | the exact bytes after the last valid record at `offset`       |
 
 A `-<n>` suffix is added if a name is already taken, so a later crash never
-overwrites earlier evidence. Each item is logged once at startup (`ERROR`
+overwrites earlier evidence. Newly created directories (including
+`quarantine/<signal>/` itself) are fsynced into their parent, so evidence
+written into them survives power loss too. Each item is logged once at startup (`ERROR`
 for whole files, `WARN` for tails) with `signal`, `kind`, `file`,
 `quarantined_to`, `bytes` and `reason`, and is listed under
 `signals.<signal>.recovery.quarantined` in

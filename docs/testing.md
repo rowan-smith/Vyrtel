@@ -63,8 +63,12 @@ states an interrupted process would:
   for byte under `quarantine/<signal>/`, the report names signal, kind and
   reason, and a second restart neither re-quarantines nor duplicates; damaged
   segments and WALs with bad or foreign headers are moved whole; reasons
-  never contain host paths; non-damage I/O errors stop startup instead of
-  quarantining (unit test in `recovery.rs`).
+  never contain host paths;
+* an unreadable-but-undamaged WAL or segment (mode 000 on Unix, an exclusive
+  share lock on Windows) stops startup with an I/O error naming the file,
+  leaves it byte-for-byte in place and quarantines nothing; once readable,
+  the acknowledged events come back (skipped when running as root, which
+  bypasses permissions).
 
 ### Process-kill tests
 
