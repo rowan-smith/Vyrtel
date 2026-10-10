@@ -268,6 +268,19 @@ The benchmark dataset is synthetic and very regular (13.6× compression;
 its unique-per-event `requestId` makes Bloom filters a large share of a tiny
 segment). The load generator's data is more realistic: see below.
 
+### End-to-end benchmarks
+
+The Criterion benchmarks above measure library code in-process. For HTTP-level
+numbers (ingest throughput and query latency against a real release server, plus
+a mixed-load p50/p90/p95/p99 profile and index hotspots), use the .NET harness
+under `dotnet/`. Results are published at [benchmarks](benchmarks.md):
+
+```bash
+cargo build --release -p server
+dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short
+dotnet run --project dotnet/Vyrtel.Profiling -c Release -- --duration 30 --concurrency 4
+```
+
 ## Load generator
 
 `tools/loadgen` sends realistic structured logs (services, error rate,

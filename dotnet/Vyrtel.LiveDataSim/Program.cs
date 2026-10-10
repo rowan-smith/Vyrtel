@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
-using DotnetLive.Vyrtel;
-using DotnetLive.Services;
+using Vyrtel.LiveDataSim.Vyrtel;
+using Vyrtel.LiveDataSim.Services;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Serilog;
@@ -46,7 +46,7 @@ builder.Services.AddSingleton<AuthService>();
 builder.Services.AddOpenTelemetry()
     .ConfigureResource(r => r.AddService(serviceName: serviceName, serviceVersion: "0.1.0"))
     .WithTracing(t => t
-        .AddSource("DotnetLive")
+        .AddSource("Vyrtel.LiveDataSim")
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation());
 
@@ -58,8 +58,8 @@ builder.WebHost.UseUrls("http://127.0.0.1:5088");
 
 var app = builder.Build();
 
-var activitySource = new ActivitySource("DotnetLive");
-var meter = new Meter("DotnetLive");
+var activitySource = new ActivitySource("Vyrtel.LiveDataSim");
+var meter = new Meter("Vyrtel.LiveDataSim");
 var requestCounter = meter.CreateCounter<long>("http.server.requests");
 var duration = meter.CreateHistogram<double>("http.server.request_duration_ms", unit: "ms");
 var orderCounter = meter.CreateCounter<long>("orders.created");
@@ -254,7 +254,7 @@ app.MapGet("/", () => Results.Ok(new
 try
 {
     Log.Information(
-        "DotnetLive starting → Vyrtel {Endpoint} as {Service}/{Environment}",
+        "Vyrtel.LiveDataSim starting → Vyrtel {Endpoint} as {Service}/{Environment}",
         vyrtelEndpoint,
         serviceName,
         environmentName);
@@ -292,7 +292,7 @@ public sealed class TraceJsonExporter : BackgroundService
         _logger = logger;
         _listener = new ActivityListener
         {
-            ShouldListenTo = source => source.Name == "DotnetLive",
+            ShouldListenTo = source => source.Name == "Vyrtel.LiveDataSim",
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
             ActivityStopped = activity =>
             {

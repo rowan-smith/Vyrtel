@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Vyrtel.Profiling</RootNamespace>
+    <AssemblyName>Vyrtel.Profiling</AssemblyName>
+    <Description>Mixed-workload profiler that measures Vyrtel API latency percentiles (p50/p90/p95/p99) per operation and surfaces index hotspots from the server's query stats.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Vyrtel.Harness\Vyrtel.Harness.csproj" />
+  </ItemGroup>
+
+</Project>

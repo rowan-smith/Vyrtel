@@ -1,0 +1,69 @@
+name: Benchmarks
+
+# Measures the release server on GitHub's runners and commits the rollup that the website
+# renders at /docs/benchmarks.html. Running on the same hardware every time keeps the
+# numbers comparable across commits.
+#
+# The result paths exclude docs/**, so the commit this job makes never re-triggers itself.
+# Commits pushed with GITHUB_TOKEN cannot trigger the push-based Deploy site workflow, so we
+# dispatch it explicitly once the results are in.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - dotnet/**
+      - .github/workflows/benchmark.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: Run benchmarks and publish results
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build server (release)
+        run: cargo build --release --locked -p server
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run benchmarks
+        run: dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short
+
+      - name: Show results
+        run: cat docs/benchmarks/results.md
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/benchmarks/results.json docs/benchmarks/results.md
+          if git diff --staged --quiet; then
+            echo "No changes to benchmark results"
+          else
+            git commit -m "chore(benchmarks): refresh results"
+            git push
+          fi
+
+      - name: Redeploy the website
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run pages.yml --ref main

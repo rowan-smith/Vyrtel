@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Vyrtel.Benchmark</RootNamespace>
+    <AssemblyName>Vyrtel.Benchmark</AssemblyName>
+    <Description>BenchmarkDotNet harness that measures Vyrtel ingest and query performance and writes the results consumed by the website.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Vyrtel.Harness\Vyrtel.Harness.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+  </ItemGroup>
+
+</Project>

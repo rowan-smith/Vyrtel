@@ -4,7 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace DotnetLive.Vyrtel;
+namespace Vyrtel.LiveDataSim.Vyrtel;
 
 public sealed class VyrtelMetricsPublisher : BackgroundService
 {
@@ -29,7 +29,7 @@ public sealed class VyrtelMetricsPublisher : BackgroundService
         {
             InstrumentPublished = (instrument, listener) =>
             {
-                if (instrument.Meter.Name.StartsWith("DotnetLive", StringComparison.Ordinal))
+                if (instrument.Meter.Name.StartsWith("Vyrtel.LiveDataSim", StringComparison.Ordinal))
                 {
                     listener.EnableMeasurementEvents(instrument);
                 }
@@ -176,8 +176,8 @@ public sealed class TrafficSimulator : BackgroundService
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<TrafficSimulator> _logger;
-    private static readonly ActivitySource ActivitySource = new("DotnetLive");
-    private static readonly Meter Meter = new("DotnetLive");
+    private static readonly ActivitySource ActivitySource = new("Vyrtel.LiveDataSim");
+    private static readonly Meter Meter = new("Vyrtel.LiveDataSim");
     private static readonly Counter<long> Requests = Meter.CreateCounter<long>("http.server.requests");
     private static readonly Histogram<double> DurationMs = Meter.CreateHistogram<double>("http.server.request_duration_ms", "ms");
     private static readonly Counter<long> Orders = Meter.CreateCounter<long>("orders.created");

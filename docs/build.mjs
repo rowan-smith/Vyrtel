@@ -191,6 +191,7 @@ const DOCS = [
   { slug: 'cla-individual', file: 'docs/cla/individual.md', title: 'Individual CLA', group: 'Project' },
   { slug: 'cla-corporate', file: 'docs/cla/corporate.md', title: 'Corporate CLA', group: 'Project' },
   { slug: 'roadmap', file: 'docs/roadmap.md', group: 'Project' },
+  { slug: 'benchmarks', file: 'docs/benchmarks.md', title: 'Benchmarks', group: 'Project' },
   { slug: 'brand', file: 'docs/brand/README.md', title: 'Brand guide', group: 'Project' },
 ];
 const bySource = new Map(DOCS.map((d) => [d.file, d]));
@@ -244,10 +245,69 @@ function docSource(d) {
   return src;
 }
 
+/** Reads a repo JSON file if present, else null (benchmark results are only committed by CI). */
+function readJson(rel) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(root, rel), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+const num = (n, digits = 2) =>
+  typeof n === 'number' ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—';
+
+/** Renders the benchmark rollup injected into docs/benchmarks.md from docs/benchmarks/results.json. */
+function benchmarkResults() {
+  const data = readJson('docs/benchmarks/results.json');
+  if (!data || !Array.isArray(data.benchmarks) || data.benchmarks.length === 0) {
+    return `<p class="muted">No benchmark results have been published yet. They are regenerated automatically on the CI machine whenever <code>main</code> changes — see the <a href="${repoUrl}/actions/workflows/benchmark.yml">benchmark workflow</a>.</p>`;
+  }
+
+  const meta = [
+    `Vyrtel ${data.vyrtelVersion ?? '?'}`,
+    `${data.job ?? 'short'} job`,
+    data.dataset?.events ? `${data.dataset.events.toLocaleString('en-US')} events` : null,
+    data.generatedAt ? `generated ${new Date(data.generatedAt).toISOString().slice(0, 10)}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const hw = data.hardware ?? {};
+  const machine = [
+    hw.os,
+    hw.logicalCores ? `${hw.logicalCores} logical cores` : null,
+    hw.runtime,
+    hw.benchmarkDotNet ? `BenchmarkDotNet ${hw.benchmarkDotNet}` : null,
+  ]
+    .filter(Boolean)
+    .join('; ');
+
+  const groups = [...new Set(data.benchmarks.map((b) => b.group))];
+  const tables = groups
+    .map((group) => {
+      const rows = data.benchmarks
+        .filter((b) => b.group === group)
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((b) => {
+          const speed = b.metric === 'throughput' ? `${num(b.value, 0)} ${b.unit}` : `${num(b.throughput, 0)} ${b.throughputUnit ?? ''}`.trim();
+          return `<tr><td>${b.name}</td><td>${num(b.meanMs, 3)} ms</td><td>${num(b.medianMs, 3)} ms</td><td>${num(b.minMs, 3)} ms</td><td>${num(b.maxMs, 3)} ms</td><td>${speed}</td></tr>`;
+        })
+        .join('');
+      return `<h3>${group}</h3><table><thead><tr><th>Benchmark</th><th>Mean</th><th>Median</th><th>Min</th><th>Max</th><th>Throughput</th></tr></thead><tbody>${rows}</tbody></table>`;
+    })
+    .join('');
+
+  return `<p class="muted">${meta}</p><p class="muted small">Measured on ${machine}.</p>${tables}`;
+}
+
 function parseDocs() {
   return DOCS.map((d) => {
     currentSource = d.file;
-    const html = marked.parse(docSource(d));
+    let html = marked.parse(docSource(d));
+    if (d.slug === 'benchmarks') {
+      html = html.replace('<!--BENCHMARK_RESULTS-->', benchmarkResults());
+    }
     const headings = getHeadingList();
     const h1 = headings.find((h) => h.level === 1);
     const title = d.title ?? h1?.raw ?? d.slug;

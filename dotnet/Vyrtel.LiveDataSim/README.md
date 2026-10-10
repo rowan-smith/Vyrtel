@@ -1,7 +1,9 @@
-# DotnetLive
+# Vyrtel.LiveDataSim
 
 ASP.NET Core demo that pushes live telemetry into Vyrtel. It is a sample
-producer, not part of the Vyrtel build.
+producer, not part of the Vyrtel build. Benchmarks and latency profiling live in
+the sibling projects [`Vyrtel.Benchmark`](../Vyrtel.Benchmark) and
+[`Vyrtel.Profiling`](../Vyrtel.Profiling).
 
 ## What it sends
 
@@ -22,8 +24,7 @@ cargo run -p server
 Then:
 
 ```bash
-cd dotnet-live
-dotnet run
+dotnet run --project dotnet/Vyrtel.LiveDataSim
 ```
 
 The app listens on http://127.0.0.1:5088 and continuously simulates traffic

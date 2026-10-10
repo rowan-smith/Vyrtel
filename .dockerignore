@@ -5,6 +5,6 @@ data-dev
 web/dist
 web/test-results
 web/playwright-report
-dotnet-live
+dotnet
 .git
 .idea
