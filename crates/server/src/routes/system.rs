@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
-use storage::StreamStats;
+use storage::{RecoveryReport, StreamStats};
 use telemetry::Signal;
 
 use crate::error::ApiResult;
@@ -50,6 +50,29 @@ fn stream_json(s: &StreamStats) -> Value {
         "oldest": s.oldest,
         "newest": s.newest,
         "healthy": s.last_error.is_none(),
+        "recovery": recovery_json(&s.recovery),
+    })
+}
+
+/// What startup recovery did for one signal. Quarantine paths are relative
+/// to the data directory so the response never discloses host paths.
+fn recovery_json(r: &RecoveryReport) -> Value {
+    json!({
+        "segmentsLoaded": r.segments_loaded,
+        "walRecordsReplayed": r.wal_records_replayed,
+        "walEventsReplayed": r.wal_events_replayed,
+        "segmentsSealed": r.segments_sealed,
+        "staleWalsRemoved": r.stale_wals_removed,
+        "replacedSegmentsRemoved": r.replaced_segments_removed,
+        "walBytesDiscarded": r.wal_bytes_discarded,
+        "quarantined": r.quarantined.iter().map(|q| json!({
+            "signal": q.signal.as_str(),
+            "kind": q.kind.as_str(),
+            "source": q.source,
+            "file": q.path.file_name().map(|n| format!("quarantine/{}/{}", q.signal.as_str(), n.to_string_lossy())),
+            "bytes": q.bytes,
+            "reason": q.reason,
+        })).collect::<Vec<_>>(),
     })
 }
 

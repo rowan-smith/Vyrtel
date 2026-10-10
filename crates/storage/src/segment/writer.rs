@@ -236,11 +236,13 @@ pub fn write_segment(
             return Err(e);
         }
     };
+    crate::crash::point("segment.before_rename");
     // Commit point: after this rename the segment is visible to recovery.
     if let Err(e) = fsutil::rename(&tmp_path, &final_path) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
     }
+    crate::crash::point("segment.after_rename");
     fsutil::sync_dir(dir)?;
     Ok(WrittenSegment { path: final_path, summary })
 }

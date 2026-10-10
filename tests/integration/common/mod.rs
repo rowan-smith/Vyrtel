@@ -41,7 +41,7 @@ impl TestServer {
         Self::launch(c, Some(dir)).await
     }
 
-    async fn launch(config: Config, dir: Option<tempfile::TempDir>) -> TestServer {
+    pub async fn launch(config: Config, dir: Option<tempfile::TempDir>) -> TestServer {
         let app = App::build(config.clone()).expect("server starts");
         let state = app.state.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

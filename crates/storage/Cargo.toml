@@ -14,6 +14,11 @@ tracing.workspace = true
 xxhash-rust.workspace = true
 zstd.workspace = true
 
+[features]
+# Test-only fault injection: `VYRTEL_CRASH_AT=<point>` aborts the process at
+# a named point (see src/crash.rs). Never enable in release builds.
+crash-points = []
+
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
@@ -23,3 +28,9 @@ telemetry = { workspace = true, features = ["testing"] }
 [[bench]]
 name = "storage"
 harness = false
+
+# Kills real processes at injected crash points; needs `--features crash-points`
+# (CI runs `cargo test --workspace --all-features`).
+[[test]]
+name = "crash"
+required-features = ["crash-points"]

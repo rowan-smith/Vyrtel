@@ -29,6 +29,7 @@ use telemetry::*;
 use crate::cache::IndexCache;
 use crate::codec;
 use crate::config::{CompactionConfig, Durability, StreamConfig};
+use crate::crash;
 use crate::error::{Result, StorageError};
 use crate::fsutil;
 use crate::recovery::{Recovered, RecoveryReport, StreamDirs};
@@ -122,6 +123,8 @@ pub struct StreamStats {
     pub oldest: Option<Timestamp>,
     pub newest: Option<Timestamp>,
     pub last_error: Option<String>,
+    /// What startup recovery found, including anything quarantined.
+    pub recovery: RecoveryReport,
 }
 
 struct Shared {
@@ -327,6 +330,7 @@ impl Stream {
             ingested_events: self.shared.ingested.load(Ordering::Relaxed),
             rejected_batches: self.shared.rejected.load(Ordering::Relaxed),
             last_error: self.shared.last_error.lock().unwrap().clone(),
+            recovery: self.recovery.clone(),
             ..Default::default()
         };
         let mut oldest: Option<Timestamp> = None;
@@ -477,6 +481,7 @@ impl Writer {
         if pending.is_empty() {
             return;
         }
+        crash::point("wal.before_sync");
         if self.shared.durability == Durability::Strict {
             if let Err(e) = self.wal.sync() {
                 self.shared.set_error(&e);
@@ -488,6 +493,7 @@ impl Writer {
             }
             self.last_sync = Instant::now();
         }
+        crash::point("wal.before_ack");
         {
             let mut st = self.shared.state.write().unwrap();
             for p in pending.iter() {
@@ -507,6 +513,7 @@ impl Writer {
             self.shared.queued.fetch_sub(p.reserved, Ordering::AcqRel);
             (p.ack)(Ok(p.committed));
         }
+        crash::point("wal.after_ack");
     }
 
     fn should_rotate(&self) -> bool {
@@ -570,6 +577,7 @@ impl Writer {
                 return;
             }
         };
+        crash::point("rotate.after_wal_create");
         let old = std::mem::replace(&mut self.wal, new_wal);
         {
             let mut st = self.shared.state.write().unwrap();
@@ -666,6 +674,7 @@ fn seal_frozen(shared: &Shared) -> Result<()> {
         Some(Arc::new(Segment::open(&w.path)?))
     };
     drop(refs);
+    crash::point("seal.before_wal_delete");
 
     // The segment is committed; the WAL is now redundant. If deleting it
     // fails, recovery will notice the segment exists and delete it then.
@@ -802,7 +811,11 @@ fn compact(shared: &Shared) -> Result<()> {
         st.segments.retain(|s| !replaces.contains(&s.summary.id));
         st.segments.push(merged);
     }
-    for s in inputs {
+    crash::point("compact.before_input_delete");
+    for (i, s) in inputs.into_iter().enumerate() {
+        if i == 1 {
+            crash::point("compact.mid_input_delete");
+        }
         shared.cache.evict(shared.signal, s.summary.id);
         let path = s.path.clone();
         drop(s);

@@ -6,6 +6,7 @@ mod common;
 mod admin;
 mod api;
 mod auth;
+mod crash;
 mod live;
 mod signals;
 mod storage_flows;
