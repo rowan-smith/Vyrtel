@@ -17,11 +17,14 @@ pub struct ApiError {
     pub message: String,
     /// Extra fields merged into the error object (e.g. query position).
     pub details: Option<serde_json::Value>,
+    /// Send `Connection: close`: the request body was not read to the end,
+    /// so the connection must not be reused for another request.
+    pub close: bool,
 }
 
 impl ApiError {
     pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
-        Self { status, code, message: message.into(), details: None }
+        Self { status, code, message: message.into(), details: None, close: false }
     }
 
     pub fn bad_request(message: impl Into<String>) -> Self {
@@ -54,6 +57,11 @@ impl ApiError {
         self.details = Some(details);
         self
     }
+
+    pub fn closing_connection(mut self) -> Self {
+        self.close = true;
+        self
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -65,6 +73,9 @@ impl IntoResponse for ApiError {
         let mut resp = (self.status, Json(json!({ "error": err }))).into_response();
         if self.status == StatusCode::TOO_MANY_REQUESTS || self.status == StatusCode::SERVICE_UNAVAILABLE {
             resp.headers_mut().insert(axum::http::header::RETRY_AFTER, axum::http::HeaderValue::from_static("1"));
+        }
+        if self.close {
+            resp.headers_mut().insert(axum::http::header::CONNECTION, axum::http::HeaderValue::from_static("close"));
         }
         resp
     }

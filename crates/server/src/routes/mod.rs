@@ -70,13 +70,14 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/v1/auth/logout", post(session::logout))
         .route("/api/v1/auth/me", get(session::me));
 
+    // Ingest decodes its own bodies: every gzip member, with the size limit
+    // applied to the decoded bytes (see `ingest::read_body`).
+    let rest = Router::new().merge(public).merge(api).layer(RequestDecompressionLayer::new());
+
     Router::new()
-        .merge(public)
         .merge(ingest)
-        .merge(api)
+        .merge(rest)
         .fallback(web::static_handler)
-        // OTLP exporters commonly gzip their payloads.
-        .layer(RequestDecompressionLayer::new())
         .layer(SetResponseHeaderLayer::if_not_present(
             header::X_CONTENT_TYPE_OPTIONS,
             HeaderValue::from_static("nosniff"),
