@@ -26,7 +26,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::time::{Duration, Instant};
 
 use storage::*;
@@ -165,6 +165,14 @@ fn child_entry() {
 
 // --------------------------------------------------------------- parent --
 
+/// Tests run in parallel and spawn children. On Unix a spawned process
+/// inherits every open file description until it `exec`s, including the
+/// `flock` on a data directory that another test's `verify` has open — so
+/// that test's close-and-reopen could find the lock still held. `verify`
+/// holds a read guard while it has storage open; spawning takes the write
+/// guard, so no fork ever overlaps an open data-directory lock.
+static FORK_GUARD: RwLock<()> = RwLock::new(());
+
 struct Child<'a> {
     dir: &'a Path,
     durability: &'a str,
@@ -199,9 +207,15 @@ impl Child<'_> {
         c
     }
 
+    /// Start the child. See [`FORK_GUARD`].
+    fn spawn(&self) -> std::process::Child {
+        let _no_open_storage = FORK_GUARD.write().unwrap_or_else(|e| e.into_inner());
+        self.command().spawn().unwrap()
+    }
+
     /// Run until the crash point aborts the process.
     fn crash(&self) {
-        let out = self.command().output().unwrap();
+        let out = self.spawn().wait_with_output().unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         let point = self.crash_at.unwrap().split(':').next().unwrap();
         assert!(!out.status.success(), "child exited cleanly; expected a crash at {point}\n{stderr}");
@@ -268,6 +282,7 @@ struct Outcome {
 
 /// Recover `dir` and check the acknowledgement contract against the ledgers.
 fn verify(dir: &Path, durability: Durability, runs: u32) -> Outcome {
+    let _no_spawns = FORK_GUARD.read().unwrap_or_else(|e| e.into_inner());
     let ledger = read_ledgers(dir, runs);
     let mut c = config(dir, durability);
     c.compaction.enabled = false;
@@ -466,7 +481,7 @@ fn random_kills_under_load() {
                 batches: u64::MAX,
                 crash_at: None,
             };
-            let mut proc = child.command().spawn().unwrap();
+            let mut proc = child.spawn();
             // Wait for some acknowledgements, then kill at a random moment.
             let deadline = Instant::now() + Duration::from_secs(60);
             while std::fs::read_to_string(child.ledger()).map_or(0, |t| t.matches('\n').count()) < 20 {
