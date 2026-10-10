@@ -48,6 +48,31 @@ public static class DatasetSeeder
         }
     }
 
+    public static async Task SeedMetricsAsync(
+        ApiClient api,
+        EventFactory factory,
+        int points,
+        int batch = 500,
+        Action<string>? report = null,
+        CancellationToken ct = default)
+    {
+        var sent = 0;
+        var step = Math.Max(batch * 10, 1_000);
+        while (sent < points)
+        {
+            var count = Math.Min(batch, points - sent);
+            await api.IngestOtlpMetrics(factory.OtlpMetrics(count), ct);
+            sent += count;
+            if ((sent % step == 0 || sent == points) && report is not null)
+            {
+                report($"  {sent:N0}/{points:N0} metric points");
+            }
+        }
+    }
+
     /// <summary>Sensible number of traces to seed for a given log-event count.</summary>
     public static int DefaultTraceCount(int events) => Math.Clamp(events / 100, 100, 1000);
+
+    /// <summary>Sensible number of metric data points to seed for a given log-event count.</summary>
+    public static int DefaultMetricCount(int events) => Math.Clamp(events / 1_000, 50, 2_000);
 }

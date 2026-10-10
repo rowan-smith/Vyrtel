@@ -112,16 +112,23 @@ They build the server themselves unless one is already listening (`--url`/`--no-
 ```bash
 cargo build --release -p server
 
-# BenchmarkDotNet: ingest throughput + query latency; writes docs/benchmarks/results.json
+# BenchmarkDotNet: ingest throughput (NDJSON, JSON array, OTLP traces, OTLP metrics)
+# + query latency; writes docs/benchmarks/results.json
 dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short
 
-# Mixed-load percentile profile (p50/p90/p95/p99 per operation) and index hotspots
-dotnet run --project dotnet/Vyrtel.Profiling -c Release -- --duration 30 --concurrency 4
+# Capture a snapshot for a released version (also what the tag CI job does):
+dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short --label v0.1.1 --out docs/benchmarks/versions/v0.1.1.json
+
+# Mixed-load percentile profile (p50/p90/p95/p99 per operation) and index hotspots.
+# The first --warmup seconds (default 3) are discarded and hotspots are diffed over
+# the measured window only.
+dotnet run --project dotnet/Vyrtel.Profiling -c Release -- --duration 30 --warmup 3 --concurrency 4
 ```
 
-`.github/workflows/benchmark.yml` runs the benchmark on every `main` change and commits the
-rollup rendered on the [benchmarks page](benchmarks.md). `dotnet/Vyrtel.LiveDataSim` is a
-sample ASP.NET Core producer (not part of the build).
+`.github/workflows/benchmark.yml` runs the benchmark on every `main` change (and on each `v*`
+tag, writing a `docs/benchmarks/versions/<tag>.json` snapshot) and commits the rollup rendered
+on the [benchmarks page](benchmarks.md), including the version-history comparison.
+`dotnet/Vyrtel.LiveDataSim` is a sample ASP.NET Core producer (not part of the build).
 
 ## Release builds
 

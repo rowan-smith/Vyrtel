@@ -11,6 +11,8 @@ public sealed record ProfilingReport(
     string VyrtelVersion,
     int DatasetEvents,
     double DurationSeconds,
+    double WarmupSeconds,
+    double MeasurementSeconds,
     int Concurrency,
     long TotalRequests,
     long TotalFailures,
@@ -63,6 +65,8 @@ public static class ProfileReportWriter
         string version,
         int datasetEvents,
         double durationSeconds,
+        double warmupSeconds,
+        double measurementSeconds,
         int concurrency,
         long totalRequests,
         long totalFailures,
@@ -73,10 +77,12 @@ public static class ProfileReportWriter
             version,
             datasetEvents,
             durationSeconds,
+            warmupSeconds,
+            measurementSeconds,
             concurrency,
             totalRequests,
             totalFailures,
-            totalRequests / Math.Max(durationSeconds, 0.001),
+            totalRequests / Math.Max(measurementSeconds, 0.001),
             $"{RuntimeInformation.OSDescription} ({RuntimeInformation.OSArchitecture}), {Environment.ProcessorCount} logical cores",
             operations,
             hotspots);
@@ -84,7 +90,7 @@ public static class ProfileReportWriter
     public static void Print(ProfilingReport report)
     {
         Console.WriteLine();
-        Console.WriteLine($"profile: {report.TotalRequests:N0} requests in {report.DurationSeconds:F0}s " +
+        Console.WriteLine($"profile: {report.TotalRequests:N0} requests in {report.MeasurementSeconds:F0}s measured " +
                           $"(~{report.RequestsPerSecond:N0}/s), {report.TotalFailures:N0} failures");
         Console.WriteLine();
         Console.WriteLine($"  {"Operation",-42} {"count",7} {"p50",8} {"p90",8} {"p95",8} {"p99",8}");
@@ -109,7 +115,11 @@ public static class ProfileReportWriter
     }
 
     /// <summary>Parses <c>GET /api/v1/system/query-stats</c> into fields ranked by total query time.</summary>
-    public static List<FieldHotspot> ParseHotspots(string queryStatsJson)
+    public static List<FieldHotspot> ParseHotspots(string queryStatsJson) =>
+        ParseRows(queryStatsJson).OrderByDescending(h => h.TotalMs).Take(20).ToList();
+
+    /// <summary>Parses the raw per-field rows, without ranking or trimming.</summary>
+    public static List<FieldHotspot> ParseRows(string queryStatsJson)
     {
         using var doc = JsonDocument.Parse(queryStatsJson);
         if (!doc.RootElement.TryGetProperty("fields", out var fields) || fields.ValueKind != JsonValueKind.Array)
@@ -141,8 +151,39 @@ public static class ProfileReportWriter
                 SkippedRatio: scanned + skipped > 0 ? skipped / (double)(scanned + skipped) : 0));
         }
 
-        return result.OrderByDescending(h => h.TotalMs).Take(20).ToList();
+        return result;
     }
+
+    /// <summary>
+    /// Differences two query-stats snapshots so hotspots cover only the profiling window
+    /// (the seeding phase and any warmup queries are subtracted out).
+    /// </summary>
+    public static List<FieldHotspot> DiffHotspots(string beforeJson, string afterJson)
+    {
+        var before = ParseRows(beforeJson).ToDictionary(Key);
+        var rows = new List<FieldHotspot>();
+        foreach (var after in ParseRows(afterJson))
+        {
+            before.TryGetValue(Key(after), out var b);
+            var queries = Math.Max(0, after.Queries - (b?.Queries ?? 0));
+            var scanned = Math.Max(0, after.SegmentsScanned - (b?.SegmentsScanned ?? 0));
+            var skipped = Math.Max(0, after.SegmentsSkipped - (b?.SegmentsSkipped ?? 0));
+            var totalMs = Math.Max(0, after.TotalMs - (b?.TotalMs ?? 0));
+            rows.Add(after with
+            {
+                Queries = queries,
+                BytesRead = Math.Max(0, after.BytesRead - (b?.BytesRead ?? 0)),
+                SegmentsScanned = scanned,
+                SegmentsSkipped = skipped,
+                TotalMs = totalMs,
+                AvgMs = queries > 0 ? totalMs / queries : 0,
+                SkippedRatio = scanned + skipped > 0 ? skipped / (double)(scanned + skipped) : 0,
+            });
+        }
+        return rows.OrderByDescending(h => h.TotalMs).Take(20).ToList();
+    }
+
+    private static string Key(FieldHotspot h) => $"{h.Signal}\u0000{h.Field}\u0000{h.Index}";
 
     public static void Write(ProfilingReport report, string jsonPath)
     {
@@ -160,8 +201,8 @@ public static class ProfileReportWriter
         sb.AppendLine($"- Generated: {report.GeneratedAt:yyyy-MM-dd HH:mm:ss} UTC");
         sb.AppendLine($"- Vyrtel: {report.VyrtelVersion}");
         sb.AppendLine($"- Dataset: {report.DatasetEvents:N0} seeded log events");
-        sb.AppendLine($"- Load: {report.DurationSeconds:F0}s, {report.Concurrency} concurrent workers, " +
-                      $"{report.TotalRequests:N0} requests (~{report.RequestsPerSecond:N0}/s), {report.TotalFailures:N0} failures");
+        sb.AppendLine($"- Load: {report.DurationSeconds:F0}s total ({report.WarmupSeconds:F0}s warmup + {report.MeasurementSeconds:F0}s measured), "
+                      + $"{report.Concurrency} concurrent workers, {report.TotalRequests:N0} requests (~{report.RequestsPerSecond:N0}/s), {report.TotalFailures:N0} failures");
         sb.AppendLine($"- Machine: {report.Machine}");
         sb.AppendLine();
 

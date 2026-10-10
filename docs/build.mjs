@@ -257,6 +257,187 @@ function readJson(rel) {
 const num = (n, digits = 2) =>
   typeof n === 'number' ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—';
 
+const escapeHtml = (s) =>
+  String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const shorten = (s, max = 40) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
+
+/** Inline-SVG horizontal bar chart (log scale) so the site needs no chart library. */
+function barChart(rows) {
+  const rowHeight = 26;
+  const padTop = 6;
+  const labelW = 276;
+  const valueW = 104;
+  const width = 760;
+  const plotW = width - labelW - valueW;
+  const height = padTop * 2 + rows.length * rowHeight;
+  const scale = (v) => Math.log10(1 + Math.max(Number(v) || 0, 0));
+  const max = Math.max(...rows.map((r) => scale(r.value)), 0.0001);
+
+  const body = rows
+    .map((r, i) => {
+      const cy = padTop + i * rowHeight + rowHeight / 2;
+      const w = Math.max(1.5, (scale(r.value) / max) * plotW);
+      let range = '';
+      if (Number.isFinite(r.min) && Number.isFinite(r.max) && r.max > r.min) {
+        const x1 = labelW + (scale(r.min) / max) * plotW;
+        const x2 = labelW + (scale(r.max) / max) * plotW;
+        range = `<line class="chart-range" x1="${x1.toFixed(1)}" y1="${cy}" x2="${x2.toFixed(1)}" y2="${cy}"></line>`;
+      }
+      return (
+        `<text class="chart-label" x="${labelW - 10}" y="${cy + 4}" text-anchor="end">${escapeHtml(shorten(r.label))}</text>` +
+        range +
+        `<rect class="chart-bar" x="${labelW}" y="${(cy - 7).toFixed(1)}" width="${w.toFixed(1)}" height="14" rx="3"></rect>` +
+        `<text class="chart-value" x="${(labelW + w + 8).toFixed(1)}" y="${cy + 4}">${escapeHtml(r.display)}</text>`
+      );
+    })
+    .join('');
+
+  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img">${body}</svg>`;
+}
+
+function chartFigure(title, caption, rows) {
+  if (rows.length === 0) {
+    return '';
+  }
+  return `<figure class="chart-figure"><figcaption>${escapeHtml(title)} <span class="muted">${escapeHtml(caption)}</span></figcaption>${barChart(rows)}</figure>`;
+}
+
+/** Inline-SVG line chart of one metric across released versions (dots + connecting line). */
+function lineChart(points) {
+  const width = 760;
+  const height = 220;
+  const padTop = 16;
+  const padBottom = 34;
+  const padLeft = 56;
+  const padRight = 24;
+  const plotW = width - padLeft - padRight;
+  const plotH = height - padTop - padBottom;
+  const max = Math.max(...points.map((p) => p.value), 0.0001);
+  const x = (i) => (points.length === 1 ? padLeft + plotW / 2 : padLeft + (i / (points.length - 1)) * plotW);
+  const y = (v) => padTop + plotH - (v / max) * plotH;
+  const fmt = (v) => (v >= 1000 ? Math.round(v / 100) / 10 + 'k' : v >= 10 ? Math.round(v) : Math.round(v * 100) / 100);
+
+  const grid = [0, 0.25, 0.5, 0.75, 1]
+    .map((t) => {
+      const gy = padTop + plotH - t * plotH;
+      return (
+        `<line class="chart-axis" x1="${padLeft}" y1="${gy.toFixed(1)}" x2="${(padLeft + plotW).toFixed(1)}" y2="${gy.toFixed(1)}"></line>` +
+        `<text class="chart-tick" x="${padLeft - 8}" y="${(gy + 4).toFixed(1)}" text-anchor="end">${fmt(max * t)}</text>`
+      );
+    })
+    .join('');
+
+  const lines =
+    points.length > 1
+      ? `<polyline class="chart-line" points="${points.map((p, i) => `${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ')}"></polyline>`
+      : '';
+
+  const dots = points
+    .map((p, i) => {
+      const cx = x(i).toFixed(1);
+      const cy = y(p.value).toFixed(1);
+      return (
+        `<circle class="chart-dot" cx="${cx}" cy="${cy}" r="4"></circle>` +
+        `<text class="chart-value" x="${x(i).toFixed(1)}" y="${(y(p.value) - 9).toFixed(1)}" text-anchor="middle">${escapeHtml(p.display)}</text>` +
+        `<text class="chart-tick" x="${x(i).toFixed(1)}" y="${(padTop + plotH + 20).toFixed(1)}" text-anchor="middle">${escapeHtml(p.label)}</text>`
+      );
+    })
+    .join('');
+
+  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img">${grid}${lines}${dots}</svg>`;
+}
+
+/** Reads docs/benchmarks/versions/*.json (one snapshot per released tag), sorted oldest → newest. */
+function versionSnapshots() {
+  const dir = path.join(root, 'docs', 'benchmarks', 'versions');
+  let files = [];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const parse = (s) => {
+    const m = String(s).match(/(\d+)\.(\d+)\.(\d+)/);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : [0, 0, 0];
+  };
+  return files
+    .map((f) => {
+      const data = readJson(`docs/benchmarks/versions/${f}`);
+      if (!data || !Array.isArray(data.benchmarks) || data.benchmarks.length === 0) return null;
+      const label = data.label || data.vyrtelVersion || f.replace(/\.json$/, '');
+      return { ...data, label };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const av = parse(a.label);
+      const bv = parse(b.label);
+      return av[0] - bv[0] || av[1] - bv[1] || av[2] - bv[2];
+    });
+}
+
+/** Renders the per-version comparison (chart per headline metric + full table) for released tags. */
+function versionHistory(snapshots) {
+  if (snapshots.length === 0) {
+    return '';
+  }
+  const labels = snapshots.map((s) => s.label);
+  const maps = snapshots.map((s) => new Map(s.benchmarks.map((b) => [b.id, b])));
+  const newest = snapshots[snapshots.length - 1];
+
+  const order = [];
+  const seen = new Set();
+  for (const b of [...newest.benchmarks, ...snapshots.flatMap((s) => s.benchmarks)]) {
+    if (!seen.has(b.id)) {
+      order.push(b);
+      seen.add(b.id);
+    }
+  }
+
+  const cell = (b) => {
+    if (!b) return '—';
+    if (b.metric === 'throughput') return `${num(b.value, 0)} ${escapeHtml(b.unit)}`;
+    return `${num(b.meanMs, b.meanMs < 1 ? 3 : b.meanMs < 100 ? 2 : 0)} ms`;
+  };
+
+  const rows = order
+    .map((sample) => `<tr><td>${escapeHtml(sample.name)}</td>${maps.map((m) => `<td>${cell(m.get(sample.id))}</td>`).join('')}</tr>`)
+    .join('');
+  const table = `<table><thead><tr><th>Benchmark</th>${labels.map((l) => `<th>${escapeHtml(l)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>`;
+
+  const headline = [
+    { id: 'IngestBatch', label: 'Ingest NDJSON', better: 'higher' },
+    { id: 'IngestBatchJson', label: 'Ingest JSON', better: 'higher' },
+    { id: 'LogsLatest', label: 'Latest logs', better: 'lower' },
+    { id: 'LogsMessageContains', label: 'Full-text scan', better: 'lower' },
+  ];
+
+  const figures = headline
+    .map(({ id, label, better }) => {
+      const points = snapshots
+        .map((s, i) => {
+          const b = maps[i].get(id);
+          if (!b) return null;
+          return {
+            label: s.label,
+            value: b.metric === 'throughput' ? b.value : b.meanMs,
+            display: cell(b),
+          };
+        })
+        .filter(Boolean);
+      if (points.length === 0) return '';
+      const caption = points.length === 1 ? 'first released snapshot' : `${better} is better`;
+      return `<figure class="chart-figure"><figcaption>${escapeHtml(label)} <span class="muted">${escapeHtml(caption)}</span></figcaption>${lineChart(points)}</figure>`;
+    })
+    .join('');
+
+  return (
+    `<h2 id="version-history">Version history</h2>` +
+    `<p class="muted">A snapshot is captured for every released tag (<code>v*</code>), so progress is visible between versions. Older versions are on the left; each column in the table is a full benchmark run.</p>` +
+    `${figures}${table}`
+  );
+}
+
 /** Renders the benchmark rollup injected into docs/benchmarks.md from docs/benchmarks/results.json. */
 function benchmarkResults() {
   const data = readJson('docs/benchmarks/results.json');
@@ -284,6 +465,55 @@ function benchmarkResults() {
     .join('; ');
 
   const groups = [...new Set(data.benchmarks.map((b) => b.group))];
+  const byGroup = (g) => data.benchmarks.filter((b) => b.group === g);
+
+  const latencyRows = (list) =>
+    list
+      .map((b) => ({
+        label: b.name,
+        value: b.meanMs,
+        display: `${num(b.meanMs, b.meanMs < 1 ? 3 : b.meanMs < 100 ? 2 : 0)} ms`,
+        min: b.minMs,
+        max: b.maxMs,
+      }))
+      .sort((a, b) => b.value - a.value);
+
+  const throughputRows = (list) =>
+    list
+      .map((b) => ({ label: `${b.name} (${b.unit})`, value: b.value, display: `${num(b.value, 0)} ${b.unit}` }))
+      .sort((a, b) => b.value - a.value);
+
+  const charts = [];
+  for (const group of groups) {
+    const list = byGroup(group);
+    charts.push(
+      chartFigure(
+        `${group} latency`,
+        'mean ms per request · log scale · whisker = min–max · shorter is better',
+        latencyRows(list),
+      ),
+    );
+    if (group === 'Query') {
+      charts.push(
+        chartFigure(
+          'Query throughput',
+          'requests per second · log scale · longer is better',
+          list
+            .map((b) => ({ label: b.name, value: b.throughput ?? 0, display: `${num(b.throughput, 0)} ops/s` }))
+            .sort((a, b) => b.value - a.value),
+        ),
+      );
+    } else {
+      charts.push(
+        chartFigure(
+          `${group} throughput`,
+          'per-series throughput · log scale · unit shown per row · longer is better',
+          throughputRows(list),
+        ),
+      );
+    }
+  }
+
   const tables = groups
     .map((group) => {
       const rows = data.benchmarks
@@ -298,7 +528,7 @@ function benchmarkResults() {
     })
     .join('');
 
-  return `<p class="muted">${meta}</p><p class="muted small">Measured on ${machine}.</p>${tables}`;
+  return `<p class="muted">${meta}</p><p class="muted small">Measured on ${machine}.</p>${charts.join('')}${tables}${versionHistory(versionSnapshots())}`;
 }
 
 function parseDocs() {

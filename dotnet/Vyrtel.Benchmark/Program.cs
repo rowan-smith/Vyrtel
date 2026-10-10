@@ -33,6 +33,7 @@ await using var server = await VyrtelServer.StartOrConnectAsync(serverOptions);
 using var api = new ApiClient(server.BaseUrl.ToString());
 
 var factory = new EventFactory(seed: 42);
+string metricName = EventFactory.DefaultMetricName;
 if (options.Events > 0)
 {
     Console.WriteLine($"seeding {options.Events:N0} log events...");
@@ -40,6 +41,10 @@ if (options.Events > 0)
     var traceCount = DatasetSeeder.DefaultTraceCount(options.Events);
     Console.WriteLine($"seeding {traceCount:N0} traces...");
     await DatasetSeeder.SeedTracesAsync(api, factory, traceCount, Console.WriteLine);
+    var metricCount = DatasetSeeder.DefaultMetricCount(options.Events);
+    Console.WriteLine($"seeding {metricCount:N0} metric points...");
+    await DatasetSeeder.SeedMetricsAsync(api, factory, metricCount, options.Batch, Console.WriteLine);
+    metricName = await TryGetFirstMetricName(api) ?? EventFactory.DefaultMetricName;
 }
 else
 {
@@ -50,6 +55,8 @@ var version = await TryGetVersion(api);
 
 Environment.SetEnvironmentVariable("VYRTEL_URL", server.BaseUrl.ToString().TrimEnd('/'));
 Environment.SetEnvironmentVariable("VYRTEL_SAMPLE_TRACE_ID", factory.SampleTraceId);
+Environment.SetEnvironmentVariable("VYRTEL_SAMPLE_TRACE_TARGET_ID", factory.SampleTraceTargetId);
+Environment.SetEnvironmentVariable("VYRTEL_METRIC_NAME", metricName);
 
 var summaries = new List<Summary>();
 foreach (var type in new[] { typeof(QueryBenchmarks), typeof(IngestBenchmarks) })
@@ -64,7 +71,8 @@ var context = new RunContext(
     options.Job,
     options.Events,
     server.Launched,
-    server.ExecutablePath);
+    server.ExecutablePath,
+    options.Label);
 
 var output = Path.GetFullPath(options.Output);
 BenchmarkReportWriter.Write(summaries, context, output);
@@ -84,4 +92,27 @@ static async Task<string> TryGetVersion(ApiClient api)
         Console.WriteLine($"warning: could not read server version ({ex.Message})");
         return "unknown";
     }
+}
+
+static async Task<string?> TryGetFirstMetricName(ApiClient api)
+{
+    try
+    {
+        using var doc = JsonDocument.Parse(await api.GetString("api/v1/metrics"));
+        if (doc.RootElement.TryGetProperty("metrics", out var metrics) && metrics.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var metric in metrics.EnumerateArray())
+            {
+                if (metric.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+                {
+                    return name.GetString();
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"warning: could not read metric names ({ex.Message})");
+    }
+    return null;
 }

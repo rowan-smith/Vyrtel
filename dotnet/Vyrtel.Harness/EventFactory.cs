@@ -44,6 +44,12 @@ public sealed class EventFactory
     /// <summary>The trace id of the first generated log, handy for an indexed trace-lookup benchmark.</summary>
     public string SampleTraceId { get; private set; } = "";
 
+    /// <summary>The trace id of the first generated span set, for a whole-trace lookup benchmark.</summary>
+    public string SampleTraceTargetId { get; private set; } = "";
+
+    /// <summary>Metric name produced by <see cref="OtlpMetrics"/>, kept stable so queries can target it.</summary>
+    public const string DefaultMetricName = "harness.requests.total";
+
     public JsonObject NextLog()
     {
         var service = ServiceNames[_rng.Next(_services)];
@@ -121,10 +127,34 @@ public sealed class EventFactory
         return Encoding.UTF8.GetBytes(builder.ToString());
     }
 
+    /// <summary>
+    /// Encodes <paramref name="count"/> logs as a single JSON array, ready for
+    /// <c>POST /api/v1/events</c> with <c>application/json</c>.
+    /// </summary>
+    public byte[] Json(int count)
+    {
+        var builder = new StringBuilder(count * 400);
+        builder.Append('[');
+        for (var i = 0; i < count; i++)
+        {
+            if (i > 0)
+            {
+                builder.Append(',');
+            }
+            builder.Append(NextLog().ToJsonString());
+        }
+        builder.Append(']');
+        return Encoding.UTF8.GetBytes(builder.ToString());
+    }
+
     /// <summary>A small OTLP/JSON trace (three spans) for <c>POST /v1/traces</c>.</summary>
     public JsonObject NextTrace()
     {
         var traceId = NextHex(32);
+        if (SampleTraceTargetId.Length == 0)
+        {
+            SampleTraceTargetId = traceId;
+        }
         var rootSpan = NextHex(16);
         var childSpan = NextHex(16);
         var dbSpan = NextHex(16);
@@ -210,5 +240,65 @@ public sealed class EventFactory
             bytes[i] = (byte)_rng.Next(256);
         }
         return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    /// <summary>Encodes one <see cref="NextTrace"/> payload as UTF-8, ready for <c>POST /v1/traces</c>.</summary>
+    public byte[] TracePayload() => Encoding.UTF8.GetBytes(NextTrace().ToJsonString());
+
+    /// <summary>
+    /// A compact OTLP/JSON metrics payload: one gauge with <paramref name="points"/> data points
+    /// carrying route/region attributes. Ready for <c>POST /v1/metrics</c>.
+    /// </summary>
+    public byte[] OtlpMetrics(int points, string name = DefaultMetricName)
+    {
+        var nowNanos = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L;
+        var dataPoints = new JsonArray();
+        for (var i = 0; i < points; i++)
+        {
+            dataPoints.Add(new JsonObject
+            {
+                ["timeUnixNano"] = (nowNanos - i * 1_000_000L).ToString(),
+                ["asDouble"] = Math.Round(_rng.NextDouble() * 100, 3),
+                ["attributes"] = new JsonArray
+                {
+                    new JsonObject { ["key"] = "route", ["value"] = new JsonObject { ["stringValue"] = Routes[_rng.Next(Routes.Length)] } },
+                    new JsonObject { ["key"] = "region", ["value"] = new JsonObject { ["stringValue"] = Regions[_rng.Next(Regions.Length)] } },
+                },
+            });
+        }
+
+        var payload = new JsonObject
+        {
+            ["resourceMetrics"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["resource"] = new JsonObject
+                    {
+                        ["attributes"] = new JsonArray
+                        {
+                            new JsonObject { ["key"] = "service.name", ["value"] = new JsonObject { ["stringValue"] = "harness" } },
+                        },
+                    },
+                    ["scopeMetrics"] = new JsonArray
+                    {
+                        new JsonObject
+                        {
+                            ["metrics"] = new JsonArray
+                            {
+                                new JsonObject
+                                {
+                                    ["name"] = name,
+                                    ["unit"] = "1",
+                                    ["gauge"] = new JsonObject { ["dataPoints"] = dataPoints },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+
+        return Encoding.UTF8.GetBytes(payload.ToJsonString());
     }
 }

@@ -220,7 +220,7 @@
     {
       "id": "LogsDurationRange",
       "group": "Query",
-      "name": "Range: durationMs \u003E 1990 (block skip)",
+      "name": "Range: durationMs > 1990 (block skip)",
       "metric": "latency",
       "meanMs": 267.106,
       "medianMs": 266.3275,
@@ -262,5 +262,6 @@
       "throughput": 186.6817,
       "throughputUnit": "ops/s"
     }
-  ]
+  ],
+  "label": "v0.1.1"
 }

@@ -13,6 +13,9 @@ the sibling projects [`Vyrtel.Benchmark`](../Vyrtel.Benchmark) and
 | Metrics                     | Meter listener → `POST /v1/metrics` (OTLP/JSON gauges)  |
 | Traces                      | Activity listener → `POST /v1/traces` (OTLP/JSON)       |
 
+Traces include the demo's own spans plus the ASP.NET Core server spans they nest
+under, so each exported trace shows the full request path.
+
 ## Run
 
 Start Vyrtel first (authentication is off by default):
@@ -38,11 +41,15 @@ The app listens on http://127.0.0.1:5088 and continuously simulates traffic
 {
   "Vyrtel": {
     "Endpoint": "http://localhost:8080",
+    "ServeUrl": "http://127.0.0.1:5088",
     "Api": ""
   }
 }
 ```
 
+- **Endpoint** is where telemetry is sent.
+- **ServeUrl** is the demo's own listen address; the traffic simulator calls it
+  too, so it must match the bound URL.
 - **Service name** comes from the host application name.
 - **Environment** comes from the host environment (`Development`, `Production`, …).
 - **Api** is needed only when Vyrtel runs with `auth.enabled = true`; create

@@ -15,11 +15,13 @@ public sealed record RunContext(
     string Job,
     int DatasetEvents,
     bool Launched,
-    string? Executable);
+    string? Executable,
+    string Label = "");
 
 public sealed record BenchmarkReport(
     DateTimeOffset GeneratedAt,
     string VyrtelVersion,
+    string Label,
     string Job,
     string Server,
     string ServerUrl,
@@ -81,7 +83,7 @@ public static class BenchmarkReportWriter
                 var throughput = meta.Metric == BenchmarkMetric.Throughput
                     ? meta.OperationsPerInvoke * 1000.0 / meanMs
                     : 1000.0 / meanMs;
-                var unit = meta.Metric == BenchmarkMetric.Throughput ? "events/s" : "ops/s";
+                var unit = meta.Metric == BenchmarkMetric.Throughput ? meta.Unit : "ops/s";
                 var value = meta.Metric == BenchmarkMetric.Throughput ? throughput : meanMs;
 
                 results.Add(new BenchmarkResult(
@@ -104,6 +106,7 @@ public static class BenchmarkReportWriter
         var document = new BenchmarkReport(
             GeneratedAt: DateTimeOffset.UtcNow,
             VyrtelVersion: context.VyrtelVersion,
+            Label: string.IsNullOrWhiteSpace(context.Label) ? context.VyrtelVersion : context.Label,
             Job: context.Job,
             Server: context.Launched ? "launched" : "external",
             ServerUrl: context.BaseUrl,
@@ -131,6 +134,10 @@ public static class BenchmarkReportWriter
         sb.AppendLine();
         sb.AppendLine($"- Generated: {report.GeneratedAt:yyyy-MM-dd HH:mm:ss} UTC");
         sb.AppendLine($"- Vyrtel: {report.VyrtelVersion}");
+        if (!string.IsNullOrWhiteSpace(report.Label) && report.Label != report.VyrtelVersion)
+        {
+            sb.AppendLine($"- Label: {report.Label}");
+        }
         sb.AppendLine($"- BenchmarkDotNet job: {report.Job}");
         sb.AppendLine($"- Dataset: {report.Dataset.Events:N0} seeded log events");
         sb.AppendLine($"- Machine: {report.Hardware.Os} ({report.Hardware.Architecture}), {report.Hardware.LogicalCores} logical cores");

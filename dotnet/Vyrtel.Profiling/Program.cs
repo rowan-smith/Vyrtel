@@ -26,6 +26,7 @@ await using var server = await VyrtelServer.StartOrConnectAsync(serverOptions);
 using var api = new ApiClient(server.BaseUrl.ToString());
 
 var factory = new EventFactory(seed: 42);
+string metricName = EventFactory.DefaultMetricName;
 if (options.Events > 0)
 {
     Console.WriteLine($"seeding {options.Events:N0} log events...");
@@ -33,27 +34,36 @@ if (options.Events > 0)
     var traceCount = DatasetSeeder.DefaultTraceCount(options.Events);
     Console.WriteLine($"seeding {traceCount:N0} traces...");
     await DatasetSeeder.SeedTracesAsync(api, factory, traceCount, Console.WriteLine);
+    var metricCount = DatasetSeeder.DefaultMetricCount(options.Events);
+    Console.WriteLine($"seeding {metricCount:N0} metric points...");
+    await DatasetSeeder.SeedMetricsAsync(api, factory, metricCount, options.Batch, Console.WriteLine);
+    metricName = await TryGetFirstMetricName(api) ?? EventFactory.DefaultMetricName;
+}
+else
+{
+    Console.WriteLine("skipping seeding (--events 0); assuming the server already has data");
 }
 
 var version = await TryGetVersion(api);
-var ops = WorkloadOperations.All(factory.SampleTraceId);
+var context = new WorkloadContext(factory.SampleTraceId, factory.SampleTraceTargetId, metricName);
+var ops = WorkloadOperations.All(context);
 
-Console.WriteLine($"running {ops.Count} operations, {options.Concurrency} workers, {options.Duration:F0}s...");
+var statsBefore = await TryGetQueryStats(api);
+Console.WriteLine(
+    $"running {ops.Count} operations, {options.Concurrency} workers, {options.Duration:F0}s (warmup {options.Warmup:F0}s)...");
 var run = await WorkloadRunner.RunAsync(
     server.BaseUrl.ToString(),
     ops,
     options.Concurrency,
-    TimeSpan.FromSeconds(options.Duration));
+    TimeSpan.FromSeconds(options.Duration),
+    TimeSpan.FromSeconds(options.Warmup));
+var statsAfter = await TryGetQueryStats(api);
 
-var hotspots = new List<FieldHotspot>();
-try
-{
-    hotspots = ProfileReportWriter.ParseHotspots(await api.GetString("api/v1/system/query-stats"));
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"warning: could not read query stats ({ex.Message})");
-}
+List<FieldHotspot> hotspots = statsAfter is null
+    ? []
+    : statsBefore is null
+        ? ProfileReportWriter.ParseHotspots(statsAfter)
+        : ProfileReportWriter.DiffHotspots(statsBefore, statsAfter);
 
 var operations = run.Operations
     .Select(r => new OperationResult(
@@ -61,7 +71,7 @@ var operations = run.Operations
         Label: r.Op.Label,
         Count: r.Latency.Count,
         Failures: r.Failures,
-        RequestsPerSecond: r.Latency.Count / Math.Max(run.DurationSeconds, 0.001),
+        RequestsPerSecond: r.Latency.Count / Math.Max(run.MeasurementSeconds, 0.001),
         Latency: new LatencyStatsView(
             r.Latency.Min, r.Latency.Mean, r.Latency.Max, r.Latency.StdDev,
             r.Latency.P50, r.Latency.P90, r.Latency.P95, r.Latency.P99)))
@@ -71,6 +81,8 @@ var report = ProfileReportWriter.Build(
     version,
     options.Events,
     run.DurationSeconds,
+    run.WarmupSeconds,
+    run.MeasurementSeconds,
     run.Concurrency,
     run.TotalRequests,
     run.TotalFailures,
@@ -97,4 +109,40 @@ static async Task<string> TryGetVersion(ApiClient api)
         Console.WriteLine($"warning: could not read server version ({ex.Message})");
         return "unknown";
     }
+}
+
+static async Task<string?> TryGetQueryStats(ApiClient api)
+{
+    try
+    {
+        return await api.GetString("api/v1/system/query-stats");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"warning: could not read query stats ({ex.Message})");
+        return null;
+    }
+}
+
+static async Task<string?> TryGetFirstMetricName(ApiClient api)
+{
+    try
+    {
+        using var doc = JsonDocument.Parse(await api.GetString("api/v1/metrics"));
+        if (doc.RootElement.TryGetProperty("metrics", out var metrics) && metrics.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var metric in metrics.EnumerateArray())
+            {
+                if (metric.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+                {
+                    return name.GetString();
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"warning: could not read metric names ({ex.Message})");
+    }
+    return null;
 }

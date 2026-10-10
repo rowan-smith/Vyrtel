@@ -4,6 +4,13 @@ name: Benchmarks
 # renders at /docs/benchmarks.html. Running on the same hardware every time keeps the
 # numbers comparable across commits.
 #
+# Two modes:
+#   - push to main (paths below): refresh docs/benchmarks/results.{json,md} — the "latest" run.
+#   - push of a version tag (v*): snapshot the tagged commit at
+#     docs/benchmarks/versions/<tag>.json so the site can chart progress between releases.
+#     Path filters don't apply to tag pushes, and a tag can't be committed to, so the snapshot
+#     is committed onto main instead.
+#
 # The result paths exclude docs/**, so the commit this job makes never re-triggers itself.
 # Commits pushed with GITHUB_TOKEN cannot trigger the push-based Deploy site workflow, so we
 # dispatch it explicitly once the results are in.
@@ -11,6 +18,7 @@ name: Benchmarks
 on:
   push:
     branches: [main]
+    tags: ['v*']
     paths:
       - crates/**
       - Cargo.toml
@@ -46,21 +54,50 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Run benchmarks
-        run: dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- \
+              --job short \
+              --label "${{ github.ref_name }}" \
+              --out "docs/benchmarks/versions/${{ github.ref_name }}.json"
+          else
+            dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short
+          fi
 
       - name: Show results
-        run: cat docs/benchmarks/results.md
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            cat "docs/benchmarks/versions/${{ github.ref_name }}.md"
+          else
+            cat docs/benchmarks/results.md
+          fi
 
       - name: Commit results
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/benchmarks/results.json docs/benchmarks/results.md
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${{ github.ref_name }}"
+            tmp="$(mktemp -d)"
+            cp "docs/benchmarks/versions/$tag.json" "$tmp/"
+            cp "docs/benchmarks/versions/$tag.md" "$tmp/"
+            rm -f "docs/benchmarks/versions/$tag.json" "docs/benchmarks/versions/$tag.md"
+            git fetch origin main
+            git checkout -B main origin/main
+            mkdir -p docs/benchmarks/versions
+            cp "$tmp/$tag.json" "docs/benchmarks/versions/$tag.json"
+            cp "$tmp/$tag.md" "docs/benchmarks/versions/$tag.md"
+            git add "docs/benchmarks/versions/$tag.json" "docs/benchmarks/versions/$tag.md"
+            msg="chore(benchmarks): add $tag snapshot"
+          else
+            git add docs/benchmarks/results.json docs/benchmarks/results.md
+            msg="chore(benchmarks): refresh results"
+          fi
           if git diff --staged --quiet; then
             echo "No changes to benchmark results"
           else
-            git commit -m "chore(benchmarks): refresh results"
-            git push
+            git commit -m "$msg"
+            git push origin HEAD:main
           fi
 
       - name: Redeploy the website

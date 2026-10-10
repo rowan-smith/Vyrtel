@@ -1,49 +1,49 @@
-using System.Net.Http.Headers;
 using BenchmarkDotNet.Attributes;
 using Vyrtel.Harness;
 
 namespace Vyrtel.Benchmark;
 
 /// <summary>
-/// Ingest throughput: posts a fixed NDJSON batch and reports events per second. The
-/// payload is generated once so the measurement is dominated by server ingest, not JSON
-/// serialization on the client.
+/// Ingest throughput for each signal. Payloads are generated once so the measurement is
+/// dominated by server ingest, not client-side JSON serialization.
 /// </summary>
 [MemoryDiagnoser]
 [BenchmarkCategory("Ingest")]
 public class IngestBenchmarks
 {
     public const int BatchSize = 500;
+    public const int MetricPoints = 500;
 
-    private static HttpClient _http = null!;
-    private static byte[] _payload = null!;
+    private static ApiClient _api = null!;
+    private static byte[] _ndjsonBatch = null!;
+    private static byte[] _jsonBatch = null!;
+    private static byte[] _trace = null!;
+    private static byte[] _metricBatch = null!;
 
     [GlobalSetup]
     public void Setup()
     {
         var url = Environment.GetEnvironmentVariable("VYRTEL_URL") ?? "http://127.0.0.1:8080";
-        _http = new HttpClient
-        {
-            BaseAddress = new Uri(url.TrimEnd('/') + "/"),
-            Timeout = TimeSpan.FromMinutes(2),
-        };
-        _payload = new EventFactory(seed: 1337).Ndjson(BatchSize);
+        _api = new ApiClient(url);
+        var factory = new EventFactory(seed: 1337);
+        _ndjsonBatch = factory.Ndjson(BatchSize);
+        _jsonBatch = factory.Json(BatchSize);
+        _trace = factory.TracePayload();
+        _metricBatch = factory.OtlpMetrics(MetricPoints);
     }
 
     [GlobalCleanup]
-    public void Cleanup() => _http.Dispose();
+    public void Cleanup() => _api.Dispose();
 
     [Benchmark]
-    public async Task<int> IngestBatch()
-    {
-        using var content = new ByteArrayContent(_payload);
-        content.Headers.ContentType = new MediaTypeHeaderValue("application/x-ndjson");
-        using var response = await _http.PostAsync("api/v1/events", content);
-        var bytes = await response.Content.ReadAsByteArrayAsync();
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException($"POST api/v1/events -> {(int)response.StatusCode}");
-        }
-        return bytes.Length;
-    }
+    public Task IngestBatch() => _api.IngestNdjson(_ndjsonBatch);
+
+    [Benchmark]
+    public Task IngestBatchJson() => _api.IngestJson(_jsonBatch);
+
+    [Benchmark]
+    public Task IngestTraces() => _api.IngestOtlpTraces(_trace);
+
+    [Benchmark]
+    public Task IngestMetrics() => _api.IngestOtlpMetrics(_metricBatch);
 }

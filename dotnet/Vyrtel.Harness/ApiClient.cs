@@ -26,21 +26,39 @@ public sealed class ApiClient : IDisposable
         new(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
 
     public Task<int> QueryLogs(string query, int limit, string from = "-1h") =>
-        Send("POST", "api/v1/query/logs", Json(new { query, from, limit, direction = "backward" }));
+        PostJson("api/v1/query/logs", new { query, from, limit, direction = "backward" });
 
     public Task<int> CountLogs(string query, string from = "-1h") =>
-        Send("POST", "api/v1/query/logs/count", Json(new { query, from }));
+        PostJson("api/v1/query/logs/count", new { query, from });
 
     public Task<int> QueryTraces(string query, int limit, string from = "-1h") =>
-        Send("POST", "api/v1/query/traces", Json(new { query, from, limit }));
+        PostJson("api/v1/query/traces", new { query, from, limit });
+
+    public Task<int> Histogram(string signal, string query, int buckets = 60, string from = "-1h") =>
+        PostJson($"api/v1/query/{signal}/histogram", new { query, from, buckets });
+
+    public Task<int> Facets(string signal, string query, int sample = 2000, string from = "-1h") =>
+        PostJson($"api/v1/query/{signal}/facets", new { query, from, sample });
+
+    public Task<int> MetricQuery(string name, string from = "-1h") =>
+        PostJson("api/v1/query/metrics", new { name, from });
+
+    public Task<int> GetTrace(string traceId, string from = "-1h") =>
+        Send("GET", $"api/v1/traces/{traceId}?from={Uri.EscapeDataString(from)}", null);
 
     public Task<int> MetricNames() => Send("GET", "api/v1/metrics", content: null);
 
     public Task IngestNdjson(byte[] payload, CancellationToken ct = default) =>
         Ingest("api/v1/events", payload, "application/x-ndjson", ct);
 
+    public Task IngestJson(byte[] payload, CancellationToken ct = default) =>
+        Ingest("api/v1/events", payload, "application/json", ct);
+
     public Task IngestOtlpTraces(byte[] payload, CancellationToken ct = default) =>
         Ingest("v1/traces", payload, "application/json", ct);
+
+    public Task IngestOtlpMetrics(byte[] payload, CancellationToken ct = default) =>
+        Ingest("v1/metrics", payload, "application/json", ct);
 
     public async Task<string> GetString(string path, CancellationToken ct = default)
     {
@@ -73,6 +91,18 @@ public sealed class ApiClient : IDisposable
         if (!response.IsSuccessStatusCode)
         {
             throw new HttpRequestException($"{method} {path} -> {(int)response.StatusCode}: {Encoding.UTF8.GetString(bytes)}");
+        }
+        return bytes.Length;
+    }
+
+    private async Task<int> PostJson(string path, object body)
+    {
+        using var content = Json(body);
+        using var response = await _http.PostAsync(path, content);
+        var bytes = await response.Content.ReadAsByteArrayAsync();
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException($"POST {path} -> {(int)response.StatusCode}: {Encoding.UTF8.GetString(bytes)}");
         }
         return bytes.Length;
     }

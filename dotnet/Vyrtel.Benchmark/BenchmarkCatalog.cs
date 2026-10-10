@@ -10,7 +10,7 @@ public enum BenchmarkMetric
 }
 
 /// <summary>Human-friendly metadata for one <see cref="BenchmarkDotNet.Attributes.BenchmarkAttribute"/> method.</summary>
-public sealed record BenchmarkMetadata(string Group, string Display, BenchmarkMetric Metric, int OperationsPerInvoke = 1);
+public sealed record BenchmarkMetadata(string Group, string Display, BenchmarkMetric Metric, int OperationsPerInvoke = 1, string Unit = "events/s");
 
 /// <summary>
 /// Maps benchmark method names to the labels the website renders. Keeping this explicit
@@ -28,8 +28,15 @@ public static class BenchmarkCatalog
             ["LogsDurationRange"] = new("Query", "Range: durationMs > 1990 (block skip)", BenchmarkMetric.Latency),
             ["LogsTraceId"] = new("Query", "Lookup: traceId = ... (bloom filter)", BenchmarkMetric.Latency),
             ["LogsCountLevelError"] = new("Query", "Count: level = Error", BenchmarkMetric.Latency),
+            ["LogsHistogram"] = new("Query", "Histogram: all logs (60 buckets)", BenchmarkMetric.Latency),
+            ["LogsFacets"] = new("Query", "Facets: sampled field values", BenchmarkMetric.Latency),
             ["TraceSearch"] = new("Query", "Trace search (limit 50)", BenchmarkMetric.Latency),
+            ["TraceGet"] = new("Query", "Trace by id (all spans)", BenchmarkMetric.Latency),
             ["MetricNames"] = new("Query", "List metric names", BenchmarkMetric.Latency),
-            ["IngestBatch"] = new("Ingest", "Ingest NDJSON batch", BenchmarkMetric.Throughput, IngestBenchmarks.BatchSize),
+            ["MetricQuery"] = new("Query", "Metric series (avg over range)", BenchmarkMetric.Latency),
+            ["IngestBatch"] = new("Ingest", "Ingest native NDJSON batch", BenchmarkMetric.Throughput, IngestBenchmarks.BatchSize),
+            ["IngestBatchJson"] = new("Ingest", "Ingest native JSON array", BenchmarkMetric.Throughput, IngestBenchmarks.BatchSize),
+            ["IngestTraces"] = new("Ingest", "Ingest OTLP trace (3 spans)", BenchmarkMetric.Throughput, 3, "spans/s"),
+            ["IngestMetrics"] = new("Ingest", "Ingest OTLP metrics (500 points)", BenchmarkMetric.Throughput, IngestBenchmarks.MetricPoints, "points/s"),
         };
 }

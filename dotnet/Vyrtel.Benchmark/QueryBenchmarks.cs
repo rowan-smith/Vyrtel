@@ -14,6 +14,8 @@ public class QueryBenchmarks
 {
     private static ApiClient _api = null!;
     private static string _traceId = "";
+    private static string _traceTargetId = "";
+    private static string _metricName = "";
 
     [GlobalSetup]
     public void Setup()
@@ -21,6 +23,8 @@ public class QueryBenchmarks
         var url = Environment.GetEnvironmentVariable("VYRTEL_URL") ?? "http://127.0.0.1:8080";
         _api = new ApiClient(url);
         _traceId = Environment.GetEnvironmentVariable("VYRTEL_SAMPLE_TRACE_ID") ?? new string('0', 32);
+        _traceTargetId = Environment.GetEnvironmentVariable("VYRTEL_SAMPLE_TRACE_TARGET_ID") ?? _traceId;
+        _metricName = Environment.GetEnvironmentVariable("VYRTEL_METRIC_NAME") ?? EventFactory.DefaultMetricName;
     }
 
     [GlobalCleanup]
@@ -48,8 +52,20 @@ public class QueryBenchmarks
     public Task<int> LogsCountLevelError() => _api.CountLogs("level = Error");
 
     [Benchmark]
+    public Task<int> LogsHistogram() => _api.Histogram("logs", "", 60);
+
+    [Benchmark]
+    public Task<int> LogsFacets() => _api.Facets("logs", "", 2000);
+
+    [Benchmark]
     public Task<int> TraceSearch() => _api.QueryTraces("", 50);
 
     [Benchmark]
+    public Task<int> TraceGet() => _api.GetTrace(_traceTargetId);
+
+    [Benchmark]
     public Task<int> MetricNames() => _api.MetricNames();
+
+    [Benchmark]
+    public Task<int> MetricQuery() => _api.MetricQuery(_metricName);
 }

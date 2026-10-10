@@ -19,8 +19,11 @@ it over HTTP with [BenchmarkDotNet](https://benchmarkdotnet.org/).
 - **Server**: `cargo build --release`, launched with default durability against a temporary
   data directory on the CI machine.
 - **Data**: a deterministic mix of HTTP request logs across 8 services with a 2% error rate
-  and ~10k distinct customers, plus OTLP traces. The same `EventFactory` backs the load
-  generator, the benchmark and the profiler, so the workload stays realistic.
+  and ~10k distinct customers, plus OTLP traces and metric points. The same `EventFactory`
+  backs the load generator, the benchmark and the profiler, so the workload stays realistic.
+- **Coverage**: ingest throughput (native NDJSON, native JSON array, OTLP traces, OTLP metrics)
+  and query latency across filters, full-text scans, counts, histograms, facets, trace
+  lookup/search and metric series.
 - **Job**: BenchmarkDotNet `ShortRun` (`--job short`). CI uses the same command as a local
   run, so results are reproducible.
 
@@ -38,6 +41,16 @@ the server's own index hotspots), use the profiler:
 dotnet run --project dotnet/Vyrtel.Profiling -c Release -- --duration 30 --concurrency 4
 ```
 
+The profiler discards the first few seconds as warmup (`--warmup`, default 3) and diffs the
+server's query-stats counters across the measured window, so the reported hotspots cover only
+the load test — not dataset seeding.
+
 The rollup below is regenerated automatically on the CI machine whenever `main` changes.
+
+`.github/workflows/benchmark.yml` runs the benchmark on every `main` change and commits the
+rollup rendered below. Pushing a release tag (`v*`) captures a separate snapshot under
+`docs/benchmarks/versions/<tag>.json`; the **Version history** section charts those snapshots
+so improvements between releases are visible. Use `--label <tag> --out docs/benchmarks/versions/<tag>.json`
+to produce one locally.
 
 <!--BENCHMARK_RESULTS-->

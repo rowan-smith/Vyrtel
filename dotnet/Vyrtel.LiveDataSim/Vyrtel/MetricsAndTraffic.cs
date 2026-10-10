@@ -175,6 +175,7 @@ internal sealed class MetricPoint
 public sealed class TrafficSimulator : BackgroundService
 {
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IConfiguration _config;
     private readonly ILogger<TrafficSimulator> _logger;
     private static readonly ActivitySource ActivitySource = new("Vyrtel.LiveDataSim");
     private static readonly Meter Meter = new("Vyrtel.LiveDataSim");
@@ -183,9 +184,10 @@ public sealed class TrafficSimulator : BackgroundService
     private static readonly Counter<long> Orders = Meter.CreateCounter<long>("orders.created");
     private static readonly Counter<long> PaymentsFailed = Meter.CreateCounter<long>("payments.failed");
 
-    public TrafficSimulator(IHttpClientFactory httpClientFactory, ILogger<TrafficSimulator> logger)
+    public TrafficSimulator(IHttpClientFactory httpClientFactory, IConfiguration config, ILogger<TrafficSimulator> logger)
     {
         _httpClientFactory = httpClientFactory;
+        _config = config;
         _logger = logger;
     }
 
@@ -194,7 +196,7 @@ public sealed class TrafficSimulator : BackgroundService
         // Give the host a moment to start listening.
         await Task.Delay(1500, stoppingToken);
         var client = _httpClientFactory.CreateClient();
-        client.BaseAddress = new Uri("http://127.0.0.1:5088/");
+        client.BaseAddress = new Uri(_config["Vyrtel:ServeUrl"] ?? "http://127.0.0.1:5088");
         var rng = Random.Shared;
 
         while (!stoppingToken.IsCancellationRequested)

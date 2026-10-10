@@ -54,7 +54,8 @@ builder.Services.AddHostedService<VyrtelMetricsPublisher>();
 builder.Services.AddHostedService<TrafficSimulator>();
 builder.Services.AddHostedService<TraceJsonExporter>();
 
-builder.WebHost.UseUrls("http://127.0.0.1:5088");
+var serveUrl = builder.Configuration["Vyrtel:ServeUrl"] ?? "http://127.0.0.1:5088";
+builder.WebHost.UseUrls(serveUrl);
 
 var app = builder.Build();
 
@@ -292,7 +293,11 @@ public sealed class TraceJsonExporter : BackgroundService
         _logger = logger;
         _listener = new ActivityListener
         {
-            ShouldListenTo = source => source.Name == "Vyrtel.LiveDataSim",
+            // Capture the demo's own spans plus the ASP.NET Core server spans they nest under,
+            // so exported traces show the full request path. HttpClient spans are left out to
+            // avoid re-exporting the exporter's own requests back into Vyrtel.
+            ShouldListenTo = source =>
+                source.Name == "Vyrtel.LiveDataSim" || source.Name.StartsWith("Microsoft.AspNetCore", StringComparison.Ordinal),
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
             ActivityStopped = activity =>
             {
@@ -351,6 +356,7 @@ public sealed class TraceJsonExporter : BackgroundService
                                 attributes = new[]
                                 {
                                     new { key = "service.name", value = new { stringValue = service } },
+                                    new { key = "service.version", value = new { stringValue = "0.1.0" } },
                                     new
                                     {
                                         key = "deployment.environment",

@@ -12,6 +12,7 @@ internal sealed record ProfileCliOptions
     public int Events { get; init; } = 200_000;
     public int Batch { get; init; } = 500;
     public double Duration { get; init; } = 30;
+    public double Warmup { get; init; } = 3;
     public int Concurrency { get; init; } = 4;
     public string Output { get; init; } = DefaultOutput();
     public bool NoLaunch { get; init; }
@@ -34,6 +35,7 @@ internal sealed record ProfileCliOptions
                 "--events" => options with { Events = Math.Max(0, int.Parse(next())) },
                 "--batch" => options with { Batch = Math.Max(1, int.Parse(next())) },
                 "--duration" => options with { Duration = Math.Max(0.1, double.Parse(next())) },
+                "--warmup" => options with { Warmup = Math.Max(0, double.Parse(next())) },
                 "--concurrency" => options with { Concurrency = Math.Max(1, int.Parse(next())) },
                 "--out" => options with { Output = next() },
                 "--no-launch" => options with { NoLaunch = true },
@@ -66,6 +68,7 @@ internal sealed record ProfileCliOptions
               --events <n>        Log events to seed before profiling (default 200000, 0 = skip)
               --batch <n>         Events per seeded request (default 500)
               --duration <secs>   How long to run the mixed load (default 30)
+              --warmup <secs>     Discard this many seconds before measuring (default 3)
               --concurrency <n>   Concurrent workers (default 4)
               --out <path>        Where to write the report (default target/profiling/report.json)
               --no-launch         Require an already-running server instead of launching one
