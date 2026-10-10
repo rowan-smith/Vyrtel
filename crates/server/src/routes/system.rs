@@ -163,6 +163,11 @@ pub async fn info(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
         },
         "storageBytes": storage_bytes,
         "queue": { "logs": queue(&stats.logs), "traces": queue(&stats.traces), "metrics": queue(&stats.metrics) },
+        "ingest": {
+            "maxConcurrent": state.ingest_max_concurrent,
+            "inFlight": state.ingest_max_concurrent.saturating_sub(state.ingest_permits.available_permits()),
+            "rejected": state.ingest_rejected.load(Ordering::Relaxed),
+        },
         "activeSegment": { "logs": active(&stats.logs), "traces": active(&stats.traces), "metrics": active(&stats.metrics) },
         "memory": {
             "limitBytes": b.total,

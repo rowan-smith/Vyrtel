@@ -4,7 +4,7 @@ Testing is part of the implementation. Everything below runs in CI
 (`.github/workflows/ci.yml`).
 
 ```bash
-cargo test --workspace --all-features    # all Rust tests (~210, many property-based; includes crash tests)
+cargo test --workspace --all-features    # all Rust tests (~220, many property-based; includes crash and overload tests)
 cd web && npm test                       # frontend unit tests
 cd web && npm run e2e                    # Playwright (needs a built server, see below)
 cargo bench -p storage -p query          # Criterion benchmarks
@@ -145,6 +145,12 @@ talks HTTP to it:
 * retention → restart → verify retained/deleted data;
 * API errors: invalid JSON, invalid events, invalid queries (with position),
   oversized requests, unsupported media types, unknown endpoints;
+* ingest admission (`admission.rs`): a request holds its slot while parsed
+  and queued, excess requests (plain and gzip) get 429 + `Retry-After`
+  promptly without their bodies being read, every error frees the slot, and
+  so does a client disconnecting while the body is read, while it is parsed
+  and while the write awaits acknowledgement (the writer thread is parked
+  with `stall_writer` to hold a request there);
 * missing auth, bad auth, ingest-only keys, sessions, logout, revocation;
 * pagination, time ranges, empty results, facets, histograms;
 * live stream (SSE) delivery and filtering, and that open streams do not
@@ -153,6 +159,37 @@ talks HTTP to it:
   the background evaluator.
 
 Fixtures shared with E2E live in `tests/fixtures/`.
+
+### Overload memory test
+
+`tests/overload/main.rs` (the `server` crate's `overload` test, its own
+process because it installs a counting global allocator) holds the ingest
+path to a memory budget under sustained overload. Fixed limits:
+`max_memory = 64MB`, `max_request_size = 2MB`, `ingest.max_concurrent = 2`;
+32 clients send 1.79 MB NDJSON batches (half gzip-compressed, 0.05 MB on the
+wire) for 4 s, retrying 429s after 5 ms. It asserts that:
+
+* peak heap growth stays below `max_memory`;
+* no more than 2 requests are ever in flight and the server keeps accepting;
+* every rejection is a 429 within 1 s and no client sees a reset connection.
+
+```bash
+cargo test -p server --test overload -- --nocapture
+```
+
+One run on the Windows 11 laptop used for the benchmarks below (test
+profile), before and after REL-02 moved admission from "while the body is
+read" to "until the write is acknowledged":
+
+| Metric                      | Before                | After               |
+|-----------------------------|-----------------------|---------------------|
+| Peak heap growth            | 298.4 MB (4.7× budget) | 55.3 MB (< 64 MB)  |
+| Slowest 429                 | 1.1 s                 | 161 ms              |
+| Connection resets           | 223                   | 0                   |
+| Batches accepted in 4 s     | 14                    | 40                  |
+
+Five consecutive runs after the change peaked at 54.3–55.8 MB. Parsing one
+1.79 MB body alone peaks at +8.3 MB, and one request end to end at +10.6 MB.
 
 ## Frontend tests
 

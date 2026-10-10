@@ -272,11 +272,20 @@ pub struct IngestSection {
     pub queue_capacity: usize,
     #[serde(with = "duration_serde")]
     pub ack_timeout: Duration,
+    /// Ingest requests admitted at once, from reading the body until the
+    /// write is acknowledged. Beyond this, 429. `0` derives it from the
+    /// memory budget (see [`Config::ingest_max_concurrent`]).
+    pub max_concurrent: usize,
 }
 
 impl Default for IngestSection {
     fn default() -> Self {
-        Self { max_request_size: ByteSize(16 << 20), queue_capacity: 10_000, ack_timeout: Duration::from_secs(30) }
+        Self {
+            max_request_size: ByteSize(16 << 20),
+            queue_capacity: 10_000,
+            ack_timeout: Duration::from_secs(30),
+            max_concurrent: 0,
+        }
     }
 }
 
@@ -384,6 +393,7 @@ pub const ENV_VARS: &[&str] = &[
     "VYRTEL_RETENTION_METRICS",
     "VYRTEL_INGEST_MAX_REQUEST_SIZE",
     "VYRTEL_INGEST_QUEUE_CAPACITY",
+    "VYRTEL_INGEST_MAX_CONCURRENT",
     "VYRTEL_QUERY_TIMEOUT",
     "VYRTEL_QUERY_MAX_CONCURRENT",
     "VYRTEL_AUTH_ENABLED",
@@ -439,6 +449,9 @@ impl Config {
                     "VYRTEL_INGEST_MAX_REQUEST_SIZE" => self.ingest.max_request_size = ByteSize::parse(&v)?,
                     "VYRTEL_INGEST_QUEUE_CAPACITY" => {
                         self.ingest.queue_capacity = v.trim().parse().map_err(|_| "must be a number".to_string())?
+                    }
+                    "VYRTEL_INGEST_MAX_CONCURRENT" => {
+                        self.ingest.max_concurrent = v.trim().parse().map_err(|_| "must be a number".to_string())?
                     }
                     "VYRTEL_QUERY_TIMEOUT" => self.query.timeout = parse_duration(&v)?,
                     "VYRTEL_QUERY_MAX_CONCURRENT" => {
@@ -499,6 +512,16 @@ impl Config {
 
     pub fn budgets(&self) -> MemoryBudgets {
         MemoryBudgets::from_limit(self.storage.max_memory.0, self.storage.segment_target_size.0)
+    }
+
+    /// Effective ingest admission limit: `ingest.max_concurrent` when set,
+    /// otherwise as many maximum-size requests as fit in the ingest budget
+    /// (at least 2, at most 1024).
+    pub fn ingest_max_concurrent(&self) -> usize {
+        if self.ingest.max_concurrent > 0 {
+            return self.ingest.max_concurrent;
+        }
+        (self.budgets().ingest / self.ingest.max_request_size.0.max(1)).clamp(2, 1024) as usize
     }
 }
 
@@ -654,5 +677,31 @@ mod tests {
         assert!(b.segment_target[0] * 2 <= b.active_segments / 2 + 1);
         let big = MemoryBudgets::from_limit(8 << 30, 64 << 20);
         assert_eq!(big.segment_target[0], 64 << 20, "configured target respected when it fits");
+    }
+
+    #[test]
+    fn ingest_admission_limit() {
+        // Default: 15% of 512MB ÷ 16MB requests = 4.
+        let mut c = Config::default();
+        assert_eq!(c.ingest_max_concurrent(), 4);
+        // Never fewer than 2, never more than 1024 when derived.
+        c.storage.max_memory = ByteSize(64 << 20);
+        assert_eq!(c.ingest_max_concurrent(), 2);
+        c.storage.max_memory = ByteSize(64 << 30);
+        c.ingest.max_request_size = ByteSize(1024);
+        assert_eq!(c.ingest_max_concurrent(), 1024);
+        // An explicit value wins, including outside the derived range.
+        c.ingest.max_concurrent = 1;
+        assert_eq!(c.ingest_max_concurrent(), 1);
+        let mut c = Config::default();
+        c.apply_env(|k| (k == "VYRTEL_INGEST_MAX_CONCURRENT").then(|| "7".to_string())).unwrap();
+        assert_eq!(c.ingest_max_concurrent(), 7);
+        assert!(c.apply_env(|k| (k == "VYRTEL_INGEST_MAX_CONCURRENT").then(|| "lots".to_string())).is_err());
+        let c = Config::from_toml(
+            "[ingest]
+max_concurrent = 3",
+        )
+        .unwrap();
+        assert_eq!(c.ingest_max_concurrent(), 3);
     }
 }

@@ -20,6 +20,7 @@ metrics = "30d"
 [ingest]
 max_request_size = "16MB"
 queue_capacity = 10000
+max_concurrent = 0           # requests in progress at once; 0 = derive from max_memory
 
 [query]
 timeout = "30s"

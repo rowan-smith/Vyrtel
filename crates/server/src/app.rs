@@ -91,7 +91,7 @@ impl App {
             },
         ));
 
-        let ingest_slots = (budgets.ingest / config.ingest.max_request_size.0.max(1)).clamp(2, 1024) as usize;
+        let ingest_slots = config.ingest_max_concurrent();
         let http = reqwest::Client::builder()
             .user_agent(concat!("vyrtel/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -107,6 +107,9 @@ impl App {
             live_permits: Arc::new(Semaphore::new(config.query.max_live_streams.max(1))),
             query_permits: Arc::new(Semaphore::new(config.query.max_concurrent)),
             ingest_permits: Arc::new(Semaphore::new(ingest_slots)),
+            ingest_max_concurrent: ingest_slots,
+            ingest_rejected: AtomicU64::new(0),
+            discard_permits: Arc::new(Semaphore::new(crate::routes::ingest::MAX_DISCARDING)),
             started_at: Instant::now(),
             started_ts: Timestamp::now(),
             received_bytes: AtomicU64::new(0),

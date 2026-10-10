@@ -85,6 +85,15 @@ by up to one segment's time span.
 | `max_request_size` | `16MB`  | `VYRTEL_INGEST_MAX_REQUEST_SIZE` | Maximum body size (after gzip decoding). Larger requests get 413.                                                |
 | `queue_capacity`   | `10000` | `VYRTEL_INGEST_QUEUE_CAPACITY`   | Events waiting to be written, per signal. When full, requests get 429. A single batch larger than this gets 413. |
 | `ack_timeout`      | `30s`   | –                                  | Give up waiting for a write acknowledgement (503).                                                               |
+| `max_concurrent`   | `0`     | `VYRTEL_INGEST_MAX_CONCURRENT`   | Ingest requests in progress at once, from reading the body until the write is acknowledged. More get 429 without their body being read. `0` derives it from the memory budget (see below). |
+
+Each admitted request holds its body (up to `max_request_size`) and, while
+it is parsed, the decoded events: typically 4–5× the body size for
+NDJSON/JSON (a 1.8 MB NDJSON body peaks at about 8 MB while parsing).
+Worst-case ingest memory is therefore roughly `max_concurrent ×
+max_request_size × 5`. Requests are usually far smaller than the limit; if
+yours are not, lower `max_concurrent` or `max_request_size`. Status codes
+and retry behaviour are in the [API reference](api.md#ingest-limits-and-retries).
 
 ### `[query]`
 
@@ -154,7 +163,7 @@ budget is enforced by its owner; nothing grows without bound.
 |-----------------|------:|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Active segments |   40% | Split logs 50% / traces 30% / metrics 20%. Each signal seals at the smaller of `segment_target_size` and half its share (the active buffer plus one buffer being sealed must fit). If sealing falls behind, writers wait and ingestion returns 429. |
 | Index cache     |   15% | LRU of segment index regions (Bloom filters, zone maps); evicts when full. Segment summaries are always resident and small.                                                                                                                         |
-| Ingest          |   15% | Limits concurrent request bodies (`share ÷ max_request_size` requests). Event queues are bounded by `queue_capacity`.                                                                                                                               |
+| Ingest          |   15% | Unless `ingest.max_concurrent` is set, admits `share ÷ max_request_size` requests at once (2–1024), each from body read to acknowledgement; more get 429. Event queues are bounded by `queue_capacity`.                                            |
 | Queries         |   20% | `max_concurrent` queries; each holds at most one page of results plus one decoded block at a time.                                                                                                                                                  |
 | Background      |   10% | Compaction input is capped at a third of this share.                                                                                                                                                                                                |
 

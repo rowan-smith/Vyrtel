@@ -22,7 +22,7 @@ Every error has the same shape:
 | 413 | `payload_too_large` | body over `ingest.max_request_size`, or a batch larger than the queue |
 | 415 | `unsupported_media_type` | content type not accepted |
 | 422 | `query_too_expensive` | the query would read more than `query.max_scan_bytes` |
-| 429 | `rate_limited` | ingest queue full — retry after `Retry-After` seconds |
+| 429 | `rate_limited` | every ingest slot busy (`ingest.max_concurrent`) or the ingest queue full — retry after `Retry-After` seconds ([details](#ingest-limits-and-retries)) |
 | 503 | `unavailable` | storage unavailable / too many concurrent queries |
 | 504 | `query_timeout` | the query exceeded `query.timeout` |
 | 500 | `internal`, `storage_error` | details are logged server-side, never returned |
@@ -137,6 +137,65 @@ Mapping:
   summaries keep count/sum (bucket detail dropped).
 
 gRPC is not supported in v0.1.
+
+## Ingest limits and retries
+
+These apply to `POST /api/v1/events` and `POST /v1/{logs,traces,metrics}`
+alike.
+
+**Admission.** At most `ingest.max_concurrent` ingest requests are in
+progress at once (default: derived from the memory budget, see
+[configuration](configuration.md#ingest)). A request holds its slot from
+before its body is read, through decompression and parsing, until its
+write is acknowledged and the response is ready. Requests that finish, fail
+(any 4xx/5xx) or are abandoned by the client (connection closed at any
+point) free their slot; one abandoned mid-parse frees it when the parse
+ends, because the parse still holds memory until then.
+
+**Rejection.** When every slot is busy the request is rejected at once,
+before any of its body is read:
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 1
+Content-Type: application/json
+
+{"error":{"code":"rate_limited","message":"too many concurrent ingest requests; retry shortly"}}
+```
+
+The server then reads and discards the unread body (up to
+`max_request_size`, for at most 10 s, 32 bodies at a time, never buffering
+it) so that clients still uploading receive this response instead of a
+reset connection. Past those bounds it closes the connection; treat a
+connection reset like a 429.
+
+| Status | `code` | Stage | Retry? |
+|-------:|--------|-------|--------|
+| 429 | `rate_limited` | admission: all `max_concurrent` slots busy | yes, after `Retry-After` |
+| 413 | `payload_too_large` | body over `max_request_size` after gzip decoding | no — send smaller requests |
+| 400 | `invalid_request` / `invalid_payload` / `invalid_event` | body unreadable (bad gzip, client went away) or malformed | no — fix the payload |
+| 415 | `unsupported_media_type` | content type, checked before admission | no |
+| 413 | `payload_too_large` | batch has more events than `queue_capacity` | no — split the batch |
+| 429 | `rate_limited` | submission: the signal's queue is full | yes, after `Retry-After` |
+| 503 | `unavailable` | no acknowledgement within `ack_timeout`, or storage stopping | yes, after `Retry-After`; the batch may already be stored |
+
+Batches are all-or-nothing, so retrying a request rejected with 429 cannot
+duplicate events. The OpenTelemetry SDKs and Collector already retry 429
+and 503 with backoff. For your own clients, retry with capped exponential
+backoff that waits at least `Retry-After`:
+
+```bash
+for attempt in 1 2 3 4 5; do
+  status=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/api/v1/events     -H 'Content-Type: application/x-ndjson' --data-binary @tests/fixtures/logs.ndjson)
+  [ "$status" != 429 ] && [ "$status" != 503 ] && break
+  sleep $((attempt * attempt))   # Retry-After is 1 s; back off further on repeats
+done
+echo "$status"
+```
+
+`GET /api/v1/system/info` reports the limit, current use and rejections
+since start under `ingest`: `{"maxConcurrent": 4, "inFlight": 1,
+"rejected": 0}`.
 
 ## Querying logs
 
@@ -324,7 +383,7 @@ change is recorded and POSTed to the webhook (3 attempts, 10 s timeout):
 ```
 GET /health                      → 200 {"status": "ok"} while the process runs
 GET /ready                       → 200 {"status": "ready"} or 503 {"status": "degraded"}
-GET /api/v1/system/info          version, uptime, event counts, queue depths, active segments, memory budgets
+GET /api/v1/system/info          version, uptime, event counts, queue depths, ingest admission, active segments, memory budgets
 GET /api/v1/system/storage       raw/stored bytes, compression ratio, index overhead, per-signal detail
 GET /api/v1/system/query-stats   per-field query statistics (input for future adaptive indexing)
 GET /api/v1/system/config        effective configuration (secrets omitted)

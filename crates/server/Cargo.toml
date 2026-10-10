@@ -58,3 +58,8 @@ tokio.workspace = true
 [[test]]
 name = "integration"
 path = "../../tests/integration/main.rs"
+
+# Installs a counting global allocator, so it runs as its own process.
+[[test]]
+name = "overload"
+path = "../../tests/overload/main.rs"
