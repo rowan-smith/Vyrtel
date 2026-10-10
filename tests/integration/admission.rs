@@ -55,7 +55,10 @@ async fn admission_spans_decoding_and_submission() {
     assert_eq!(s.messages("").await, ["first", "third"]);
 
     let info = s.get_ok("/api/v1/system/info").await;
-    assert_eq!(info["ingest"], json!({ "maxConcurrent": 1, "inFlight": 0, "rejected": 3 }));
+    assert_eq!(info["ingest"]["maxConcurrent"], 1);
+    assert_eq!(info["ingest"]["inFlight"], 0);
+    assert_eq!(info["ingest"]["rejected"], 3);
+    assert!(info["ingest"]["discarding"].as_u64().unwrap() <= 3);
     s.stop().await;
 }
 

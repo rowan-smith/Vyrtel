@@ -191,6 +191,16 @@ read" to "until the write is acknowledged":
 Five consecutive runs after the change peaked at 54.3–55.8 MB. Parsing one
 1.79 MB body alone peaks at +8.3 MB, and one request end to end at +10.6 MB.
 
+`flood_of_rejected_slow_uploads_is_bounded`, in the same binary, holds the
+only ingest slot and opens 600 uploads that announce 1 MB, send 64 KB and
+stall. All are rejected at admission. It asserts that rejected bodies kept
+for discarding stop at the 256 cap (32 being read), that the runtime gains
+no more than one task per connection plus that cap, that kept clients read
+the 429, that peak heap growth stays below `max_memory`, and that everything
+is released after the 10 s discard timeout. One run: 256 discard tasks,
+512 new runtime tasks, 18.2 MB peak heap growth; without the cap, 1,200 new
+tasks and 38.2 MB.
+
 ## Frontend tests
 
 Vitest + React Testing Library in `web/tests/unit/`:

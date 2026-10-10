@@ -110,6 +110,7 @@ impl App {
             ingest_max_concurrent: ingest_slots,
             ingest_rejected: AtomicU64::new(0),
             discard_permits: Arc::new(Semaphore::new(crate::routes::ingest::MAX_DISCARDING)),
+            discard_pending: Arc::new(Semaphore::new(crate::routes::ingest::MAX_DISCARD_PENDING)),
             started_at: Instant::now(),
             started_ts: Timestamp::now(),
             received_bytes: AtomicU64::new(0),

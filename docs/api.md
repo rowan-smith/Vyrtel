@@ -164,10 +164,12 @@ Content-Type: application/json
 ```
 
 The server then reads and discards the unread body (up to
-`max_request_size`, for at most 10 s, 32 bodies at a time, never buffering
-it) so that clients still uploading receive this response instead of a
-reset connection. Past those bounds it closes the connection; treat a
-connection reset like a 429.
+`max_request_size`, for at most 10 s, never buffering it) so that clients
+still uploading receive this response instead of a reset connection. At
+most 32 bodies are read at a time and at most 256 are kept waiting; beyond
+that, or past the size or time bound, the server drops the body and closes
+the connection. Treat a connection reset like a 429. `discarding` in
+`GET /api/v1/system/info` shows how many rejected bodies are being kept.
 
 | Status | `code` | Stage | Retry? |
 |-------:|--------|-------|--------|
@@ -195,7 +197,7 @@ echo "$status"
 
 `GET /api/v1/system/info` reports the limit, current use and rejections
 since start under `ingest`: `{"maxConcurrent": 4, "inFlight": 1,
-"rejected": 0}`.
+"rejected": 0, "discarding": 0}`.
 
 ## Querying logs
 

@@ -47,6 +47,10 @@ pub struct IngestPermit {
 /// unread (the client is held back by TCP flow control, nothing is
 /// buffered) until a slot frees or [`DISCARD_TIMEOUT`] passes.
 pub const MAX_DISCARDING: usize = 32;
+/// Rejected bodies kept at all, reading or waiting: a hard cap on discard
+/// tasks. Beyond it a rejected body is dropped at once, so the client may
+/// see a reset connection instead of the 429.
+pub const MAX_DISCARD_PENDING: usize = 256;
 /// Give up on a rejected body after this long and close the connection.
 const DISCARD_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -71,12 +75,15 @@ pub fn admit(state: &AppState, body: Body) -> ApiResult<(IngestPermit, Body)> {
 /// Read and drop a rejected body, one chunk at a time, while the response
 /// goes out. Closing the connection with the upload unread makes many
 /// clients report a reset instead of the response. Bounded in bytes
-/// (`ingest.max_request_size`, after gzip decoding), time and concurrency;
-/// past any bound the body is dropped and the connection closes.
+/// (`ingest.max_request_size`, after gzip decoding), time, concurrency and
+/// number of tasks; past any bound the body is dropped and the connection
+/// closes.
 fn discard(state: &AppState, body: Body) {
+    let Ok(pending) = state.discard_pending.clone().try_acquire_owned() else { return };
     let slots = state.discard_permits.clone();
     let limit = state.config.ingest.max_request_size.0 as usize;
     tokio::spawn(tokio::time::timeout(DISCARD_TIMEOUT, async move {
+        let _pending = pending;
         let Ok(_slot) = slots.acquire_owned().await else { return };
         let mut data = body.into_data_stream();
         let mut read = 0;

@@ -1,7 +1,8 @@
 //! Memory under sustained ingest overload (REL-02).
 //!
 //! A separate test binary because it installs a counting global allocator
-//! and measures the whole process: nothing else may run alongside it.
+//! and measures the whole process: nothing else may run alongside it, and
+//! the tests here take [`SERIAL`] so they do not overlap either.
 //! The figures are printed; run with `--nocapture` to record them.
 
 #[path = "../integration/common/mod.rs"]
@@ -61,12 +62,16 @@ fn reset_peak() -> usize {
 
 const MB: f64 = (1 << 20) as f64;
 
+/// Heap measurements are process-wide: one test at a time.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 // Fixed limits: 64MB memory budget (the minimum), 2MB requests, 2 ingest
 // slots, 32 clients each sending ~1.8MB batches as fast as they are
 // admitted, half of them gzip-compressed. Peak heap growth over the run
 // must stay within `storage.max_memory`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sustained_overload_stays_within_memory_budget() {
+    let _serial = SERIAL.lock().await;
     const CLIENTS: usize = 32;
     const RUN: Duration = Duration::from_secs(4);
     let s = TestServer::start_with(|c| {
@@ -171,6 +176,102 @@ async fn sustained_overload_stays_within_memory_budget() {
     );
 
     wait_until("slots freed", || ingest_in_flight(&s) == 0).await;
+    s.stop().await;
+}
+
+// A flood of slow uploads, far more than the discard limits, all rejected
+// at admission: discard tasks stop at MAX_DISCARD_PENDING (the rest are
+// dropped at once), heap growth stays within the memory budget, and
+// everything is let go after the discard timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn flood_of_rejected_slow_uploads_is_bounded() {
+    use server::routes::ingest::{MAX_DISCARD_PENDING, MAX_DISCARDING};
+    const FLOOD: usize = 600;
+    let _serial = SERIAL.lock().await;
+    let s = TestServer::start_with(|c| {
+        c.storage.max_memory = ByteSize(64 << 20);
+        c.ingest.max_request_size = ByteSize(2 << 20);
+        c.ingest.max_concurrent = 1;
+        c.alerts.enabled = false;
+    })
+    .await;
+    let budget = s.config.storage.max_memory.0 as usize;
+    let headers = [("Content-Type", "application/x-ndjson")];
+    let chunk = vec![b' '; 64 << 10];
+
+    // Hold the only slot with an upload that never finishes.
+    let mut holder = RawRequest::open(&s, "/api/v1/events", &headers, 1 << 20).await;
+    holder.send(b"{}").await;
+    wait_until("slot held", || ingest_in_flight(&s) == 1).await;
+    let discarding = || MAX_DISCARD_PENDING - s.state().discard_pending.available_permits();
+    let reading = || MAX_DISCARDING - s.state().discard_permits.available_permits();
+    let rejected = || s.state().ingest_rejected.load(Ordering::Relaxed) as usize;
+
+    let tasks_before = tokio::runtime::Handle::current().metrics().num_alive_tasks();
+    let base = reset_peak();
+    // Each client announces 1MB, sends 64KB and stalls.
+    let mut flood = Vec::with_capacity(FLOOD);
+    for _ in 0..FLOOD {
+        let mut r = RawRequest::open(&s, "/api/v1/events", &headers, 1 << 20).await;
+        r.send(&chunk).await;
+        flood.push(r);
+    }
+    wait_until("flood rejected", || rejected() == FLOOD).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let tasks = tokio::runtime::Handle::current().metrics().num_alive_tasks() - tasks_before;
+    let (held, active) = (discarding(), reading());
+
+    // Every client that is answered gets the 429; those beyond the cap may
+    // see their connection closed instead.
+    let mut answered = 0;
+    for r in &mut flood {
+        if let Some(status) = r.status_line(Duration::from_millis(50)).await {
+            assert_eq!(status, 429);
+            answered += 1;
+        }
+    }
+    let peak = PEAK.load(Ordering::Relaxed) - base;
+    eprintln!(
+        "REL-02 flood: {FLOOD} slow uploads rejected; {held} discard tasks ({active} reading, caps {MAX_DISCARD_PENDING}/{MAX_DISCARDING}); {tasks} new runtime tasks; {answered} read a 429; peak heap growth {:.1} MB of {:.0} MB budget",
+        peak as f64 / MB,
+        budget as f64 / MB,
+    );
+    assert_eq!(held, MAX_DISCARD_PENDING, "discard tasks stop at the cap");
+    assert!(active <= MAX_DISCARDING);
+    // One task per connection (hyper) plus at most the discard cap.
+    assert!(tasks <= FLOOD + MAX_DISCARD_PENDING + 16, "{tasks} tasks for {FLOOD} connections");
+    assert!(answered >= MAX_DISCARD_PENDING, "kept clients get the 429: {answered}");
+    assert!(
+        peak < budget,
+        "peak heap growth {:.1} MB exceeds the {:.0} MB budget",
+        peak as f64 / MB,
+        budget as f64 / MB
+    );
+
+    // Stalled bodies are given up after the discard timeout.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while discarding() > 0 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("discard tasks end after the discard timeout");
+    drop(flood);
+    drop(holder);
+    wait_until("slot freed", || ingest_in_flight(&s) == 0).await;
+    assert_eq!(
+        post(
+            &s,
+            &bytes_of(
+                b"{\"message\":\"after\"}
+"
+                .to_vec()
+            ),
+            false
+        )
+        .await,
+        200
+    );
     s.stop().await;
 }
 

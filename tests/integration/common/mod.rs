@@ -264,6 +264,15 @@ impl RawRequest {
         self.tcp.flush().await.unwrap();
     }
 
+    /// The response status, if a status line arrives within `wait`.
+    pub async fn status_line(&mut self, wait: Duration) -> Option<u16> {
+        use tokio::io::AsyncReadExt;
+        let mut buf = [0u8; 64];
+        let n = tokio::time::timeout(wait, self.tcp.read(&mut buf)).await.ok()?.ok()?;
+        let text = String::from_utf8_lossy(&buf[..n]).to_string();
+        text.strip_prefix("HTTP/1.1 ")?.get(..3)?.parse().ok()
+    }
+
     /// Read the whole response; returns the status code and the raw text.
     pub async fn response(mut self) -> (u16, String) {
         use tokio::io::AsyncReadExt;

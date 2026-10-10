@@ -37,6 +37,8 @@ pub struct AppState {
     pub ingest_rejected: AtomicU64,
     /// Bounds rejected ingest bodies being discarded at once.
     pub discard_permits: Arc<Semaphore>,
+    /// Bounds rejected ingest bodies held at all (discarding or waiting).
+    pub discard_pending: Arc<Semaphore>,
     pub started_at: Instant,
     pub started_ts: Timestamp,
     pub received_bytes: AtomicU64,
