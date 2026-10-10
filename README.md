@@ -175,6 +175,8 @@ cargo test --workspace                 # unit, property, recovery, correctness, 
 cd web && npm test                     # Vitest + React Testing Library
 cd web && npm run build && cd .. && cargo build -p server && cd web && npx playwright install chromium && npm run e2e
 cargo bench -p storage -p query        # Criterion benchmarks
+dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short   # ingest + query over HTTP
+dotnet run --project dotnet/Vyrtel.Profiling -c Release -- --duration 30 --concurrency 4   # latency profile
 ```
 
 Details: [docs/testing.md](docs/testing.md).
@@ -203,6 +205,7 @@ shape; see [docs/testing.md](docs/testing.md) for method):
 * [Configuration](docs/configuration.md)
 * [Development](docs/development.md)
 * [Testing](docs/testing.md)
+* [Benchmarks](docs/benchmarks.md) — live results and how they are measured
 * [Roadmap](docs/roadmap.md)
 * [Brand guide](docs/brand/README.md) — name, voice, logo, Aurora palette, typography, motion
 

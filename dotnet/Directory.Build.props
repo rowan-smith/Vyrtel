@@ -1,0 +1,15 @@
+<Project>
+
+  <!-- Shared settings for every Vyrtel .NET project (the LiveDataSim sample, the benchmark
+       harness and the profiler). Keeping them here means a new project only declares what
+       makes it different. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,109 @@
+name: Benchmarks
+
+# Measures the release server on GitHub's runners and publishes the rollup that the website
+# renders at /docs/benchmarks.html. Running on the same hardware every time keeps the
+# numbers comparable across commits.
+#
+# Two modes:
+#   - push to main (paths below): refresh results.{json,md} — the "latest" run.
+#   - push of a version tag (v*): snapshot the tagged commit at versions/<tag>.json so the
+#     site can chart progress between releases. Path filters don't apply to tag pushes.
+#
+# main only accepts changes through pull requests, so results are committed to the
+# benchmark-results branch instead (laid out like docs/benchmarks/). The Deploy site workflow
+# overlays that branch onto docs/benchmarks/ before building. Commits pushed with
+# GITHUB_TOKEN cannot trigger workflows, so we dispatch Deploy site explicitly.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - dotnet/**
+      - .github/workflows/benchmark.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: benchmark
+  cancel-in-progress: false
+
+env:
+  RESULTS_BRANCH: benchmark-results
+
+jobs:
+  benchmark:
+    name: Run benchmarks and publish results
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build server (release)
+        run: cargo build --release --locked -p server
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run benchmarks
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- \
+              --job short \
+              --label "${{ github.ref_name }}" \
+              --out "docs/benchmarks/versions/${{ github.ref_name }}.json"
+          else
+            dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short
+          fi
+
+      - name: Show results
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            cat "docs/benchmarks/versions/${{ github.ref_name }}.md"
+          else
+            cat docs/benchmarks/results.md
+          fi
+
+      - name: Commit results
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          out="$RUNNER_TEMP/benchmark-results"
+          if git fetch --depth=1 origin "$RESULTS_BRANCH"; then
+            git worktree add --detach "$out" FETCH_HEAD
+          else
+            git worktree add --detach "$out"
+            git -C "$out" switch --orphan "$RESULTS_BRANCH"
+          fi
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${{ github.ref_name }}"
+            mkdir -p "$out/versions"
+            cp "docs/benchmarks/versions/$tag.json" "docs/benchmarks/versions/$tag.md" "$out/versions/"
+            git -C "$out" add "versions/$tag.json" "versions/$tag.md"
+            msg="chore(benchmarks): add $tag snapshot"
+          else
+            cp docs/benchmarks/results.json docs/benchmarks/results.md "$out/"
+            git -C "$out" add results.json results.md
+            msg="chore(benchmarks): refresh results for ${GITHUB_SHA::7}"
+          fi
+          if git -C "$out" diff --staged --quiet; then
+            echo "No changes to benchmark results"
+          else
+            git -C "$out" commit -m "$msg"
+            git -C "$out" push origin "HEAD:refs/heads/$RESULTS_BRANCH"
+          fi
+
+      - name: Redeploy the website
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run pages.yml --ref main

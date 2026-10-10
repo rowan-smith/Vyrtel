@@ -1,0 +1,6 @@
+@HostAddress = http://127.0.0.1:5088
+
+GET {{HostAddress}}/health
+Accept: application/json
+
+###

@@ -4,7 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace DotnetLive.Vyrtel;
+namespace Vyrtel.LiveDataSim.Vyrtel;
 
 public sealed class VyrtelMetricsPublisher : BackgroundService
 {
@@ -29,7 +29,7 @@ public sealed class VyrtelMetricsPublisher : BackgroundService
         {
             InstrumentPublished = (instrument, listener) =>
             {
-                if (instrument.Meter.Name.StartsWith("DotnetLive", StringComparison.Ordinal))
+                if (instrument.Meter.Name.StartsWith("Vyrtel.LiveDataSim", StringComparison.Ordinal))
                 {
                     listener.EnableMeasurementEvents(instrument);
                 }
@@ -175,17 +175,19 @@ internal sealed class MetricPoint
 public sealed class TrafficSimulator : BackgroundService
 {
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IConfiguration _config;
     private readonly ILogger<TrafficSimulator> _logger;
-    private static readonly ActivitySource ActivitySource = new("DotnetLive");
-    private static readonly Meter Meter = new("DotnetLive");
+    private static readonly ActivitySource ActivitySource = new("Vyrtel.LiveDataSim");
+    private static readonly Meter Meter = new("Vyrtel.LiveDataSim");
     private static readonly Counter<long> Requests = Meter.CreateCounter<long>("http.server.requests");
     private static readonly Histogram<double> DurationMs = Meter.CreateHistogram<double>("http.server.request_duration_ms", "ms");
     private static readonly Counter<long> Orders = Meter.CreateCounter<long>("orders.created");
     private static readonly Counter<long> PaymentsFailed = Meter.CreateCounter<long>("payments.failed");
 
-    public TrafficSimulator(IHttpClientFactory httpClientFactory, ILogger<TrafficSimulator> logger)
+    public TrafficSimulator(IHttpClientFactory httpClientFactory, IConfiguration config, ILogger<TrafficSimulator> logger)
     {
         _httpClientFactory = httpClientFactory;
+        _config = config;
         _logger = logger;
     }
 
@@ -194,7 +196,7 @@ public sealed class TrafficSimulator : BackgroundService
         // Give the host a moment to start listening.
         await Task.Delay(1500, stoppingToken);
         var client = _httpClientFactory.CreateClient();
-        client.BaseAddress = new Uri("http://127.0.0.1:5088/");
+        client.BaseAddress = new Uri(_config["Vyrtel:ServeUrl"] ?? "http://127.0.0.1:5088");
         var rng = Random.Shared;
 
         while (!stoppingToken.IsCancellationRequested)

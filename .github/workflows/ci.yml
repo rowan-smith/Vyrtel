@@ -34,6 +34,17 @@ jobs:
       - name: Binary size
         run: ls -l target/release/vyrtel
 
+  dotnet:
+    name: .NET (benchmark + profiler)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build
+        run: dotnet build dotnet/Vyrtel.slnx -c Release
+
   security:
     name: Dependency checks
     runs-on: ubuntu-latest

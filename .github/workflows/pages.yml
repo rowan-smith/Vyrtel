@@ -32,6 +32,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The Benchmarks workflow publishes results to this branch (main is PR-only); files there
+      # take precedence over the copies committed under docs/benchmarks/.
+      - name: Overlay published benchmark results
+        run: |
+          if git fetch --depth=1 origin benchmark-results; then
+            git archive FETCH_HEAD | tar -x -C docs/benchmarks
+          else
+            echo "No benchmark-results branch yet; using docs/benchmarks as committed"
+          fi
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:

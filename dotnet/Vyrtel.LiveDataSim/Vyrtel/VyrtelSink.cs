@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 using Serilog.Core;
 using Serilog.Events;
 
-namespace DotnetLive.Vyrtel;
+namespace Vyrtel.LiveDataSim.Vyrtel;
 
 public sealed class VyrtelSink : ILogEventSink, IDisposable
 {

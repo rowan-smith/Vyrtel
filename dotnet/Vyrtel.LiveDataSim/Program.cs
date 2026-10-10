@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
-using DotnetLive.Vyrtel;
-using DotnetLive.Services;
+using Vyrtel.LiveDataSim.Vyrtel;
+using Vyrtel.LiveDataSim.Services;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Serilog;
@@ -46,7 +46,7 @@ builder.Services.AddSingleton<AuthService>();
 builder.Services.AddOpenTelemetry()
     .ConfigureResource(r => r.AddService(serviceName: serviceName, serviceVersion: "0.1.0"))
     .WithTracing(t => t
-        .AddSource("DotnetLive")
+        .AddSource("Vyrtel.LiveDataSim")
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation());
 
@@ -54,12 +54,13 @@ builder.Services.AddHostedService<VyrtelMetricsPublisher>();
 builder.Services.AddHostedService<TrafficSimulator>();
 builder.Services.AddHostedService<TraceJsonExporter>();
 
-builder.WebHost.UseUrls("http://127.0.0.1:5088");
+var serveUrl = builder.Configuration["Vyrtel:ServeUrl"] ?? "http://127.0.0.1:5088";
+builder.WebHost.UseUrls(serveUrl);
 
 var app = builder.Build();
 
-var activitySource = new ActivitySource("DotnetLive");
-var meter = new Meter("DotnetLive");
+var activitySource = new ActivitySource("Vyrtel.LiveDataSim");
+var meter = new Meter("Vyrtel.LiveDataSim");
 var requestCounter = meter.CreateCounter<long>("http.server.requests");
 var duration = meter.CreateHistogram<double>("http.server.request_duration_ms", unit: "ms");
 var orderCounter = meter.CreateCounter<long>("orders.created");
@@ -254,7 +255,7 @@ app.MapGet("/", () => Results.Ok(new
 try
 {
     Log.Information(
-        "DotnetLive starting → Vyrtel {Endpoint} as {Service}/{Environment}",
+        "Vyrtel.LiveDataSim starting → Vyrtel {Endpoint} as {Service}/{Environment}",
         vyrtelEndpoint,
         serviceName,
         environmentName);
@@ -292,7 +293,11 @@ public sealed class TraceJsonExporter : BackgroundService
         _logger = logger;
         _listener = new ActivityListener
         {
-            ShouldListenTo = source => source.Name == "DotnetLive",
+            // Capture the demo's own spans plus the ASP.NET Core server spans they nest under,
+            // so exported traces show the full request path. HttpClient spans are left out to
+            // avoid re-exporting the exporter's own requests back into Vyrtel.
+            ShouldListenTo = source =>
+                source.Name == "Vyrtel.LiveDataSim" || source.Name.StartsWith("Microsoft.AspNetCore", StringComparison.Ordinal),
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
             ActivityStopped = activity =>
             {
@@ -351,6 +356,7 @@ public sealed class TraceJsonExporter : BackgroundService
                                 attributes = new[]
                                 {
                                     new { key = "service.name", value = new { stringValue = service } },
+                                    new { key = "service.version", value = new { stringValue = "0.1.0" } },
                                     new
                                     {
                                         key = "deployment.environment",

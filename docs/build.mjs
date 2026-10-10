@@ -191,6 +191,7 @@ const DOCS = [
   { slug: 'cla-individual', file: 'docs/cla/individual.md', title: 'Individual CLA', group: 'Project' },
   { slug: 'cla-corporate', file: 'docs/cla/corporate.md', title: 'Corporate CLA', group: 'Project' },
   { slug: 'roadmap', file: 'docs/roadmap.md', group: 'Project' },
+  { slug: 'benchmarks', file: 'docs/benchmarks.md', title: 'Benchmarks', group: 'Project' },
   { slug: 'brand', file: 'docs/brand/README.md', title: 'Brand guide', group: 'Project' },
 ];
 const bySource = new Map(DOCS.map((d) => [d.file, d]));
@@ -244,10 +245,388 @@ function docSource(d) {
   return src;
 }
 
+/** Reads a repo JSON file if present, else null (benchmark results are only committed by CI). */
+function readJson(rel) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(root, rel), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+const num = (n, digits = 2) =>
+  typeof n === 'number' ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—';
+
+/** Human byte counts matching the harness' ByteFormat, e.g. 11.9 MB. */
+const fmtBytes = (b) => {
+  if (typeof b !== 'number' || b <= 0) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = b;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  const digits = unit === 0 ? 0 : value < 10 ? 2 : 1;
+  return `${value.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })} ${units[unit]}`;
+};
+
+const toMb = (b) => (typeof b === 'number' && b > 0 ? b / (1024 * 1024) : null);
+
+/** Build artefacts and storage footprint for the current run (below the chart). */
+function buildFacts(data) {
+  const build = data.build;
+  const storage = data.storage;
+  if (!build && !storage) {
+    return '';
+  }
+  const facts = [];
+  if (build?.executableBytes) {
+    facts.push(['Executable', `${fmtBytes(build.executableBytes)} (${escapeHtml(build.profile ?? 'release')})`]);
+  }
+  if (build?.dataDirBytes) {
+    facts.push(['Data directory', `${fmtBytes(build.dataDirBytes)} on disk after seeding`]);
+  }
+  if (storage?.eventCount) {
+    facts.push(['Events stored', `${num(storage.eventCount, 0)} events in ${num(storage.segmentCount, 0)} segments`]);
+    facts.push(['Bytes stored per event', `${num(storage.bytesStoredPerEvent, 2)} B`]);
+    if (typeof storage.compressionRatio === 'number' && storage.compressionRatio > 0) {
+      facts.push(['Compression', `${num(storage.compressionRatio, 2)}× (${fmtBytes(storage.rawBytes)} raw → ${fmtBytes(storage.storedBytes)} stored)`]);
+    }
+    if (typeof storage.indexOverhead === 'number' && storage.indexOverhead > 0) {
+      facts.push(['Index overhead', `${num(storage.indexOverhead * 100, 1)}% of segment bytes`]);
+    }
+  }
+  if (facts.length === 0) {
+    return '';
+  }
+  return (
+    `<h2 id="build-footprint">Build and footprint</h2>` +
+    `<dl class="facts">${facts.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${v}</dd>`).join('')}</dl>`
+  );
+}
+
+const escapeHtml = (s) =>
+  String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const shorten = (s, max = 40) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
+
+/** Inline-SVG horizontal bar chart (log scale) so the site needs no chart library. */
+function barChart(rows) {
+  const rowHeight = 26;
+  const padTop = 6;
+  const labelW = 276;
+  const valueW = 104;
+  const width = 760;
+  const plotW = width - labelW - valueW;
+  const height = padTop * 2 + rows.length * rowHeight;
+  const scale = (v) => Math.log10(1 + Math.max(Number(v) || 0, 0));
+  const max = Math.max(...rows.map((r) => scale(r.value)), 0.0001);
+
+  const body = rows
+    .map((r, i) => {
+      const cy = padTop + i * rowHeight + rowHeight / 2;
+      const w = Math.max(1.5, (scale(r.value) / max) * plotW);
+      let range = '';
+      if (Number.isFinite(r.min) && Number.isFinite(r.max) && r.max > r.min) {
+        const x1 = labelW + (scale(r.min) / max) * plotW;
+        const x2 = labelW + (scale(r.max) / max) * plotW;
+        range = `<line class="chart-range" x1="${x1.toFixed(1)}" y1="${cy}" x2="${x2.toFixed(1)}" y2="${cy}"></line>`;
+      }
+      return (
+        `<text class="chart-label" x="${labelW - 10}" y="${cy + 4}" text-anchor="end">${escapeHtml(shorten(r.label))}</text>` +
+        range +
+        `<rect class="chart-bar" x="${labelW}" y="${(cy - 7).toFixed(1)}" width="${w.toFixed(1)}" height="14" rx="3"></rect>` +
+        `<text class="chart-value" x="${(labelW + w + 8).toFixed(1)}" y="${cy + 4}">${escapeHtml(r.display)}</text>`
+      );
+    })
+    .join('');
+
+  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img">${body}</svg>`;
+}
+
+function chartFigure(title, caption, rows) {
+  if (rows.length === 0) {
+    return '';
+  }
+  return `<figure class="chart-figure"><figcaption>${escapeHtml(title)} <span class="muted">${escapeHtml(caption)}</span></figcaption>${barChart(rows)}</figure>`;
+}
+
+/** Inline-SVG line chart of one metric across released versions (dots + connecting line). */
+function lineChart(points) {
+  const width = 760;
+  const height = 220;
+  const padTop = 16;
+  const padBottom = 34;
+  const padLeft = 56;
+  const padRight = 24;
+  const plotW = width - padLeft - padRight;
+  const plotH = height - padTop - padBottom;
+  const max = Math.max(...points.map((p) => p.value), 0.0001);
+  const x = (i) => (points.length === 1 ? padLeft + plotW / 2 : padLeft + (i / (points.length - 1)) * plotW);
+  const y = (v) => padTop + plotH - (v / max) * plotH;
+  const fmt = (v) => (v >= 1000 ? Math.round(v / 100) / 10 + 'k' : v >= 10 ? Math.round(v) : Math.round(v * 100) / 100);
+
+  const grid = [0, 0.25, 0.5, 0.75, 1]
+    .map((t) => {
+      const gy = padTop + plotH - t * plotH;
+      return (
+        `<line class="chart-axis" x1="${padLeft}" y1="${gy.toFixed(1)}" x2="${(padLeft + plotW).toFixed(1)}" y2="${gy.toFixed(1)}"></line>` +
+        `<text class="chart-tick" x="${padLeft - 8}" y="${(gy + 4).toFixed(1)}" text-anchor="end">${fmt(max * t)}</text>`
+      );
+    })
+    .join('');
+
+  const lines =
+    points.length > 1
+      ? `<polyline class="chart-line" points="${points.map((p, i) => `${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ')}"></polyline>`
+      : '';
+
+  const dots = points
+    .map((p, i) => {
+      const cx = x(i).toFixed(1);
+      const cy = y(p.value).toFixed(1);
+      return (
+        `<circle class="chart-dot" cx="${cx}" cy="${cy}" r="4"></circle>` +
+        `<text class="chart-value" x="${x(i).toFixed(1)}" y="${(y(p.value) - 9).toFixed(1)}" text-anchor="middle">${escapeHtml(p.display)}</text>` +
+        `<text class="chart-tick" x="${x(i).toFixed(1)}" y="${(padTop + plotH + 20).toFixed(1)}" text-anchor="middle">${escapeHtml(p.label)}</text>`
+      );
+    })
+    .join('');
+
+  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img">${grid}${lines}${dots}</svg>`;
+}
+
+/** Reads docs/benchmarks/versions/*.json (one snapshot per released tag), sorted oldest → newest. */
+function versionSnapshots() {
+  const dir = path.join(root, 'docs', 'benchmarks', 'versions');
+  let files = [];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const parse = (s) => {
+    const m = String(s).match(/(\d+)\.(\d+)\.(\d+)/);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : [0, 0, 0];
+  };
+  return files
+    .map((f) => {
+      const data = readJson(`docs/benchmarks/versions/${f}`);
+      if (!data || !Array.isArray(data.benchmarks) || data.benchmarks.length === 0) return null;
+      const label = data.label || data.vyrtelVersion || f.replace(/\.json$/, '');
+      return { ...data, label };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const av = parse(a.label);
+      const bv = parse(b.label);
+      return av[0] - bv[0] || av[1] - bv[1] || av[2] - bv[2];
+    });
+}
+
+/** Renders the per-version comparison (chart per headline metric + full table) for released tags. */
+function versionHistory(snapshots) {
+  if (snapshots.length === 0) {
+    return '';
+  }
+  const labels = snapshots.map((s) => s.label);
+  const maps = snapshots.map((s) => new Map(s.benchmarks.map((b) => [b.id, b])));
+  const newest = snapshots[snapshots.length - 1];
+
+  const order = [];
+  const seen = new Set();
+  for (const b of [...newest.benchmarks, ...snapshots.flatMap((s) => s.benchmarks)]) {
+    if (!seen.has(b.id)) {
+      order.push(b);
+      seen.add(b.id);
+    }
+  }
+
+  const cell = (b) => {
+    if (!b) return '—';
+    if (b.metric === 'throughput') return `${num(b.value, 0)} ${escapeHtml(b.unit)}`;
+    return `${num(b.meanMs, b.meanMs < 1 ? 3 : b.meanMs < 100 ? 2 : 0)} ms`;
+  };
+
+  // Headline metrics for the version charts: each returns { value, display } per snapshot.
+  const byId = (s, id) => s.benchmarks.find((x) => x.id === id);
+  const msCell = (b) => `${num(b.meanMs, b.meanMs < 1 ? 3 : b.meanMs < 100 ? 2 : 0)} ms`;
+  const throughput = (s, id) => {
+    const b = byId(s, id);
+    return b ? { value: b.value, display: `${num(b.value, 0)} ${b.unit}` } : null;
+  };
+  const latency = (s, id) => {
+    const b = byId(s, id);
+    return b ? { value: b.meanMs, display: msCell(b) } : null;
+  };
+
+  const headline = [
+    { label: 'Ingest NDJSON', better: 'higher', get: (s) => throughput(s, 'IngestBatch') },
+    { label: 'Ingest JSON', better: 'higher', get: (s) => throughput(s, 'IngestBatchJson') },
+    { label: 'Latest logs', better: 'lower', get: (s) => latency(s, 'LogsLatest') },
+    { label: 'Full-text scan', better: 'lower', get: (s) => latency(s, 'LogsMessageContains') },
+    {
+      label: 'Executable size',
+      better: 'lower',
+      get: (s) => {
+        const mb = toMb(s.build?.executableBytes);
+        return mb ? { value: mb, display: `${num(mb, 2)} MB` } : null;
+      },
+    },
+    {
+      label: 'Bytes stored per event',
+      better: 'lower',
+      get: (s) =>
+        s.storage?.eventCount ? { value: s.storage.bytesStoredPerEvent, display: `${num(s.storage.bytesStoredPerEvent, 2)} B` } : null,
+    },
+  ];
+
+  const figures = headline
+    .map(({ label, better, get }) => {
+      const points = snapshots
+        .map((s) => {
+          const p = get(s);
+          return p ? { label: s.label, ...p } : null;
+        })
+        .filter(Boolean);
+      if (points.length === 0) return '';
+      const caption = points.length === 1 ? 'first released snapshot' : `${better} is better`;
+      return `<figure class="chart-figure"><figcaption>${escapeHtml(label)} <span class="muted">${escapeHtml(caption)}</span></figcaption>${lineChart(points)}</figure>`;
+    })
+    .join('');
+
+  // Extra rows in the comparison table that aren't benchmark rows.
+  const extras = [
+    { name: 'Executable size', display: (s) => fmtBytes(s.build?.executableBytes) },
+    { name: 'Data directory on disk', display: (s) => fmtBytes(s.build?.dataDirBytes) },
+    {
+      name: 'Bytes stored per event',
+      display: (s) => (s.storage?.eventCount ? `${num(s.storage.bytesStoredPerEvent, 2)} B` : '—'),
+    },
+    {
+      name: 'Compression ratio',
+      display: (s) => (s.storage?.compressionRatio ? `${num(s.storage.compressionRatio, 2)}×` : '—'),
+    },
+  ];
+
+  const extraRows = extras
+    .map((e) => `<tr class="row-extra"><td>${escapeHtml(e.name)}</td>${snapshots.map((s) => `<td>${e.display(s)}</td>`).join('')}</tr>`)
+    .join('');
+
+  const rows = `${order
+    .map((sample) => `<tr><td>${escapeHtml(sample.name)}</td>${maps.map((m) => `<td>${cell(m.get(sample.id))}</td>`).join('')}</tr>`)
+    .join('')}${extraRows}`;
+  const table = `<table><thead><tr><th>Benchmark</th>${labels.map((l) => `<th>${escapeHtml(l)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>`;
+
+  return (
+    `<h2 id="version-history">Version history</h2>` +
+    `<p class="muted">A snapshot is captured for every released tag (<code>v*</code>), so progress is visible between versions. Older versions are on the left; each column in the table is a full benchmark run.</p>` +
+    `${figures}${table}`
+  );
+}
+
+
+/** Renders the benchmark rollup injected into docs/benchmarks.md from docs/benchmarks/results.json. */
+function benchmarkResults() {
+  const data = readJson('docs/benchmarks/results.json');
+  if (!data || !Array.isArray(data.benchmarks) || data.benchmarks.length === 0) {
+    return `<p class="muted">No benchmark results have been published yet. They are regenerated automatically on the CI machine whenever <code>main</code> changes — see the <a href="${repoUrl}/actions/workflows/benchmark.yml">benchmark workflow</a>.</p>`;
+  }
+
+  const meta = [
+    `Vyrtel ${data.vyrtelVersion ?? '?'}`,
+    `${data.job ?? 'short'} job`,
+    data.dataset?.events ? `${data.dataset.events.toLocaleString('en-US')} events` : null,
+    data.generatedAt ? `generated ${new Date(data.generatedAt).toISOString().slice(0, 10)}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const hw = data.hardware ?? {};
+  const machine = [
+    hw.os,
+    hw.logicalCores ? `${hw.logicalCores} logical cores` : null,
+    hw.runtime,
+    hw.benchmarkDotNet ? `BenchmarkDotNet ${hw.benchmarkDotNet}` : null,
+  ]
+    .filter(Boolean)
+    .join('; ');
+
+  const groups = [...new Set(data.benchmarks.map((b) => b.group))];
+  const byGroup = (g) => data.benchmarks.filter((b) => b.group === g);
+
+  const latencyRows = (list) =>
+    list
+      .map((b) => ({
+        label: b.name,
+        value: b.meanMs,
+        display: `${num(b.meanMs, b.meanMs < 1 ? 3 : b.meanMs < 100 ? 2 : 0)} ms`,
+        min: b.minMs,
+        max: b.maxMs,
+      }))
+      .sort((a, b) => b.value - a.value);
+
+  const throughputRows = (list) =>
+    list
+      .map((b) => ({ label: `${b.name} (${b.unit})`, value: b.value, display: `${num(b.value, 0)} ${b.unit}` }))
+      .sort((a, b) => b.value - a.value);
+
+  const charts = [];
+  for (const group of groups) {
+    const list = byGroup(group);
+    charts.push(
+      chartFigure(
+        `${group} latency`,
+        'mean ms per request · log scale · whisker = min–max · shorter is better',
+        latencyRows(list),
+      ),
+    );
+    if (group === 'Query') {
+      charts.push(
+        chartFigure(
+          'Query throughput',
+          'requests per second · log scale · longer is better',
+          list
+            .map((b) => ({ label: b.name, value: b.throughput ?? 0, display: `${num(b.throughput, 0)} ops/s` }))
+            .sort((a, b) => b.value - a.value),
+        ),
+      );
+    } else {
+      charts.push(
+        chartFigure(
+          `${group} throughput`,
+          'per-series throughput · log scale · unit shown per row · longer is better',
+          throughputRows(list),
+        ),
+      );
+    }
+  }
+
+  const tables = groups
+    .map((group) => {
+      const rows = data.benchmarks
+        .filter((b) => b.group === group)
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((b) => {
+          const speed = b.metric === 'throughput' ? `${num(b.value, 0)} ${b.unit}` : `${num(b.throughput, 0)} ${b.throughputUnit ?? ''}`.trim();
+          return `<tr><td>${b.name}</td><td>${num(b.meanMs, 3)} ms</td><td>${num(b.medianMs, 3)} ms</td><td>${num(b.minMs, 3)} ms</td><td>${num(b.maxMs, 3)} ms</td><td>${speed}</td></tr>`;
+        })
+        .join('');
+      return `<h3>${group}</h3><table><thead><tr><th>Benchmark</th><th>Mean</th><th>Median</th><th>Min</th><th>Max</th><th>Throughput</th></tr></thead><tbody>${rows}</tbody></table>`;
+    })
+    .join('');
+
+  return `<p class="muted">${meta}</p><p class="muted small">Measured on ${machine}.</p>${buildFacts(data)}${charts.join('')}${tables}${versionHistory(versionSnapshots())}`;
+}
+
 function parseDocs() {
   return DOCS.map((d) => {
     currentSource = d.file;
-    const html = marked.parse(docSource(d));
+    let html = marked.parse(docSource(d));
+    if (d.slug === 'benchmarks') {
+      html = html.replace('<!--BENCHMARK_RESULTS-->', benchmarkResults());
+    }
     const headings = getHeadingList();
     const h1 = headings.find((h) => h.level === 1);
     const title = d.title ?? h1?.raw ?? d.slug;

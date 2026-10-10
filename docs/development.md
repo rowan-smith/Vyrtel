@@ -2,12 +2,13 @@
 
 ## Toolchain
 
-| Tool                | Version                           | Used for                |
-|---------------------|-----------------------------------|-------------------------|
-| Rust                | stable ≥ 1.89 (edition 2024)      | server and libraries    |
-| A C compiler        | any (MSVC, gcc, clang)            | bundled SQLite and zstd |
-| Node.js             | 22+ (with npm)                    | web UI                  |
-| Playwright browsers | `npx playwright install chromium` | E2E tests only          |
+| Tool                | Version                           | Used for                   |
+|---------------------|-----------------------------------|----------------------------|
+| Rust                | stable ≥ 1.89 (edition 2024)      | server and libraries       |
+| A C compiler        | any (MSVC, gcc, clang)            | bundled SQLite and zstd    |
+| Node.js             | 22+ (with npm)                    | web UI                     |
+| .NET SDK            | 10.0+                             | benchmarks, profiler, demo |
+| Playwright browsers | `npx playwright install chromium` | E2E tests only             |
 
 ## Layout
 
@@ -19,6 +20,7 @@ crates/ingest      native JSON + OTLP parsing
 crates/metadata    SQLite metadata store
 crates/server      HTTP server and the `vyrtel` binary
 tools/loadgen      load generator
+dotnet/            .NET benchmark, profiler, shared harness and demo producer
 web/               React + TypeScript UI (Vite)
 tests/integration  end-to-end Rust tests against a real server
 tests/fixtures     shared test data
@@ -100,6 +102,40 @@ cargo fmt --all
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cd web && npm run lint && npm run typecheck
 ```
+
+## Benchmarks and profiling
+
+The .NET projects under `dotnet/` drive a running `--release` server over HTTP and
+share `Vyrtel.Harness` (server launcher, deterministic event factory, latency stats).
+They build the server themselves unless one is already listening (`--url`/`--no-launch`).
+
+```bash
+cargo build --release -p server
+
+# BenchmarkDotNet: ingest throughput (NDJSON, JSON array, OTLP traces, OTLP metrics)
+# + query latency; writes docs/benchmarks/results.json
+dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short
+
+# Capture a snapshot for a released version (also what the tag CI job does):
+dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short --label v0.1.1 --out docs/benchmarks/versions/v0.1.1.json
+
+# Mixed-load percentile profile (p50/p90/p95/p99 per operation) and index hotspots.
+# The first --warmup seconds (default 3) are discarded and hotspots are diffed over
+# the measured window only.
+dotnet run --project dotnet/Vyrtel.Profiling -c Release -- --duration 30 --warmup 3 --concurrency 4
+```
+
+Both reports record what was built and how big it is on disk: the release binary size, the
+seeded dataset's data-directory footprint, and the server's own storage counters (bytes stored
+per event, compression ratio, index overhead) read from `GET /api/v1/system/storage` before the
+load starts. The site charts those across `v*` snapshots, so regressions in binary or dataset
+size show up next to the latency numbers.
+
+`.github/workflows/benchmark.yml` runs the benchmark on every `main` change (and on each `v*`
+tag, writing a `versions/<tag>.json` snapshot) and commits the rollup to the
+`benchmark-results` branch, which the site build overlays onto `docs/benchmarks/` to render the
+[benchmarks page](benchmarks.md), including the version-history comparison.
+`dotnet/Vyrtel.LiveDataSim` is a sample ASP.NET Core producer (not part of the build).
 
 ## Release builds
 

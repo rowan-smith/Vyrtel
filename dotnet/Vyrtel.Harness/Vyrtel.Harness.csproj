@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Vyrtel.Harness</RootNamespace>
+    <Description>Shared plumbing for the Vyrtel benchmark and profiler: launching/health-checking a server, generating deterministic telemetry and recording latencies.</Description>
+  </PropertyGroup>
+
+</Project>

@@ -2162,3 +2162,131 @@ h3 {
     transform: none;
   }
 }
+
+/* Benchmark charts (inline SVG generated at build time). */
+
+/* Build & footprint facts (executable size, bytes stored per event, ...). */
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.4rem 1.4rem;
+  margin: 1rem 0 2rem;
+  padding: 1rem 1.1rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+}
+
+.facts dt {
+  color: var(--text-dim);
+}
+
+.facts dd {
+  margin: 0;
+  color: var(--text);
+}
+.chart-figure {
+  margin: 1.5rem 0 2rem;
+  padding: 1rem 1.1rem 0.4rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.chart-figure figcaption {
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chart-figure figcaption .muted {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
+.chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  font-family: var(--sans);
+}
+
+.chart .chart-label {
+  font-size: 12px;
+  font-weight: 500;
+  fill: var(--text-dim);
+}
+
+.chart .chart-value {
+  font-size: 12px;
+  fill: var(--muted);
+}
+
+.chart .chart-bar {
+  fill: var(--iris);
+}
+
+.chart .chart-range {
+  stroke: var(--muted);
+  stroke-width: 2;
+  stroke-linecap: round;
+  opacity: 0.5;
+}
+
+.chart .chart-axis {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.chart .chart-tick {
+  font-size: 11px;
+  fill: var(--muted);
+}
+
+.chart .chart-line {
+  fill: none;
+  stroke: var(--iris);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chart .chart-dot {
+  fill: var(--iris);
+  stroke: var(--bg-raised);
+  stroke-width: 2;
+}
+
+/* Build/footprint facts (executable size, data directory, storage efficiency). */
+.facts {
+  display: grid;
+  grid-template-columns: minmax(8rem, max-content) 1fr;
+  gap: 0.15rem 1.25rem;
+  margin: 1rem 0 2rem;
+  padding: 0.9rem 1.1rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  color: var(--text);
+}
+
+/* Version-history rows that measure footprint, not latency. */
+.row-extra td {
+  background: color-mix(in srgb, var(--iris) 6%, transparent);
+}
+
+.row-extra td:first-child {
+  font-weight: 600;
+}

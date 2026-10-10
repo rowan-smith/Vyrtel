@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 
-namespace DotnetLive.Services;
+namespace Vyrtel.LiveDataSim.Services;
 
 public static class ExceptionFormatter
 {
