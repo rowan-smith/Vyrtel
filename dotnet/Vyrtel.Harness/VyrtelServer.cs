@@ -16,6 +16,10 @@ public sealed class VyrtelServer : IAsyncDisposable
     public Uri BaseUrl { get; }
     public bool Launched => _process is not null;
     public string? ExecutablePath { get; }
+    /// <summary>Size of the server executable on disk, in bytes (0 when connected to an external server).</summary>
+    public long ExecutableSizeBytes { get; }
+
+    private long? _footprintBytes;
 
     private VyrtelServer(Uri baseUrl, Process? process, string? dataDir, string? executable, bool keepData)
     {
@@ -24,6 +28,59 @@ public sealed class VyrtelServer : IAsyncDisposable
         _dataDir = dataDir;
         ExecutablePath = executable;
         _keepData = keepData;
+        ExecutableSizeBytes = executable is not null && File.Exists(executable)
+            ? new FileInfo(executable).Length
+            : 0;
+    }
+
+    /// <summary>
+    /// Total size of the server's data directory on disk, in bytes. Measured on demand (and
+    /// keep the last value once the directory has been removed), so the caller decides when —
+    /// typically right after seeding.
+    /// </summary>
+    public long MeasureDataDirBytes()
+    {
+        if (_dataDir is null)
+        {
+            return 0;
+        }
+        _footprintBytes = Directory.Exists(_dataDir) ? DirectorySize(_dataDir) : _footprintBytes ?? 0;
+        return _footprintBytes.Value;
+    }
+
+    /// <summary>
+    /// The cargo profile the binary was built with (<c>release</c>/<c>debug</c>), or
+    /// <c>external</c> when connected to a server the harness did not launch.
+    /// </summary>
+    public string BuildProfile => ProfileOf(ExecutablePath);
+
+    /// <summary>
+    /// Executable size plus the data directory footprint, sampled together so the report
+    /// describes the same moment (the dataset right after seeding).
+    /// </summary>
+    public BuildInfo MeasureBuild() => new(
+        Profile: BuildProfile,
+        Executable: ExecutablePath,
+        ExecutableBytes: ExecutableSizeBytes,
+        DataDirBytes: MeasureDataDirBytes());
+
+    internal static string ProfileOf(string? executable)
+    {
+        var path = executable?.Replace('\\', '/');
+        if (path is null) return "external";
+        if (path.Contains("/release/")) return "release";
+        if (path.Contains("/debug/")) return "debug";
+        return "external";
+    }
+
+    private static long DirectorySize(string path)
+    {
+        long total = 0;
+        foreach (var file in new DirectoryInfo(path).EnumerateFiles("*", SearchOption.AllDirectories))
+        {
+            total += file.Length;
+        }
+        return total;
     }
 
     public static async Task<VyrtelServer> StartOrConnectAsync(VyrtelServerOptions options, CancellationToken ct = default)
@@ -176,6 +233,8 @@ public sealed class VyrtelServer : IAsyncDisposable
             {
                 if (Directory.Exists(_dataDir))
                 {
+                    // keep the last footprint so the report can still read it
+                    _footprintBytes ??= DirectorySize(_dataDir);
                     Directory.Delete(_dataDir, recursive: true);
                 }
             }

@@ -2164,6 +2164,28 @@ h3 {
 }
 
 /* Benchmark charts (inline SVG generated at build time). */
+
+/* Build & footprint facts (executable size, bytes stored per event, ...). */
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.4rem 1.4rem;
+  margin: 1rem 0 2rem;
+  padding: 1rem 1.1rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+}
+
+.facts dt {
+  color: var(--text-dim);
+}
+
+.facts dd {
+  margin: 0;
+  color: var(--text);
+}
 .chart-figure {
   margin: 1.5rem 0 2rem;
   padding: 1rem 1.1rem 0.4rem;
@@ -2237,4 +2259,34 @@ h3 {
   fill: var(--iris);
   stroke: var(--bg-raised);
   stroke-width: 2;
+}
+
+/* Build/footprint facts (executable size, data directory, storage efficiency). */
+.facts {
+  display: grid;
+  grid-template-columns: minmax(8rem, max-content) 1fr;
+  gap: 0.15rem 1.25rem;
+  margin: 1rem 0 2rem;
+  padding: 0.9rem 1.1rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  color: var(--text);
+}
+
+/* Version-history rows that measure footprint, not latency. */
+.row-extra td {
+  background: color-mix(in srgb, var(--iris) 6%, transparent);
+}
+
+.row-extra td:first-child {
+  font-weight: 600;
 }

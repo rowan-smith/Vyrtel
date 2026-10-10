@@ -257,6 +257,55 @@ function readJson(rel) {
 const num = (n, digits = 2) =>
   typeof n === 'number' ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—';
 
+/** Human byte counts matching the harness' ByteFormat, e.g. 11.9 MB. */
+const fmtBytes = (b) => {
+  if (typeof b !== 'number' || b <= 0) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = b;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  const digits = unit === 0 ? 0 : value < 10 ? 2 : 1;
+  return `${value.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })} ${units[unit]}`;
+};
+
+const toMb = (b) => (typeof b === 'number' && b > 0 ? b / (1024 * 1024) : null);
+
+/** Build artefacts and storage footprint for the current run (below the chart). */
+function buildFacts(data) {
+  const build = data.build;
+  const storage = data.storage;
+  if (!build && !storage) {
+    return '';
+  }
+  const facts = [];
+  if (build?.executableBytes) {
+    facts.push(['Executable', `${fmtBytes(build.executableBytes)} (${escapeHtml(build.profile ?? 'release')})`]);
+  }
+  if (build?.dataDirBytes) {
+    facts.push(['Data directory', `${fmtBytes(build.dataDirBytes)} on disk after seeding`]);
+  }
+  if (storage?.eventCount) {
+    facts.push(['Events stored', `${num(storage.eventCount, 0)} events in ${num(storage.segmentCount, 0)} segments`]);
+    facts.push(['Bytes stored per event', `${num(storage.bytesStoredPerEvent, 2)} B`]);
+    if (typeof storage.compressionRatio === 'number' && storage.compressionRatio > 0) {
+      facts.push(['Compression', `${num(storage.compressionRatio, 2)}× (${fmtBytes(storage.rawBytes)} raw → ${fmtBytes(storage.storedBytes)} stored)`]);
+    }
+    if (typeof storage.indexOverhead === 'number' && storage.indexOverhead > 0) {
+      facts.push(['Index overhead', `${num(storage.indexOverhead * 100, 1)}% of segment bytes`]);
+    }
+  }
+  if (facts.length === 0) {
+    return '';
+  }
+  return (
+    `<h2 id="build-footprint">Build and footprint</h2>` +
+    `<dl class="facts">${facts.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${v}</dd>`).join('')}</dl>`
+  );
+}
+
 const escapeHtml = (s) =>
   String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -400,29 +449,45 @@ function versionHistory(snapshots) {
     return `${num(b.meanMs, b.meanMs < 1 ? 3 : b.meanMs < 100 ? 2 : 0)} ms`;
   };
 
-  const rows = order
-    .map((sample) => `<tr><td>${escapeHtml(sample.name)}</td>${maps.map((m) => `<td>${cell(m.get(sample.id))}</td>`).join('')}</tr>`)
-    .join('');
-  const table = `<table><thead><tr><th>Benchmark</th>${labels.map((l) => `<th>${escapeHtml(l)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>`;
+  // Headline metrics for the version charts: each returns { value, display } per snapshot.
+  const byId = (s, id) => s.benchmarks.find((x) => x.id === id);
+  const msCell = (b) => `${num(b.meanMs, b.meanMs < 1 ? 3 : b.meanMs < 100 ? 2 : 0)} ms`;
+  const throughput = (s, id) => {
+    const b = byId(s, id);
+    return b ? { value: b.value, display: `${num(b.value, 0)} ${b.unit}` } : null;
+  };
+  const latency = (s, id) => {
+    const b = byId(s, id);
+    return b ? { value: b.meanMs, display: msCell(b) } : null;
+  };
 
   const headline = [
-    { id: 'IngestBatch', label: 'Ingest NDJSON', better: 'higher' },
-    { id: 'IngestBatchJson', label: 'Ingest JSON', better: 'higher' },
-    { id: 'LogsLatest', label: 'Latest logs', better: 'lower' },
-    { id: 'LogsMessageContains', label: 'Full-text scan', better: 'lower' },
+    { label: 'Ingest NDJSON', better: 'higher', get: (s) => throughput(s, 'IngestBatch') },
+    { label: 'Ingest JSON', better: 'higher', get: (s) => throughput(s, 'IngestBatchJson') },
+    { label: 'Latest logs', better: 'lower', get: (s) => latency(s, 'LogsLatest') },
+    { label: 'Full-text scan', better: 'lower', get: (s) => latency(s, 'LogsMessageContains') },
+    {
+      label: 'Executable size',
+      better: 'lower',
+      get: (s) => {
+        const mb = toMb(s.build?.executableBytes);
+        return mb ? { value: mb, display: `${num(mb, 2)} MB` } : null;
+      },
+    },
+    {
+      label: 'Bytes stored per event',
+      better: 'lower',
+      get: (s) =>
+        s.storage?.eventCount ? { value: s.storage.bytesStoredPerEvent, display: `${num(s.storage.bytesStoredPerEvent, 2)} B` } : null,
+    },
   ];
 
   const figures = headline
-    .map(({ id, label, better }) => {
+    .map(({ label, better, get }) => {
       const points = snapshots
-        .map((s, i) => {
-          const b = maps[i].get(id);
-          if (!b) return null;
-          return {
-            label: s.label,
-            value: b.metric === 'throughput' ? b.value : b.meanMs,
-            display: cell(b),
-          };
+        .map((s) => {
+          const p = get(s);
+          return p ? { label: s.label, ...p } : null;
         })
         .filter(Boolean);
       if (points.length === 0) return '';
@@ -431,12 +496,36 @@ function versionHistory(snapshots) {
     })
     .join('');
 
+  // Extra rows in the comparison table that aren't benchmark rows.
+  const extras = [
+    { name: 'Executable size', display: (s) => fmtBytes(s.build?.executableBytes) },
+    { name: 'Data directory on disk', display: (s) => fmtBytes(s.build?.dataDirBytes) },
+    {
+      name: 'Bytes stored per event',
+      display: (s) => (s.storage?.eventCount ? `${num(s.storage.bytesStoredPerEvent, 2)} B` : '—'),
+    },
+    {
+      name: 'Compression ratio',
+      display: (s) => (s.storage?.compressionRatio ? `${num(s.storage.compressionRatio, 2)}×` : '—'),
+    },
+  ];
+
+  const extraRows = extras
+    .map((e) => `<tr class="row-extra"><td>${escapeHtml(e.name)}</td>${snapshots.map((s) => `<td>${e.display(s)}</td>`).join('')}</tr>`)
+    .join('');
+
+  const rows = `${order
+    .map((sample) => `<tr><td>${escapeHtml(sample.name)}</td>${maps.map((m) => `<td>${cell(m.get(sample.id))}</td>`).join('')}</tr>`)
+    .join('')}${extraRows}`;
+  const table = `<table><thead><tr><th>Benchmark</th>${labels.map((l) => `<th>${escapeHtml(l)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>`;
+
   return (
     `<h2 id="version-history">Version history</h2>` +
     `<p class="muted">A snapshot is captured for every released tag (<code>v*</code>), so progress is visible between versions. Older versions are on the left; each column in the table is a full benchmark run.</p>` +
     `${figures}${table}`
   );
 }
+
 
 /** Renders the benchmark rollup injected into docs/benchmarks.md from docs/benchmarks/results.json. */
 function benchmarkResults() {
@@ -528,7 +617,7 @@ function benchmarkResults() {
     })
     .join('');
 
-  return `<p class="muted">${meta}</p><p class="muted small">Measured on ${machine}.</p>${charts.join('')}${tables}${versionHistory(versionSnapshots())}`;
+  return `<p class="muted">${meta}</p><p class="muted small">Measured on ${machine}.</p>${buildFacts(data)}${charts.join('')}${tables}${versionHistory(versionSnapshots())}`;
 }
 
 function parseDocs() {

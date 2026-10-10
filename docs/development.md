@@ -125,6 +125,12 @@ dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short --label v
 dotnet run --project dotnet/Vyrtel.Profiling -c Release -- --duration 30 --warmup 3 --concurrency 4
 ```
 
+Both reports record what was built and how big it is on disk: the release binary size, the
+seeded dataset's data-directory footprint, and the server's own storage counters (bytes stored
+per event, compression ratio, index overhead) read from `GET /api/v1/system/storage` before the
+load starts. The site charts those across `v*` snapshots, so regressions in binary or dataset
+size show up next to the latency numbers.
+
 `.github/workflows/benchmark.yml` runs the benchmark on every `main` change (and on each `v*`
 tag, writing a `docs/benchmarks/versions/<tag>.json` snapshot) and commits the rollup rendered
 on the [benchmarks page](benchmarks.md), including the version-history comparison.

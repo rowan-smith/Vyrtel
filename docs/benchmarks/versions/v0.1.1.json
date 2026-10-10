@@ -7,6 +7,10 @@
   "dataset": {
     "events": 200000
   },
+  "build": {
+    "profile": "release",
+    "executableBytes": 11989504
+  },
   "hardware": {
     "os": "Microsoft Windows 10.0.26200",
     "architecture": "X64",

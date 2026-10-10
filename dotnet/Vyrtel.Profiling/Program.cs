@@ -45,6 +45,21 @@ else
 }
 
 var version = await TryGetVersion(api);
+
+// Snapshot the build and the on-disk footprint before the load test starts, so the numbers
+// describe the seeded dataset rather than the traffic generated below.
+var build = server.MeasureBuild();
+var storage = await api.GetStorageStatsAsync();
+Console.WriteLine($"executable: {build.ExecutableSize} ({build.Profile}) · data dir: {build.DataDirSize}");
+if (storage is null)
+{
+    Console.WriteLine("warning: could not read /api/v1/system/storage (older server build?)");
+}
+else
+{
+    Console.WriteLine($"storage: {storage.EventCount:N0} events, {storage.BytesStoredPerEvent:F2} bytes/event, {storage.SegmentCount} segments");
+}
+
 var context = new WorkloadContext(factory.SampleTraceId, factory.SampleTraceTargetId, metricName);
 var ops = WorkloadOperations.All(context);
 
@@ -87,7 +102,9 @@ var report = ProfileReportWriter.Build(
     run.TotalRequests,
     run.TotalFailures,
     operations,
-    hotspots);
+    hotspots,
+    build,
+    storage);
 
 ProfileReportWriter.Print(report);
 

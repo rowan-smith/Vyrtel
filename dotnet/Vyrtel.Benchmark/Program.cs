@@ -53,6 +53,20 @@ else
 
 var version = await TryGetVersion(api);
 
+// Snapshot the build and the on-disk footprint now, before the benchmark run, so the numbers
+// describe the seeded dataset rather than the traffic the benchmarks themselves generate.
+var build = server.MeasureBuild();
+var storage = await api.GetStorageStatsAsync();
+if (storage is null)
+{
+    Console.WriteLine("warning: could not read /api/v1/system/storage (older server build?)");
+}
+else
+{
+    Console.WriteLine($"storage: {storage.EventCount:N0} events, {storage.BytesStoredPerEvent:F2} bytes/event, {storage.SegmentCount} segments");
+}
+Console.WriteLine($"executable: {build.ExecutableSize} ({build.Profile}) · data dir: {build.DataDirSize}");
+
 Environment.SetEnvironmentVariable("VYRTEL_URL", server.BaseUrl.ToString().TrimEnd('/'));
 Environment.SetEnvironmentVariable("VYRTEL_SAMPLE_TRACE_ID", factory.SampleTraceId);
 Environment.SetEnvironmentVariable("VYRTEL_SAMPLE_TRACE_TARGET_ID", factory.SampleTraceTargetId);
@@ -72,7 +86,9 @@ var context = new RunContext(
     options.Events,
     server.Launched,
     server.ExecutablePath,
-    options.Label);
+    options.Label,
+    build,
+    storage);
 
 var output = Path.GetFullPath(options.Output);
 BenchmarkReportWriter.Write(summaries, context, output);

@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Vyrtel.Harness;
 
 namespace Vyrtel.Profiling;
 
@@ -19,7 +20,9 @@ public sealed record ProfilingReport(
     double RequestsPerSecond,
     string Machine,
     IReadOnlyList<OperationResult> Operations,
-    IReadOnlyList<FieldHotspot> Hotspots);
+    IReadOnlyList<FieldHotspot> Hotspots,
+    BuildInfo? Build = null,
+    StorageProfile? Storage = null);
 
 public sealed record OperationResult(
     string Name,
@@ -71,7 +74,9 @@ public static class ProfileReportWriter
         long totalRequests,
         long totalFailures,
         IReadOnlyList<OperationResult> operations,
-        IReadOnlyList<FieldHotspot> hotspots) =>
+        IReadOnlyList<FieldHotspot> hotspots,
+        BuildInfo? build = null,
+        StorageProfile? storage = null) =>
         new(
             DateTimeOffset.UtcNow,
             version,
@@ -85,13 +90,28 @@ public static class ProfileReportWriter
             totalRequests / Math.Max(measurementSeconds, 0.001),
             $"{RuntimeInformation.OSDescription} ({RuntimeInformation.OSArchitecture}), {Environment.ProcessorCount} logical cores",
             operations,
-            hotspots);
+            hotspots,
+            build,
+            storage);
 
     public static void Print(ProfilingReport report)
     {
         Console.WriteLine();
         Console.WriteLine($"profile: {report.TotalRequests:N0} requests in {report.MeasurementSeconds:F0}s measured " +
                           $"(~{report.RequestsPerSecond:N0}/s), {report.TotalFailures:N0} failures");
+        var build = report.Build;
+        if (build is not null && build.ExecutableBytes > 0)
+        {
+            Console.WriteLine($"executable: {build.ExecutableSize} ({build.Profile})");
+        }
+        if (build is not null && build.DataDirBytes > 0)
+        {
+            Console.WriteLine($"data directory: {build.DataDirSize} on disk after seeding");
+        }
+        if (report.Storage is { EventCount: > 0 } storage)
+        {
+            Console.WriteLine($"storage: {storage.EventCount:N0} events, {storage.BytesStoredPerEvent:F2} bytes/event, {storage.SegmentCount} segments");
+        }
         Console.WriteLine();
         Console.WriteLine($"  {"Operation",-42} {"count",7} {"p50",8} {"p90",8} {"p95",8} {"p99",8}");
         foreach (var op in report.Operations.OrderByDescending(o => o.Latency.P99))
@@ -204,6 +224,24 @@ public static class ProfileReportWriter
         sb.AppendLine($"- Load: {report.DurationSeconds:F0}s total ({report.WarmupSeconds:F0}s warmup + {report.MeasurementSeconds:F0}s measured), "
                       + $"{report.Concurrency} concurrent workers, {report.TotalRequests:N0} requests (~{report.RequestsPerSecond:N0}/s), {report.TotalFailures:N0} failures");
         sb.AppendLine($"- Machine: {report.Machine}");
+        var build = report.Build;
+        if (build is not null && build.ExecutableBytes > 0)
+        {
+            sb.AppendLine($"- Executable: {build.ExecutableSize} ({build.Profile})");
+        }
+        if (build is not null && build.DataDirBytes > 0)
+        {
+            sb.AppendLine($"- Data directory: {build.DataDirSize} on disk after seeding");
+        }
+        var storage = report.Storage;
+        if (storage is not null && storage.EventCount > 0)
+        {
+            sb.AppendLine(
+                $"- Storage: {storage.EventCount:N0} events in {storage.SegmentCount} segments · "
+                + $"{storage.BytesStoredPerEvent.ToString("F2", CultureInfo.InvariantCulture)} bytes/event · "
+                + $"{storage.CompressionRatio?.ToString("F2", CultureInfo.InvariantCulture) ?? "?"}x compression · "
+                + $"{(storage.IndexOverhead * 100)?.ToString("F1", CultureInfo.InvariantCulture) ?? "?"}% index overhead");
+        }
         sb.AppendLine();
 
         sb.AppendLine("## Latency by operation");

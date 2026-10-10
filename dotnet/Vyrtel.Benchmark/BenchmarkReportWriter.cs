@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using BenchmarkDotNet.Reports;
 using BenchmarkDotNet.Running;
+using Vyrtel.Harness;
 
 namespace Vyrtel.Benchmark;
 
@@ -16,7 +17,9 @@ public sealed record RunContext(
     int DatasetEvents,
     bool Launched,
     string? Executable,
-    string Label = "");
+    string Label = "",
+    BuildInfo? Build = null,
+    StorageProfile? Storage = null);
 
 public sealed record BenchmarkReport(
     DateTimeOffset GeneratedAt,
@@ -26,6 +29,8 @@ public sealed record BenchmarkReport(
     string Server,
     string ServerUrl,
     BenchmarkDataset Dataset,
+    BuildInfo? Build,
+    StorageProfile? Storage,
     HardwareInfo Hardware,
     IReadOnlyList<BenchmarkResult> Benchmarks);
 
@@ -111,6 +116,8 @@ public static class BenchmarkReportWriter
             Server: context.Launched ? "launched" : "external",
             ServerUrl: context.BaseUrl,
             Dataset: new BenchmarkDataset(context.DatasetEvents),
+            Build: context.Build,
+            Storage: context.Storage,
             Hardware: new HardwareInfo(
                 Os: RuntimeInformation.OSDescription,
                 Architecture: RuntimeInformation.OSArchitecture.ToString(),
@@ -142,6 +149,24 @@ public static class BenchmarkReportWriter
         sb.AppendLine($"- Dataset: {report.Dataset.Events:N0} seeded log events");
         sb.AppendLine($"- Machine: {report.Hardware.Os} ({report.Hardware.Architecture}), {report.Hardware.LogicalCores} logical cores");
         sb.AppendLine($"- Runtime: {report.Hardware.Runtime}");
+        var build = report.Build;
+        if (build is not null && build.ExecutableBytes > 0)
+        {
+            sb.AppendLine($"- Executable: {build.ExecutableSize} ({build.Profile})");
+        }
+        if (build is not null && build.DataDirBytes > 0)
+        {
+            sb.AppendLine($"- Data directory: {build.DataDirSize} on disk after seeding");
+        }
+        var storage = report.Storage;
+        if (storage is not null && storage.EventCount > 0)
+        {
+            sb.AppendLine(
+                $"- Storage: {storage.EventCount:N0} events in {storage.SegmentCount} segments · "
+                + $"{storage.BytesStoredPerEvent.ToString("F2", CultureInfo.InvariantCulture)} bytes/event · "
+                + $"{storage.CompressionRatio?.ToString("F2", CultureInfo.InvariantCulture) ?? "?"}x compression · "
+                + $"{(storage.IndexOverhead * 100)?.ToString("F1", CultureInfo.InvariantCulture) ?? "?"}% index overhead");
+        }
         sb.AppendLine();
 
         foreach (var group in report.Benchmarks.GroupBy(b => b.Group))

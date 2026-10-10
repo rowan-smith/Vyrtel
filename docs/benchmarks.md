@@ -11,6 +11,10 @@ it over HTTP with [BenchmarkDotNet](https://benchmarkdotnet.org/).
   milliseconds. Lower is better.
 - **Throughput** is the sustained rate: events per second for ingest, operations per second
   for queries.
+- **Executable** is the size of the release binary the server under test ran, and **Data
+  directory** the on-disk footprint of the seeded dataset.
+- **Storage** comes from the server itself: bytes stored per event, compression ratio and
+  index overhead for the seeded dataset.
 - Query timings include the cost of serializing the response over the loopback interface,
   not just server CPU.
 
@@ -26,6 +30,9 @@ it over HTTP with [BenchmarkDotNet](https://benchmarkdotnet.org/).
   lookup/search and metric series.
 - **Job**: BenchmarkDotNet `ShortRun` (`--job short`). CI uses the same command as a local
   run, so results are reproducible.
+- **Footprint**: right after seeding, the harness records the release binary size, the data
+  directory on disk and the server's own storage counters. Those are captured before the
+  benchmark traffic starts, so they describe the dataset rather than the load.
 
 Reproduce locally:
 

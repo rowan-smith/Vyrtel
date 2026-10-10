@@ -48,6 +48,39 @@ public sealed class ApiClient : IDisposable
 
     public Task<int> MetricNames() => Send("GET", "api/v1/metrics", content: null);
 
+    /// <summary>
+    /// Reads the server's own storage counters. Returns null when the endpoint is unavailable
+    /// (older builds), so a profile never blocks a benchmark run.
+    /// </summary>
+    public async Task<StorageProfile?> GetStorageStatsAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await GetString("api/v1/system/storage", ct));
+            var root = doc.RootElement;
+            static long GetInt(JsonElement r, string name) =>
+                r.TryGetProperty(name, out var v) && v.TryGetInt64(out var n) ? n : 0;
+            static double? GetDouble(JsonElement r, string name) =>
+                r.TryGetProperty(name, out var v) && v.TryGetDouble(out var n) ? n : null;
+            return new StorageProfile(
+                RawBytes: GetInt(root, "rawBytes"),
+                StoredBytes: GetInt(root, "storedBytes"),
+                EventCount: GetInt(root, "eventCount"),
+                SegmentCount: GetInt(root, "segmentCount"),
+                CompressionRatio: GetDouble(root, "compressionRatio"),
+                IndexOverhead: GetDouble(root, "indexOverhead"),
+                ReceivedBytes: GetInt(root, "receivedBytes"),
+                SegmentBytes: GetInt(root, "segmentBytes"),
+                IndexBytes: GetInt(root, "indexBytes"),
+                WalBytes: GetInt(root, "walBytes"),
+                MetadataBytes: GetInt(root, "metadataBytes"));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     public Task IngestNdjson(byte[] payload, CancellationToken ct = default) =>
         Ingest("api/v1/events", payload, "application/x-ndjson", ct);
 
