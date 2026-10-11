@@ -54,6 +54,11 @@ enum Command {
     Healthcheck,
     /// Print the effective configuration as TOML and exit.
     Config,
+    /// Check, reading only, whether this version can start the data
+    /// directory, what starting it would migrate, and which releases can
+    /// read it afterwards. Exit 0 if it can start, 1 (with the reason) if not.
+    /// Run the new version's binary on the stopped directory before upgrading.
+    CheckDataDir,
 }
 
 fn load_config(cli: &Cli) -> anyhow::Result<Config> {
@@ -212,6 +217,19 @@ fn main() -> ExitCode {
         Some(Command::Config) => {
             println!("{}", toml::to_string_pretty(&config).unwrap_or_default());
             return ExitCode::SUCCESS;
+        }
+        Some(Command::CheckDataDir) => {
+            let dir = &config.storage.path;
+            return match server::datadir::check(dir, cli.accept_incomplete_restore) {
+                Ok(checked) => {
+                    print!("{}", server::datadir::report(dir, &checked));
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("vyrtel: {e}");
+                    ExitCode::FAILURE
+                }
+            };
         }
         Some(Command::Serve) | None => {}
     }

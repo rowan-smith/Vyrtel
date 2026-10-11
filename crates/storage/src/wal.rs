@@ -26,6 +26,9 @@ use crate::error::{IoContext, Result};
 use crate::{fault, fsutil};
 
 pub const WAL_MAGIC: &[u8; 8] = b"VYRTWAL1";
+/// The WAL magic of Observer 0.1.0, Vyrtel's first release under its
+/// earlier name. Otherwise the same layout; not read by this build.
+pub const OBSERVER_WAL_MAGIC: &[u8; 8] = b"OBSVWAL1";
 pub const WAL_FORMAT_VERSION: u16 = 1;
 pub const RECORD_VERSION: u8 = 1;
 pub const HEADER_LEN: u64 = 24;
@@ -61,6 +64,9 @@ pub fn header_version(b: &[u8]) -> Option<u16> {
 pub fn check_wal_format(path: &Path) -> Result<()> {
     let mut hb = Vec::with_capacity(HEADER_LEN as usize);
     File::open(path).and_then(|f| f.take(HEADER_LEN).read_to_end(&mut hb)).ctx(path)?;
+    if hb.starts_with(OBSERVER_WAL_MAGIC) {
+        return Err(crate::StorageError::ObserverFormat { path: path.to_path_buf() });
+    }
     match header_version(&hb) {
         Some(found) if found != WAL_FORMAT_VERSION => Err(crate::StorageError::UnsupportedFormat {
             path: path.to_path_buf(),
@@ -304,6 +310,8 @@ pub struct WalReplay {
 pub enum ReplayError {
     Io(io::Error),
     BadHeader,
+    /// Observer 0.1.0 wrote this WAL ([`OBSERVER_WAL_MAGIC`]). Not damage.
+    Observer,
     /// The header or a checksummed record declares a version this build
     /// cannot read (`what` names which). Not damage: nothing is replayed.
     Unsupported {
@@ -326,6 +334,9 @@ pub fn replay(
     let mut hb = [0u8; HEADER_LEN as usize];
     if read_full(&mut r, &mut hb).map_err(ReplayError::Io)? < hb.len() {
         return Err(ReplayError::BadHeader);
+    }
+    if hb.starts_with(OBSERVER_WAL_MAGIC) {
+        return Err(ReplayError::Observer);
     }
     if let Some(found) = header_version(&hb)
         && found != WAL_FORMAT_VERSION

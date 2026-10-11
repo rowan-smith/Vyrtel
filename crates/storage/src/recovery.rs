@@ -301,6 +301,7 @@ pub fn recover(signal: Signal, dirs: &StreamDirs, seg_opts: &SegmentWriteOptions
             Err(ReplayError::Unsupported { what, found, supported }) => {
                 return Err(StorageError::UnsupportedFormat { path, what, found, supported });
             }
+            Err(ReplayError::Observer) => return Err(StorageError::ObserverFormat { path }),
             Err(ReplayError::BadHeader) => {
                 let reason = "WAL header is missing, truncated or has an unknown magic or version".to_string();
                 quarantine(dirs, signal, QuarantineKind::Wal, &path, reason, &mut report)?;
@@ -427,9 +428,12 @@ fn preserve_tail(
 /// Check, without changing anything, that every segment and WAL file under
 /// `data_dir` is in a format this build reads; fails with
 /// [`StorageError::UnsupportedFormat`] for the first one that is not.
-/// Reads only file headers and footers, so it is cheap enough to run
-/// before every start. Damaged files pass: recovery judges them. Missing
-/// directories pass too (a new data directory has none).
+/// Reads segment headers and footers, and each WAL's header and record
+/// prefixes (the WAL is replayed without decoding events), so it runs
+/// before every start: a newer record in one signal's WAL stops startup
+/// before recovery has changed any signal. Damaged files pass: recovery
+/// judges them. Missing directories pass too (a new data directory has
+/// none).
 pub fn check_formats(data_dir: &Path) -> Result<()> {
     for signal in Signal::ALL {
         let dirs = StreamDirs::new(data_dir, signal);
@@ -441,10 +445,44 @@ pub fn check_formats(data_dir: &Path) -> Result<()> {
         for (name, path) in list_if_exists(&dirs.wal)? {
             if parse_wal_file_name(&name).is_some() {
                 wal::check_wal_format(&path)?;
+                check_wal_records(&path)?;
             }
         }
     }
     Ok(())
+}
+
+/// Replay the WAL at `path` keeping nothing, to find a checksummed record
+/// or batch in a newer format the way recovery would. Only the codec
+/// version byte of each batch is read. A bad header or a damaged tail
+/// passes: recovery quarantines or truncates it.
+fn check_wal_records(path: &Path) -> Result<()> {
+    let mut newer_codec = None;
+    let result = wal::replay(path, |payload| match payload.first() {
+        Some(&v) if v != codec::CODEC_VERSION => {
+            newer_codec = Some(u16::from(v));
+            Err("unsupported event codec version")
+        }
+        Some(_) => Ok(()),
+        None => Err("undecodable batch"),
+    });
+    if let Some(found) = newer_codec {
+        let supported = codec::CODEC_VERSION.into();
+        return Err(StorageError::UnsupportedFormat {
+            path: path.to_path_buf(),
+            what: "event codec",
+            found,
+            supported,
+        });
+    }
+    match result {
+        Ok(_) | Err(ReplayError::BadHeader) => Ok(()),
+        Err(ReplayError::Unsupported { what, found, supported }) => {
+            Err(StorageError::UnsupportedFormat { path: path.to_path_buf(), what, found, supported })
+        }
+        Err(ReplayError::Observer) => Err(StorageError::ObserverFormat { path: path.to_path_buf() }),
+        Err(ReplayError::Io(source)) => Err(StorageError::Io { path: path.to_path_buf(), source }),
+    }
 }
 
 fn list_if_exists(dir: &Path) -> Result<Vec<(String, PathBuf)>> {

@@ -191,6 +191,9 @@ fn check_format(file: &File, path: &Path, file_len: u64) -> Result<()> {
     }
     let mut hb = [0u8; HEADER_LEN];
     read_exact_at(file, &mut hb, 0).ctx(path)?;
+    if hb.starts_with(OBSERVER_SEGMENT_MAGIC) {
+        return Err(StorageError::ObserverFormat { path: path.to_path_buf() });
+    }
     let mut fb = [0u8; FOOTER_LEN];
     read_exact_at(file, &mut fb, file_len - FOOTER_LEN as u64).ctx(path)?;
     // The footer is checked before its version, so this one is genuine.

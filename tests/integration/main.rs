@@ -14,6 +14,7 @@ mod live;
 mod shutdown;
 mod signals;
 mod storage_flows;
+mod upgrade;
 // Needs `--features fault-injection` (CI runs `--all-features`).
 #[cfg(feature = "fault-injection")]
 mod storage_faults;

@@ -12,7 +12,6 @@ use server::config::Config;
 
 use crate::common::*;
 
-const TRACE: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
 const PASSWORD: &str = "correct horse";
 
 /// Copy a directory tree, as `cp -a` or `tar` would.
@@ -57,32 +56,6 @@ fn secure(dir: &Path) -> Config {
     c
 }
 
-struct Admin<'a> {
-    s: &'a TestServer,
-    cookie: String,
-}
-
-impl Admin<'_> {
-    async fn login(s: &TestServer) -> Admin<'_> {
-        let r = s.post("/api/v1/auth/login", json!({"username": "admin", "password": PASSWORD})).await;
-        assert_eq!(r.status(), 200, "admin login");
-        let cookie = r.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
-        Admin { s, cookie }
-    }
-
-    async fn get(&self, path: &str) -> Value {
-        let r = self.s.client.get(self.s.u(path)).header("cookie", &self.cookie).send().await.unwrap();
-        assert_eq!(r.status(), 200, "GET {path}");
-        r.json().await.unwrap()
-    }
-
-    async fn post(&self, path: &str, body: Value) -> Value {
-        let r = self.s.client.post(self.s.u(path)).header("cookie", &self.cookie).json(&body).send().await.unwrap();
-        assert!(r.status().is_success(), "POST {path} → {}", r.status());
-        r.json().await.unwrap_or(Value::Null)
-    }
-}
-
 /// Ingest with an API key; returns the status code.
 async fn ingest_with(s: &TestServer, key: Option<&str>, path: &str, content_type: &str, body: String) -> u16 {
     let mut r = s.client.post(s.u(path)).header("content-type", content_type).body(body);
@@ -92,34 +65,6 @@ async fn ingest_with(s: &TestServer, key: Option<&str>, path: &str, content_type
     r.send().await.unwrap().status().as_u16()
 }
 
-/// The documented verification queries, as one comparable value.
-async fn verification(a: &Admin<'_>) -> Value {
-    let mut counts = json!({});
-    for signal in ["logs", "traces", "metrics"] {
-        counts[signal] = a.post(&format!("/api/v1/query/{signal}/count"), json!({"query": ""})).await["count"].clone();
-    }
-    let trace = a.get(&format!("/api/v1/traces/{TRACE}")).await;
-    let mut span_names: Vec<String> =
-        trace["spans"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap().to_string()).collect();
-    span_names.sort();
-    json!({
-        "counts": counts,
-        "errorLogs": a.post("/api/v1/query/logs", json!({"query": "level = Error", "limit": 100})).await["events"]
-            .as_array().unwrap().iter().map(|e| e["message"].clone()).collect::<Vec<_>>(),
-        "traceSpans": span_names,
-        "metricNames": a.get("/api/v1/metrics").await["metrics"],
-        "dashboards": a.get("/api/v1/dashboards").await,
-        "alerts": a.get("/api/v1/alerts").await["alerts"].as_array().unwrap().iter()
-            .map(|al| json!({"id": al["id"], "name": al["name"], "query": al["query"], "op": al["op"],
-                             "threshold": al["threshold"], "enabled": al["enabled"]}))
-            .collect::<Vec<_>>(),
-        "savedQueries": a.get("/api/v1/saved-queries").await,
-        "apiKeys": a.get("/api/v1/api-keys").await["apiKeys"].as_array().unwrap().iter()
-            .map(|k| json!({"id": k["id"], "name": k["name"], "prefix": k["prefix"], "scope": k["scope"]}))
-            .collect::<Vec<_>>(),
-    })
-}
-
 /// A stopped, populated instance: every signal (in both segments and the
 /// WAL), a dashboard with panels, an alert, a saved query, an active and a
 /// revoked API key, an admin session. Returns its directory, the active key,
@@ -127,7 +72,7 @@ async fn verification(a: &Admin<'_>) -> Value {
 async fn populated() -> (tempfile::TempDir, String, String, String, Value) {
     let dir = tempfile::tempdir().unwrap();
     let s = TestServer::launch(secure(dir.path()), None).await;
-    let a = Admin::login(&s).await;
+    let a = Admin::login(&s, PASSWORD).await;
     let key = a.post("/api/v1/api-keys", json!({"name": "producers"})).await["key"].as_str().unwrap().to_string();
     let old = a.post("/api/v1/api-keys", json!({"name": "retired"})).await;
     let r = s
@@ -201,7 +146,7 @@ async fn restored_backup_keeps_telemetry_configuration_and_authentication() {
     c.auth.admin_password = None;
     let s = TestServer::launch(c, Some(host)).await;
     // The stored admin user is used: no new password is generated.
-    let a = Admin::login(&s).await;
+    let a = Admin::login(&s, PASSWORD).await;
     assert_eq!(verification(&a).await, before, "every verification query answers as before the backup");
 
     // Authentication behaves as before: the restored key ingests, the
@@ -357,7 +302,7 @@ async fn missing_files_are_accepted_only_on_request() {
 
     // Accepted once: the clean shutdown recorded the directory as it is now.
     let s = TestServer::launch(secure(dir), None).await;
-    let a = Admin::login(&s).await;
+    let a = Admin::login(&s, PASSWORD).await;
     assert_eq!(a.get("/api/v1/dashboards").await, before["dashboards"]);
     s.stop().await;
 }
@@ -414,7 +359,7 @@ async fn a_directory_from_before_manifests_is_started_and_recorded() {
     // Data directories written by 0.1.1 and earlier have no manifest.
     std::fs::remove_file(dir.join("vyrtel.json")).unwrap();
     let s = TestServer::launch(secure(&dir), Some(backup)).await;
-    let a = Admin::login(&s).await;
+    let a = Admin::login(&s, PASSWORD).await;
     assert_eq!(a.get("/api/v1/dashboards").await["dashboards"][0]["name"], "Checkout");
     let m: Value = serde_json::from_slice(&std::fs::read(dir.join("vyrtel.json")).unwrap()).unwrap();
     assert_eq!(m, json!({"format": 1, "writtenBy": env!("CARGO_PKG_VERSION")}));

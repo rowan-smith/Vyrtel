@@ -12,3 +12,6 @@ E2E suite (`web/tests/e2e/`) and the documentation examples.
 
 All fixtures share trace id `4bf92f3577b34da6a3ce929d0e0e4736`, so logs and
 spans correlate.
+
+* `datadir/v*/` — data directories written by released versions, for the
+  upgrade tests ([datadir/README.md](datadir/README.md)).

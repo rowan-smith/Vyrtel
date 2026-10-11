@@ -283,7 +283,37 @@ talks HTTP to it:
   shutdown is `IncompleteShutdown` (phase `Inventory`, the I/O error, no
   host path, no partial inventory) and the next clean shutdown records it;
   a manifest write stalled past a 500 ms `shutdown_timeout` ends the
-  shutdown within 3 s, reported as the deadline in phase `Inventory`.
+  shutdown within 3 s, reported as the deadline in phase `Inventory`;
+* upgrades (`upgrade.rs`, REL-07), against the data directories the 0.1.0
+  (Observer) and 0.1.1 releases wrote (`tests/fixtures/datadir/`, restored
+  byte for byte from the sizes and SHA-256 sums in each `fixture.json`).
+  For 0.1.1:
+  `vyrtel check-data-dir` exits 0, changes nothing and prints the plan
+  (record `vyrtel.json`, readable by 0.1.1 and later afterwards); the
+  started server answers every verification query exactly as that release
+  did before it was stopped, its ingest key works, its revoked key and
+  anonymous requests get 401, nothing is quarantined, `vyrtel.json` is
+  recorded, and a second start migrates nothing. The Observer 0.1.0
+  directory is refused by `check-data-dir` and by `App::build` with what to
+  do, and nothing is quarantined (0.1.1 quarantined all 5 of its files;
+  storage unit tests `observer_files_stop_startup_and_are_kept`). A newer manifest format,
+  a newer metadata schema, and a checksummed WAL record in a newer format
+  in `metrics` while the `logs` WAL has a torn tail are each refused by
+  `check-data-dir` (exit 1) and by `App::build` with the supported versions
+  named and every file unchanged (before REL-07, the `logs` tail was
+  truncated first). With `--features fault-injection`, the fault points the
+  upgrade start reaches are recorded, then each one in turn fails once:
+  a failed `vyrtel.json` write leaves every telemetry file unchanged, and
+  in every case the next start completes the upgrade and answers the
+  verification queries as the release did. Unit tests: an interrupted
+  metadata migration rolls back only itself and the next open resumes
+  (`crates/metadata/src/lib.rs`); `datadir::plan`, the `check-data-dir`
+  report and the `RELEASES` table (`crates/server/src/datadir.rs`); WAL
+  record and codec versions are refused by `storage::check_formats` while a
+  bad-checksum unknown record is still a corrupt tail
+  (`crates/storage/tests/recovery.rs`). New fixtures are written by the
+  ignored `upgrade::make_datadir_fixture` test with a released binary
+  ([tests/fixtures/datadir/README.md](../tests/fixtures/datadir/README.md)).
 
 Fixtures shared with E2E live in `tests/fixtures/`.
 

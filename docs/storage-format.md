@@ -68,10 +68,13 @@ another process holds the lock leaves it in place. The metadata database is not
 listed: SQLite may still change its files as the connection closes.
 
 The manifest is replaced atomically (`vyrtel.json.tmp` written and
-fsynced, renamed over it, directory fsynced): once the metadata database
-and every stream directory exist on a start, with the inventory at a
-clean shutdown, and without it when a start removes it. Directories from
-before 0.1.2 have none and get one on their next start.
+fsynced, renamed over it, directory fsynced): on a start once the metadata
+database is migrated and every stream directory exists, and before storage
+recovery changes any telemetry file (see [Migrations](#migrations)); with
+the inventory at a clean shutdown; and without it when a start removes it.
+Directories from before 0.1.2 have none and get one on their next start.
+A leftover `vyrtel.json.tmp` from an interrupted write is ignored and
+replaced.
 
 ### Startup check
 
@@ -100,8 +103,9 @@ refused, with nothing changed, when:
   database before it writes either, so such a database was truncated or
   replaced;
 * a `*.seg` or `*.wal` file declares a format version this build does not
-  read (`storage::check_formats`: headers and footers only, see
-  [Versioning](#versioning));
+  read (`storage::check_formats`: segment headers and footers, WAL headers,
+  and the record version and batch codec version of every checksummed WAL
+  record, see [Versioning](#versioning));
 * `metadata/metadata.db` is not an SQLite database, or its
   `schema_migrations` holds a version above the newest migration. It is
   opened read-only and, when there is no `-wal` file, with SQLite's
@@ -532,6 +536,10 @@ much space they use.
 * Any change to these versions, the metadata schema or the directory layout
   also raises the manifest `format`, so an older build refuses a whole
   directory from a newer one before reading any data file.
+* Observer 0.1.0, Vyrtel's first release under its earlier name, wrote
+  the same layouts with the magic bytes `OBSVWAL1` (WAL), `OBSVSEG1` and
+  `OBSVSEND` (segment). Such a file is not read and not quarantined:
+  `check_formats` and recovery stop with `StorageError::ObserverFormat`.
 * An unknown version is a reason to stop, never to quarantine. Where a
   version is not covered by a checksum, it is believed only when nothing
   checksummed contradicts it:
@@ -544,6 +552,39 @@ much space they use.
   | WAL record version byte        | newer format if the record's CRC holds; otherwise a corrupt tail, as before                                  |
   | Batch codec version            | newer format (the record's CRC held)                                                                           |
 
-  Headers are checked before startup changes anything; record and codec
-  versions are found while that WAL is replayed, before it is truncated or
-  sealed.
+  All of these are checked before startup changes anything: the startup
+  check replays every WAL without decoding events, so a newer record in
+  one signal's WAL stops startup before any signal is recovered. Recovery
+  checks them again while replaying, before a WAL is truncated or sealed.
+
+### Migrations
+
+A start migrates a data directory in this order, after the read-only
+startup check passed and the lock is held (`App::build`; the steps are
+`datadir::plan`, and `vyrtel check-data-dir` prints them without running
+them):
+
+1. Metadata schema migrations (`crates/metadata/src/migrations.rs`), each
+   in its own SQLite transaction together with its `schema_migrations` row.
+   A failure or crash rolls back only the migration in progress; the next
+   open continues from the last committed version. A failure is
+   `MetadataError::Migration { version, at }`.
+2. `vyrtel.json` records the current `format` and `writtenBy`.
+3. Storage recovery and normal operation.
+
+Rules for future format changes, so that every step stays safe to
+interrupt and an older build never misreads the result:
+
+* Raise the manifest `format` and add a [`datadir::RELEASES`](../crates/server/src/datadir.rs)
+  row with the release. The format is recorded (step 2) before any
+  telemetry file is written in the new format, so after an interrupted
+  upgrade a build that reads only the old format refuses the directory.
+* Keep the decoder for every older version, so existing files never have
+  to be rewritten. A change that must rewrite files does it after step 2,
+  one file at a time through `tmp/` and an atomic rename, so a restart
+  finds each file either old or new and continues.
+* Append metadata migrations; never edit an applied one. A migration that
+  older releases cannot read is a format change for downgrade purposes:
+  `check-data-dir` reports which releases can read the result.
+* Add a fixture of the release's data directory
+  (`tests/fixtures/datadir/`), so every later build is tested against it.

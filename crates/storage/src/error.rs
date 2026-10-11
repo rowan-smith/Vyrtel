@@ -50,6 +50,16 @@ pub enum StorageError {
         path.display()
     )]
     UnsupportedFormat { path: PathBuf, what: &'static str, found: u16, supported: u16 },
+    /// A file written by Observer 0.1.0, Vyrtel's first release under its
+    /// earlier name, recognised by Observer's magic bytes (`OBSVWAL1`,
+    /// `OBSVSEG1`). This build does not read it. Not damage: recovery stops
+    /// instead of quarantining it, and leaves the file as it is.
+    #[error(
+        "{} was written by Observer 0.1.0 (Vyrtel's first release, under its earlier name), which this Vyrtel \
+         cannot read",
+        path.display()
+    )]
+    ObserverFormat { path: PathBuf },
     /// The ingest queue is full. Callers should retry later (HTTP 429).
     #[error("ingest queue is full")]
     QueueFull,

@@ -1,0 +1,132 @@
+{
+  "writtenBy": "observer 0.1.0",
+  "apiKey": "obs_096b96d38f0121a2f7ba96ea994c3ca7c811061a11841a2eed186e8f8c193421",
+  "revokedApiKey": "obs_9bebe29436ae48189530b25f77cb49b84eec1580d5275a6595594576e903367d",
+  "answers": {
+    "counts": {
+      "logs": 10,
+      "traces": 3,
+      "metrics": 6
+    },
+    "errorLogs": [
+      "Order 1002 rejected: inventory unavailable",
+      "Payment provider timed out",
+      "Reservation failed"
+    ],
+    "traceSpans": [
+      "POST /checkout",
+      "SELECT payments",
+      "charge card"
+    ],
+    "metricNames": [
+      {
+        "name": "http.server.duration"
+      },
+      {
+        "name": "http.server.requests"
+      },
+      {
+        "name": "process.memory.usage"
+      }
+    ],
+    "dashboards": {
+      "dashboards": [
+        {
+          "id": 1,
+          "name": "Checkout",
+          "description": "upgrade fixture",
+          "createdAt": 1791729905722,
+          "updatedAt": 1791729905728,
+          "panels": [
+            {
+              "id": 1,
+              "dashboardId": 1,
+              "title": "Errors",
+              "kind": "log_count",
+              "config": {
+                "query": "level = Error"
+              },
+              "position": 0,
+              "width": 6,
+              "height": 4
+            }
+          ]
+        }
+      ]
+    },
+    "alerts": [
+      {
+        "id": 1,
+        "name": "Error spike",
+        "query": "level = Error",
+        "op": ">",
+        "threshold": 5.0,
+        "enabled": false
+      }
+    ],
+    "savedQueries": {
+      "savedQueries": [
+        {
+          "id": 1,
+          "name": "Inventory warnings",
+          "signal": "logs",
+          "query": "level = Warning",
+          "createdAt": 1791729905744
+        }
+      ]
+    },
+    "apiKeys": [
+      {
+        "id": 1,
+        "name": "producers",
+        "prefix": "obs_096b96d3",
+        "scope": "ingest"
+      }
+    ]
+  },
+  "layout": {
+    "dirs": [
+      "indexes",
+      "metadata",
+      "segments",
+      "segments/logs",
+      "segments/metrics",
+      "segments/traces",
+      "tmp",
+      "wal",
+      "wal/logs",
+      "wal/metrics",
+      "wal/traces"
+    ],
+    "files": {
+      ".lock": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "metadata/metadata.db": {
+        "bytes": 90112,
+        "sha256": "8fe503fa939a00577f544800f16bcb14e9613972ac7b5c55b0be3ce54b56b9cf"
+      },
+      "segments/logs/000000000001.seg": {
+        "bytes": 1334,
+        "sha256": "b21424cab3e03b2a4b2fc9cf05a192a9e5a10db5f3a97a1b031b94273ccfbe2a"
+      },
+      "segments/traces/000000000001.seg": {
+        "bytes": 1020,
+        "sha256": "393b7bce2e204d3ce7e8d447d16a56bc27244e8110200abdf039e63747c03409"
+      },
+      "wal/logs/000000000002.wal": {
+        "bytes": 422,
+        "sha256": "925790a738ae05c50bbd14ef500ae3aa65dfcef77ca8d78d3c22ac90701f0014"
+      },
+      "wal/metrics/000000000001.wal": {
+        "bytes": 666,
+        "sha256": "e996353d8008d7922df11fddcb25cf8f6191a728df134cfcc656889632325307"
+      },
+      "wal/traces/000000000002.wal": {
+        "bytes": 24,
+        "sha256": "5a56418af64e8230f5405c8c1181f2fd499dcf611345a7ef9b90c59ba49a2590"
+      }
+    }
+  }
+}

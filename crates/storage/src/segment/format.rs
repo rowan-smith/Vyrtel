@@ -28,6 +28,9 @@ use crate::error::DecodeError;
 use crate::index::{Bitmap, Bloom, Hll};
 
 pub const SEGMENT_MAGIC: &[u8; 8] = b"VYRTSEG1";
+/// The segment magic of Observer 0.1.0, Vyrtel's first release under its
+/// earlier name. Otherwise the same layout; not read by this build.
+pub const OBSERVER_SEGMENT_MAGIC: &[u8; 8] = b"OBSVSEG1";
 pub const FOOTER_MAGIC: &[u8; 8] = b"VYRTSEND";
 pub const FORMAT_VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 32;

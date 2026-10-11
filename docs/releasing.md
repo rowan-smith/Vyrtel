@@ -125,6 +125,15 @@ release gate: performance sign-off for v0.1.2 is incomplete:
    cd web && npm install --package-lock-only && cd ..
    ```
 
+   In the same commit, add the release to `RELEASES` in
+   `crates/server/src/datadir.rs` with the data-directory format and
+   metadata schema it reads (`FORMAT`, `metadata::SCHEMA_VERSION`), and to
+   the downgrade table in
+   [configuration.md](configuration.md#downgrades). The unit test
+   `releases_are_listed_oldest_first_and_never_shrink` fails for a
+   non-prerelease version without a row, and for a row that does not match
+   the build.
+
 2. Check the tag before pushing it. This is the same check `preflight` runs:
 
    ```bash
@@ -174,6 +183,21 @@ release gate: performance sign-off for v0.1.2 is incomplete:
 
 For a prerelease, use a version with a suffix in all three files and the tag, for example
 `0.1.2-rc.1` / `v0.1.2-rc.1`.
+
+## After a release
+
+Add the new release's data-directory fixture, so every later build is
+tested against data it wrote (REL-07). On Linux or macOS, with the
+published binary for that platform:
+
+```bash
+VYRTEL_FIXTURE_BINARY=./vyrtel-0.1.2 VYRTEL_FIXTURE_OUT=tests/fixtures/datadir/v0.1.2 \
+  cargo test -p server --test integration -- --ignored --exact upgrade::make_datadir_fixture
+cargo test -p server --all-features --test integration upgrade
+```
+
+Commit `tests/fixtures/datadir/v0.1.2/` (see its
+[README](../tests/fixtures/datadir/README.md)).
 
 ## Rehearsing a release
 

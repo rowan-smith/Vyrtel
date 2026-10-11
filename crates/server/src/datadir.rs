@@ -21,6 +21,12 @@
 //! change. Missing parts are accepted only when the operator says so
 //! (`accept_incomplete`, the `--accept-incomplete-restore` flag), never
 //! because a file or directory happens to exist empty.
+//!
+//! Upgrades (REL-07): [`plan`] lists what a start would migrate in a
+//! directory that passed the check, and [`RELEASES`] which released
+//! versions can read it before and after, so `vyrtel check-data-dir` can
+//! tell an operator, before upgrading and without changing anything,
+//! whether this build reads their data and what going back would take.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -93,6 +99,139 @@ pub struct Checked {
     /// Problems that would have refused the start, accepted on request
     /// (`accept_incomplete`). Empty otherwise.
     pub accepted: Vec<String>,
+    /// The metadata schema version found: 0 without a database, or for an
+    /// empty one.
+    pub schema: i64,
+}
+
+/// A released Vyrtel version and the newest data-directory format and
+/// metadata schema it reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Release {
+    pub version: &'static str,
+    pub format: u32,
+    pub schema: i64,
+}
+
+/// Every Vyrtel release, oldest first. Add a row when cutting a release
+/// (see docs/releasing.md). 0.1.1 does not check formats: it would misread
+/// a directory in a newer format instead of refusing it. 0.1.0 was released
+/// as Observer, whose files Vyrtel does not read and which does not read
+/// Vyrtel's, so it is not listed.
+pub const RELEASES: &[Release] = &[Release { version: "0.1.1", format: 1, schema: 1 }];
+
+/// The oldest release that reads a directory in `format` with metadata
+/// `schema`; `None` if no release does (a format not released yet).
+pub fn readable_since(format: u32, schema: i64) -> Option<&'static str> {
+    RELEASES.iter().find(|r| r.format >= format && r.schema >= schema).map(|r| r.version)
+}
+
+/// One change a start makes to the formats in a data directory that
+/// passed [`check`], in the order it makes them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step {
+    /// A new directory is created in the current format.
+    Create,
+    /// A directory from before manifests gets one.
+    RecordFormat,
+    /// The metadata database is migrated, one transaction per version.
+    MigrateSchema { from: i64, to: i64 },
+}
+
+impl fmt::Display for Step {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Step::Create => write!(f, "create a new data directory in format {FORMAT}"),
+            Step::RecordFormat => {
+                write!(f, "record data-directory format {FORMAT} in {MANIFEST} (it has none: written before 0.1.2)")
+            }
+            Step::MigrateSchema { from: 0, to } => write!(f, "create the schema of {METADATA_DB} (version {to})"),
+            Step::MigrateSchema { from, to } => write!(f, "migrate {METADATA_DB} from schema version {from} to {to}"),
+        }
+    }
+}
+
+/// What starting a directory that passed [`check`] changes in its formats.
+/// Every step is safe to interrupt: the manifest is replaced atomically and
+/// each schema migration is one SQLite transaction, so a start after an
+/// interruption redoes what was left. Telemetry files are not rewritten.
+pub fn plan(checked: &Checked) -> Vec<Step> {
+    let mut steps = Vec::new();
+    match checked.layout {
+        Layout::New => return vec![Step::Create],
+        Layout::Unversioned => steps.push(Step::RecordFormat),
+        Layout::Versioned(_) => {}
+    }
+    if checked.schema < metadata::SCHEMA_VERSION {
+        steps.push(Step::MigrateSchema { from: checked.schema, to: metadata::SCHEMA_VERSION });
+    }
+    steps
+}
+
+/// The `vyrtel check-data-dir` report for a directory that passed [`check`]:
+/// what it holds, what starting this build would change, and which
+/// releases can read it before and after.
+pub fn report(dir: &Path, checked: &Checked) -> String {
+    let this = env!("CARGO_PKG_VERSION");
+    let schema = metadata::SCHEMA_VERSION;
+    let mut out = format!("data directory {}\n", dir.display());
+    let format = match &checked.layout {
+        Layout::New => None,
+        Layout::Unversioned => {
+            out.push_str(&format!("  {MANIFEST}: none (written before 0.1.2, or a first start that stopped early)\n"));
+            Some(1)
+        }
+        Layout::Versioned(m) => {
+            out.push_str(&format!("  {MANIFEST}: format {}, last written by Vyrtel {}\n", m.format, m.written_by));
+            out.push_str(match m.inventory {
+                Some(_) => "  clean-shutdown inventory: every WAL and segment file is present with its size\n",
+                None => "  clean-shutdown inventory: none, so missing WAL or segment files cannot be detected\n",
+            });
+            Some(m.format)
+        }
+    };
+    match (format, checked.schema) {
+        (None, _) => out.push_str("  new: none of Vyrtel's files yet\n"),
+        (Some(_), 0) => out.push_str(&format!("  {METADATA_DB}: no schema yet\n")),
+        (Some(_), v) => out.push_str(&format!("  {METADATA_DB}: schema version {v}\n")),
+    }
+    for problem in &checked.accepted {
+        out.push_str(&format!("  accepted with --accept-incomplete-restore: {problem}\n"));
+    }
+
+    out.push_str(&format!("Vyrtel {this} (format {FORMAT}, metadata schema up to {schema}) can start it.\n"));
+    let steps = plan(checked);
+    let Some(format) = format else {
+        out.push_str(&format!("Starting it will {}.\n", Step::Create));
+        return out;
+    };
+    if steps.is_empty() {
+        out.push_str("Starting it migrates nothing.\n");
+    } else {
+        out.push_str("Starting it will:\n");
+        for step in &steps {
+            out.push_str(&format!("  - {step}\n"));
+        }
+    }
+    match (readable_since(format, checked.schema), readable_since(FORMAT, schema)) {
+        (_, None) => out.push_str(
+            "Afterwards no released Vyrtel version can read it, only this build and later ones. To go back, \
+             restore the backup taken before the upgrade.\n",
+        ),
+        (Some(before), Some(after)) if before == after => out.push_str(&format!(
+            "Afterwards every release that reads it now (Vyrtel {after} and later) can still read it.\n"
+        )),
+        (_, Some(after)) => out.push_str(&format!(
+            "Afterwards only Vyrtel {after} and later can read it. To go back to an older version, restore the \
+             backup taken before the upgrade.\n"
+        )),
+    }
+    if steps.iter().any(|s| matches!(s, Step::MigrateSchema { .. })) {
+        out.push_str(
+            "Back up the stopped data directory first (see docs/configuration.md#upgrades-and-data-migrations).\n",
+        );
+    }
+    out
 }
 
 /// Why a data directory was not started. Every case is detected before
@@ -109,6 +248,9 @@ pub enum DataDirError {
     NewerFormat { dir: PathBuf, found: u32, written_by: String },
     /// A data file is in a format this build cannot read.
     UnsupportedFile { dir: PathBuf, file: String, what: &'static str, found: u16, supported: u16 },
+    /// Observer 0.1.0 (Vyrtel's first release, under its earlier name)
+    /// wrote the telemetry files, in a format no Vyrtel release reads.
+    Observer { dir: PathBuf, file: String },
     /// The metadata database was migrated by a newer Vyrtel.
     NewerMetadata { dir: PathBuf, found: i64 },
     /// The metadata database cannot be read (not SQLite, damaged).
@@ -149,6 +291,14 @@ impl fmt::Display for DataDirError {
                 "data directory {} cannot be read by Vyrtel {this}: {file} uses {what} version {found}, and this \
                  version reads only {supported}. {NOTHING_CHANGED}. Start it with the Vyrtel version that wrote \
                  it, or newer ({SEE})",
+                dir.display()
+            ),
+            DataDirError::Observer { dir, file } => write!(
+                f,
+                "data directory {} was written by Observer 0.1.0, Vyrtel's first release under its earlier name \
+                 ({file} is in Observer's file format), and Vyrtel {this} cannot read its telemetry. \
+                 {NOTHING_CHANGED}. Keep running Observer 0.1.0 on it, or start Vyrtel on a new data directory \
+                 (see docs/configuration.md#upgrades-and-data-migrations)",
                 dir.display()
             ),
             DataDirError::NewerMetadata { dir, found } => write!(
@@ -207,7 +357,7 @@ fn required() -> Vec<String> {
 /// after a crash.
 pub fn check(dir: &Path, accept_incomplete: bool) -> Result<Checked, DataDirError> {
     let unreadable = |e: std::io::Error| DataDirError::Unreadable { dir: dir.to_path_buf(), reason: e.to_string() };
-    let new = Checked { layout: Layout::New, accepted: Vec::new() };
+    let new = Checked { layout: Layout::New, accepted: Vec::new(), schema: 0 };
     if !dir.exists() {
         return Ok(new);
     }
@@ -264,12 +414,16 @@ pub fn check(dir: &Path, accept_incomplete: bool) -> Result<Checked, DataDirErro
         StorageError::UnsupportedFormat { path, what, found, supported } => {
             DataDirError::UnsupportedFile { dir: dir.to_path_buf(), file: relative(dir, &path), what, found, supported }
         }
+        StorageError::ObserverFormat { path } => {
+            DataDirError::Observer { dir: dir.to_path_buf(), file: relative(dir, &path) }
+        }
         e => DataDirError::Unreadable { dir: dir.to_path_buf(), reason: e.to_string() },
     })?;
 
     let db = dir.join(METADATA_DB);
+    let mut schema = 0;
     if db.exists() {
-        match metadata::Metadata::inspect(&db) {
+        schema = match metadata::Metadata::inspect(&db) {
             Ok(found) if found > metadata::SCHEMA_VERSION => {
                 return Err(DataDirError::NewerMetadata { dir: dir.to_path_buf(), found });
             }
@@ -278,16 +432,17 @@ pub fn check(dir: &Path, accept_incomplete: bool) -> Result<Checked, DataDirErro
             // replaced: its dashboards, alerts, users and keys are gone.
             Ok(0) if matches!(layout, Layout::Versioned(_)) || has_telemetry(dir).map_err(unreadable)? => {
                 problems.push(format!("{METADATA_DB} is empty (it has no schema)"));
+                0
             }
-            Ok(_) => {}
+            Ok(found) => found,
             Err(e) => return Err(DataDirError::BadMetadata { dir: dir.to_path_buf(), reason: e.to_string() }),
-        }
+        };
     }
 
     if !problems.is_empty() && !accept_incomplete {
         return Err(DataDirError::Incomplete { dir: dir.to_path_buf(), problems });
     }
-    Ok(Checked { layout, accepted: problems })
+    Ok(Checked { layout, accepted: problems, schema })
 }
 
 fn read_manifest(dir: &Path, bytes: &[u8]) -> Result<Manifest, DataDirError> {
@@ -643,5 +798,135 @@ mod tests {
         std::fs::write(d.path().join(METADATA_DB), b"definitely not sqlite, but long enough to look like a page")
             .unwrap();
         assert!(matches!(check(d.path(), false), Err(DataDirError::BadMetadata { .. })));
+    }
+
+    #[test]
+    fn releases_are_listed_oldest_first_and_never_shrink() {
+        let key = |v: &str| v.split('.').map(|n| n.parse::<u64>().unwrap()).collect::<Vec<_>>();
+        for pair in RELEASES.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            assert!(key(a.version) < key(b.version), "{a:?} before {b:?}");
+            assert!(a.format <= b.format && a.schema <= b.schema, "{a:?} reads more than {b:?}");
+        }
+        let last = RELEASES.last().unwrap();
+        assert!(last.format <= FORMAT && last.schema <= metadata::SCHEMA_VERSION, "{last:?}");
+        // The version bump of a release adds its row (docs/releasing.md), and
+        // the row says what the build reads. Prereleases need none.
+        let this = env!("CARGO_PKG_VERSION");
+        if !this.contains('-') {
+            let r = RELEASES.iter().find(|r| r.version == this);
+            let r = r.unwrap_or_else(|| panic!("add Vyrtel {this} to datadir::RELEASES (see docs/releasing.md)"));
+            assert_eq!((r.format, r.schema), (FORMAT, metadata::SCHEMA_VERSION), "RELEASES row for {this}");
+        }
+        assert_eq!(readable_since(1, 1), Some("0.1.1"));
+        assert_eq!(readable_since(FORMAT + 1, 1), None);
+        assert_eq!(readable_since(1, metadata::SCHEMA_VERSION + 1), None);
+    }
+
+    fn checked(dir: &Path) -> Checked {
+        check(dir, false).unwrap()
+    }
+
+    #[test]
+    fn plans_name_every_migration_a_start_makes() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(plan(&checked(d.path())), [Step::Create]);
+
+        // A first start interrupted before the database had a schema.
+        prepare(d.path()).unwrap();
+        let c = checked(d.path());
+        assert_eq!((c.layout.clone(), c.schema), (Layout::Unversioned, 0));
+        assert_eq!(plan(&c), [Step::RecordFormat, Step::MigrateSchema { from: 0, to: metadata::SCHEMA_VERSION }]);
+
+        // A directory from 0.1.1: only the manifest is new.
+        complete(d.path());
+        let c = checked(d.path());
+        assert_eq!(c.schema, metadata::SCHEMA_VERSION);
+        assert_eq!(plan(&c), [Step::RecordFormat]);
+        assert_eq!(
+            Step::RecordFormat.to_string(),
+            "record data-directory format 1 in vyrtel.json (it has none: written before 0.1.2)"
+        );
+
+        // A current directory: nothing to do.
+        record(d.path(), &Layout::Unversioned).unwrap();
+        assert!(plan(&checked(d.path())).is_empty());
+
+        // An older schema (not reachable with one migration, so built by hand).
+        let older = Checked { schema: 1, ..checked(d.path()) };
+        let step = Step::MigrateSchema { from: 1, to: 2 };
+        assert_eq!(step.to_string(), "migrate metadata/metadata.db from schema version 1 to 2");
+        assert_eq!(plan(&older).len(), usize::from(metadata::SCHEMA_VERSION > 1));
+    }
+
+    #[test]
+    fn the_report_says_what_changes_and_who_can_read_it_afterwards() {
+        let this = env!("CARGO_PKG_VERSION");
+        let d = tempfile::tempdir().unwrap();
+        let text = report(d.path(), &checked(d.path()));
+        assert!(text.contains("  new: none of Vyrtel's files yet\n"), "{text}");
+        assert!(
+            text.ends_with(&format!(
+                "Vyrtel {this} (format 1, metadata schema up to 1) can start it.\nStarting it will create a new data \
+             directory in format 1.\n"
+            )),
+            "{text}"
+        );
+
+        complete(d.path());
+        let text = report(d.path(), &checked(d.path()));
+        let expected = format!(
+            "  vyrtel.json: none (written before 0.1.2, or a first start that stopped early)\n  \
+             metadata/metadata.db: schema version 1\nVyrtel {this} (format 1, metadata schema up to 1) can start \
+             it.\nStarting it will:\n  - record data-directory format 1 in vyrtel.json (it has none: written \
+             before 0.1.2)\nAfterwards every release that reads it now (Vyrtel 0.1.1 and later) can still read \
+             it.\n"
+        );
+        assert!(text.ends_with(&expected), "{text}");
+        assert!(!text.contains("Back up"), "nothing is migrated that a backup would undo: {text}");
+
+        std::fs::write(d.path().join("wal/logs/000000000003.wal"), [0u8; 40]).unwrap();
+        record_stopped(d.path()).unwrap();
+        let text = report(d.path(), &checked(d.path()));
+        assert!(text.contains(&format!("  vyrtel.json: format 1, last written by Vyrtel {this}\n")), "{text}");
+        assert!(text.contains("  clean-shutdown inventory: every WAL and segment file is present with its size\n"));
+        assert!(text.contains("Starting it migrates nothing.\n"), "{text}");
+
+        std::fs::remove_file(d.path().join("wal/logs/000000000003.wal")).unwrap();
+        let c = check(d.path(), true).unwrap();
+        let text = report(d.path(), &c);
+        assert!(
+            text.contains("  accepted with --accept-incomplete-restore: wal/logs/000000000003.wal is missing\n"),
+            "{text}"
+        );
+
+        // A schema migration asks for a backup first.
+        let d = tempfile::tempdir().unwrap();
+        prepare(d.path()).unwrap();
+        let text = report(d.path(), &checked(d.path()));
+        assert!(text.contains("  metadata/metadata.db: no schema yet\n"), "{text}");
+        assert!(text.contains("  - create the schema of metadata/metadata.db (version 1)\n"), "{text}");
+        assert!(text.ends_with(
+            "Back up the stopped data directory first (see docs/configuration.md#upgrades-and-data-migrations).\n"
+        ));
+    }
+
+    #[test]
+    fn observer_data_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        prepare(d.path()).unwrap();
+        std::fs::create_dir_all(d.path().join("metadata")).unwrap();
+        drop(metadata::Metadata::open(&d.path().join(METADATA_DB)).unwrap());
+        let mut header = storage::wal::OBSERVER_WAL_MAGIC.to_vec();
+        header.resize(storage::wal::HEADER_LEN as usize, 0);
+        std::fs::write(d.path().join("wal/traces/000000000001.wal"), header).unwrap();
+        let e = check(d.path(), true).unwrap_err();
+        assert!(matches!(&e, DataDirError::Observer { file, .. } if file == "wal/traces/000000000001.wal"), "{e:?}");
+        let text = e.to_string();
+        assert!(
+            text.contains(" was written by Observer 0.1.0, Vyrtel's first release under its earlier name"),
+            "{text}"
+        );
+        assert!(text.contains("Keep running Observer 0.1.0 on it, or start Vyrtel on a new data directory"), "{text}");
     }
 }
