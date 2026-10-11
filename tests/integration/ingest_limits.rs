@@ -203,12 +203,65 @@ async fn oversized_content_length_is_rejected_before_reading() {
     let mut r = RawRequest::open(&s, "/v1/logs", &[("Content-Type", "application/x-protobuf")], 100 << 20).await;
     assert_eq!(r.status_line(Duration::from_secs(10)).await, Some(413));
     wait_until("slot freed", || ingest_in_flight(&s) == 0).await;
-    // A client that sends the whole oversized body reads the 413 too, and
-    // its next request (on a new connection) succeeds.
+    s.stop().await;
+}
+
+// A client that keeps sending a body far over the limit reads the 413, not
+// a broken pipe or reset: the server reads the rest of the upload to its
+// end before closing. Covers each point where an upload is cut off: from
+// its Content-Length, mid-read without one (chunked), and on the wire limit
+// for gzip. Each time the client's next request succeeds.
+#[tokio::test(flavor = "multi_thread")]
+async fn large_rejected_uploads_receive_the_413() {
+    let s = server().await;
     let big = vec![b' '; 8 << 20];
-    assert_too_large(post(&s, "/api/v1/events", "application/x-ndjson", None, big).await, "8 MB upload").await;
+    let r = post(&s, "/api/v1/events", "application/x-ndjson", None, big.clone()).await;
+    assert_too_large(r, "8 MB with Content-Length").await;
+    assert_eq!(ingest_ndjson_ok(&s).await, 200);
+
+    // Pseudo-random bytes barely compress: the gzip body passes the limit
+    // on the wire with megabytes still to come.
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let noise: Vec<u8> = (0..8 << 20)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    let r = post(&s, "/api/v1/events", "application/x-ndjson", Some("gzip"), gzip(&noise)).await;
+    assert_too_large(r, "8 MB gzip").await;
+    assert_eq!(ingest_ndjson_ok(&s).await, 200);
+
+    let (status, response) = send_chunked(&s, &big).await;
+    assert_eq!(status, 413, "{response}");
+    assert!(response.contains("payload_too_large"), "{response}");
     assert_eq!(ingest_ndjson_ok(&s).await, 200);
     s.stop().await;
+}
+
+/// POST `body` with `Transfer-Encoding: chunked`, writing all of it before
+/// reading the response, as a client unaware of the limit would. Panics if
+/// the server breaks the connection instead.
+async fn send_chunked(s: &TestServer, body: &[u8]) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = s.url.trim_start_matches("http://");
+    let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let head = format!(
+        "POST /api/v1/events HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\n\r\n"
+    );
+    tcp.write_all(head.as_bytes()).await.unwrap();
+    for chunk in body.chunks(64 << 10) {
+        tcp.write_all(format!("{:x}\r\n", chunk.len()).as_bytes()).await.expect("server kept reading");
+        tcp.write_all(chunk).await.expect("server kept reading");
+        tcp.write_all(b"\r\n").await.expect("server kept reading");
+    }
+    tcp.write_all(b"0\r\n\r\n").await.expect("server kept reading");
+    let mut buf = Vec::new();
+    tcp.read_to_end(&mut buf).await.expect("response read without a reset");
+    let text = String::from_utf8_lossy(&buf).to_string();
+    (text.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0), text)
 }
 
 // The compressed bytes count against the limit too: empty gzip members

@@ -114,27 +114,22 @@ pub fn admit(state: &AppState, body: Body) -> ApiResult<(IngestPermit, Body)> {
 /// Read and drop the unread rest of a rejected body (all of it after a
 /// 429; what follows the point of failure after a 413 or a bad gzip
 /// stream), one chunk at a time, while the response goes out. Closing the
-/// connection with the upload unread makes many clients report a reset
-/// instead of the response. Bounded in bytes (`ingest.max_request_size` of
-/// wire bytes), time, concurrency and number of tasks; past any bound the
-/// body is dropped and the connection closes.
+/// connection with the upload unread makes the peer's kernel reset it, and
+/// the client then reports a broken pipe or reset instead of the response.
+/// The body is read to its end, never buffered: not bounded in bytes (the
+/// rest of a 413 body is by definition over `ingest.max_request_size`), but
+/// in time, concurrency and number of tasks; past any bound the body is
+/// dropped and the connection closes.
 fn discard<S, E>(state: &AppState, mut data: S)
 where
     S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
 {
     let Ok(pending) = state.discard_pending.clone().try_acquire_owned() else { return };
     let slots = state.discard_permits.clone();
-    let limit = state.config.ingest.max_request_size.0 as usize;
     tokio::spawn(tokio::time::timeout(DISCARD_TIMEOUT, async move {
         let _pending = pending;
         let Ok(_slot) = slots.acquire_owned().await else { return };
-        let mut read = 0;
-        while let Some(Ok(chunk)) = data.next().await {
-            read += chunk.len();
-            if read > limit {
-                break;
-            }
-        }
+        while let Some(Ok(_)) = data.next().await {}
     }));
 }
 
@@ -180,8 +175,8 @@ pub async fn read_body(
 ) -> ApiResult<Bytes> {
     let limit = state.config.ingest.max_request_size.0 as usize;
     let declared = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()?.parse::<u64>().ok());
-    // Fails once, on the chunk that crosses the limit; later chunks pass so
-    // `discard` can still drain them.
+    // Fails on the chunk that crosses the limit. `discard` drains the raw
+    // body underneath, never this stream, so the drain is not cut short.
     let mut wire = 0usize;
     let data = body.into_data_stream().map(move |chunk| {
         let chunk = chunk.map_err(io::Error::other)?;
@@ -195,7 +190,7 @@ pub async fn read_body(
     let mut reader = StreamReader::new(data);
     let read = match encoding {
         BodyEncoding::Identity if declared.is_some_and(|n| n > limit as u64) => {
-            discard(state, reader.into_inner());
+            discard(state, reader.into_inner().into_inner());
             Err(ReadError::TooLarge)
         }
         BodyEncoding::Identity => {
@@ -203,7 +198,7 @@ pub async fn read_body(
             let hint = declared.map_or(READ_CHUNK, |n| n as usize);
             let read = read_limited(&mut reader, limit, hint).await;
             if read.is_err() {
-                discard(state, reader.into_inner());
+                discard(state, reader.into_inner().into_inner());
             }
             read
         }
@@ -212,7 +207,7 @@ pub async fn read_body(
             decoder.multiple_members(true);
             let read = read_limited(&mut decoder, limit, READ_CHUNK).await;
             if read.is_err() {
-                discard(state, decoder.into_inner().into_inner());
+                discard(state, decoder.into_inner().into_inner().into_inner());
             }
             read
         }

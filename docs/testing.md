@@ -149,7 +149,9 @@ talks HTTP to it:
   limit and limit+1 bytes on native JSON, NDJSON, OTLP JSON and OTLP
   protobuf, plain and gzip (only the first two stored); a gzip bomb gets 413
   while its upload is still in progress; an oversized `Content-Length` gets
-  413 before the body is read; empty gzip members cannot exceed the limit on
+  413 before the body is read; clients that keep sending 8 MB against the
+  64 KB limit (with `Content-Length`, chunked, and gzip past the wire limit)
+  read the 413, not a broken pipe, and their next request succeeds; empty gzip members cannot exceed the limit on
   the wire; truncated, corrupt and trailing-garbage gzip get
   `invalid_encoding`, unsupported encodings a structured 415; concatenated
   members are all stored; rejected native batches (malformed final record,

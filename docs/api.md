@@ -170,12 +170,11 @@ Content-Type: application/json
 {"error":{"code":"rate_limited","message":"too many concurrent ingest requests; retry shortly"}}
 ```
 
-The server then reads and discards the unread body (up to
-`max_request_size`, for at most 10 s, never buffering it) so that clients
-still uploading receive this response instead of a reset connection. At
-most 32 bodies are read at a time and at most 256 are kept waiting; beyond
-that, or past the size or time bound, the server drops the body and closes
-the connection. Treat a connection reset like a 429. `discarding` in
+The server then reads and discards the unread body to its end (for at
+most 10 s, never buffering it) so that clients still uploading receive this
+response instead of a reset connection or broken pipe. At most 32 bodies
+are read at a time and at most 256 are kept waiting; beyond that, or past
+the time bound, the server drops the body and closes the connection. Treat a connection reset like a 429. `discarding` in
 `GET /api/v1/system/info` shows how many rejected bodies are being kept.
 
 ### Request size and encoding
@@ -199,9 +198,10 @@ the limit is accepted; one byte more is rejected.
   member is decoded. A truncated stream, a CRC mismatch, anything other than
   gzip after the last member, or an empty body labelled gzip gets
   `400 invalid_encoding` with the decoder's reason.
-* After a 413 or `invalid_encoding`, the unread rest of the upload is
-  discarded within the same bounds as after a 429 (below), so a client still
-  sending receives the error rather than a reset connection. These responses
+* After a 413 or `invalid_encoding`, the unread rest of the upload, however
+  large, is read and discarded within the same bounds as after a 429
+  (above), so a client still sending receives the error rather than a reset
+  connection or broken pipe. These responses
   carry `Connection: close`; send the next request on a new connection (HTTP
   clients do this automatically).
 * A rejected request stores nothing. The whole body is read and decoded
