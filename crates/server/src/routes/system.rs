@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
-use storage::{RecoveryReport, StreamStats};
+use storage::{RecoveryReport, StorageFault, StreamStats};
 use telemetry::Signal;
 
 use crate::error::ApiResult;
@@ -17,17 +17,45 @@ pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }
 
-/// Ready when every storage stream is healthy. Unauthenticated, so it
-/// reports only a status, never error details.
+/// Ready when the data directory accepts writes and no signal's ingest
+/// path (WAL, sealing) is failing. Unauthenticated, so it reports which
+/// signals are affected but never reasons or paths; those are in
+/// `/api/v1/system/storage`.
 pub async fn ready(State(state): State<SharedState>) -> Response {
-    let stats = state.storage.stats();
-    let degraded: Vec<&str> =
-        Signal::ALL.iter().filter(|s| stats.get(**s).last_error.is_some()).map(|s| s.as_str()).collect();
+    let st = state.clone();
+    let Ok((stats, probe)) =
+        tokio::task::spawn_blocking(move || (st.storage.stats(), st.storage.probe_writable())).await
+    else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "status": "degraded" }))).into_response();
+    };
+    let writable = probe.is_ok();
+    let degraded: Vec<&str> = Signal::ALL
+        .iter()
+        .filter(|s| !writable || stats.get(**s).ingest_fault().is_some())
+        .map(|s| s.as_str())
+        .collect();
     if degraded.is_empty() {
-        Json(json!({ "status": "ready" })).into_response()
+        Json(json!({ "status": "ready", "storageWritable": true })).into_response()
     } else {
-        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "status": "degraded", "signals": degraded }))).into_response()
+        let body = json!({ "status": "degraded", "storageWritable": writable, "signals": degraded });
+        (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response()
     }
+}
+
+/// A write fault as reported by the API. `path` is relative to the data
+/// directory and `message` is the OS error text, so neither discloses host
+/// paths or configuration.
+fn fault_json(f: &StorageFault) -> Value {
+    json!({
+        "area": f.area().as_str(),
+        "operation": f.op.as_str(),
+        "reason": f.reason.as_str(),
+        "path": f.path,
+        "message": f.message,
+        "firstSeen": f.first_seen,
+        "lastSeen": f.last_seen,
+        "occurrences": f.occurrences,
+    })
 }
 
 fn stream_json(s: &StreamStats) -> Value {
@@ -49,7 +77,9 @@ fn stream_json(s: &StreamStats) -> Value {
         "rejectedBatches": s.rejected_batches,
         "oldest": s.oldest,
         "newest": s.newest,
-        "healthy": s.last_error.is_none(),
+        "healthy": s.faults.is_empty(),
+        "ingestHealthy": s.ingest_fault().is_none(),
+        "faults": s.faults.iter().map(fault_json).collect::<Vec<_>>(),
         "recovery": recovery_json(&s.recovery),
     })
 }
@@ -86,7 +116,8 @@ fn metadata_bytes(state: &SharedState) -> u64 {
 
 pub async fn storage_stats(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
     let st = state.clone();
-    let (stats, meta) = state.blocking(move || Ok((st.storage.stats(), metadata_bytes(&st)))).await?;
+    let (stats, meta, probe) =
+        state.blocking(move || Ok((st.storage.stats(), metadata_bytes(&st), st.storage.probe_writable()))).await?;
     let all = [&stats.logs, &stats.traces, &stats.metrics];
     let sum = |f: fn(&StreamStats) -> u64| all.iter().map(|s| f(s)).sum::<u64>();
     let raw_sealed = sum(|s| s.segment_raw_bytes);
@@ -107,6 +138,7 @@ pub async fn storage_stats(State(state): State<SharedState>) -> ApiResult<Json<V
         "compressionRatio": ratio(raw_sealed, data + index),
         "indexOverhead": (data > 0).then(|| ((index as f64 / data as f64) * 1000.0).round() / 1000.0),
         "receivedBytes": state.received_bytes.load(Ordering::Relaxed),
+        "writeProbe": { "writable": probe.is_ok(), "fault": probe.err().as_ref().map(fault_json) },
         "signals": {
             "logs": stream_json(&stats.logs),
             "traces": stream_json(&stats.traces),

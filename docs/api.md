@@ -24,6 +24,7 @@ Every error has the same shape:
 | 422 | `query_too_expensive` | the query would read more than `query.max_scan_bytes` |
 | 429 | `rate_limited` | every ingest slot busy (`ingest.max_concurrent`) or the ingest queue full — retry after `Retry-After` seconds ([details](#ingest-limits-and-retries)) |
 | 503 | `unavailable` | storage unavailable / too many concurrent queries |
+| 503 | `storage_write_failed` | storage could not write the request (`reason`: `noSpace`, `permissionDenied`, `readOnly`, `shortWrite`, `ioError` or `other`); nothing in it was stored ([details](#status-codes-and-retries)) |
 | 504 | `query_timeout` | the query exceeded `query.timeout` |
 | 500 | `internal`, `storage_error` | details are logged server-side, never returned |
 
@@ -246,6 +247,7 @@ done
 | 413 | `payload_too_large` | batch has more events than `queue_capacity` | no — split the batch |
 | 429 | `rate_limited` | submission: the signal's queue is full | yes, after `Retry-After` |
 | 503 | `unavailable` | no acknowledgement within `ack_timeout`, or storage stopping | yes, after `Retry-After`; the batch may already be stored |
+| 503 | `storage_write_failed` | the WAL write or its fsync failed, or sealing is failing (full disk, read-only or inaccessible data directory) | yes, with backoff; nothing in the request was stored. Fix storage ([what to do](configuration.md#storage-failures)) |
 
 Batches are all-or-nothing, so retrying a request rejected with 429 cannot
 duplicate events. The OpenTelemetry SDKs and Collector already retry 429
@@ -450,11 +452,20 @@ change is recorded and POSTed to the webhook (3 attempts, 10 s timeout):
 
 ```
 GET /health                      → 200 {"status": "ok"} while the process runs
-GET /ready                       → 200 {"status": "ready"} or 503 {"status": "degraded"}
+GET /ready                       → 200 {"status": "ready", "storageWritable": true} or 503 {"status": "degraded", ...}
 GET /api/v1/system/info          version, uptime, event counts, queue depths, ingest admission, active segments, memory budgets
 GET /api/v1/system/storage       raw/stored bytes, compression ratio, index overhead, per-signal detail
 GET /api/v1/system/query-stats   per-field query statistics (input for future adaptive indexing)
 GET /api/v1/system/config        effective configuration (secrets omitted)
+```
+
+`/ready` is unauthenticated, so it says which signals are affected but
+never why. It is 503 when a 4 KiB write-and-fsync probe in the data
+directory's `tmp/` fails (`storageWritable: false`, every signal listed), or
+while a signal's WAL or sealing is failing:
+
+```json
+{ "status": "degraded", "storageWritable": true, "signals": ["logs"] }
 ```
 
 `/api/v1/system/storage`:
@@ -493,3 +504,27 @@ recovery did for that signal in this process's lifetime.
 directory and `reason` never contains host paths. See
 [Quarantine](storage-format.md#quarantine) for what each kind means and what
 was lost. An empty `quarantined` list means recovery found no damage.
+
+Storage write failures are reported per signal under `faults` (at most one
+each for `wal`, `segment` and `maintenance`), along with `healthy` (no
+faults) and `ingestHealthy` (no `wal` or `segment` fault). The top-level
+`writeProbe` is the readiness write probe:
+
+```json
+"writeProbe": { "writable": true, "fault": null },
+"signals": { "logs": {
+  "healthy": false, "ingestHealthy": false,
+  "faults": [
+    { "area": "wal", "operation": "walAppend", "reason": "noSpace",
+      "path": "wal/logs/000000000007.wal",
+      "message": "No space left on device (os error 28)",
+      "firstSeen": "2026-10-11T03:12:09.112Z", "lastSeen": "2026-10-11T03:12:41.870Z",
+      "occurrences": 37 }
+  ], ... } }
+```
+
+`operation` is `walAppend`, `walSync`, `walCreate`, `segmentWrite`,
+`maintenance` or `probe`. `path` is relative to the data directory and
+`message` is the operating system's error text, so neither contains host
+paths. A fault disappears once that part of the write path works again (see
+[Storage write failures](storage-format.md#storage-write-failures)).

@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use telemetry::Signal;
 
 use crate::error::{IoContext, Result};
-use crate::fsutil;
+use crate::{fault, fsutil};
 
 pub const WAL_MAGIC: &[u8; 8] = b"VYRTWAL1";
 pub const WAL_FORMAT_VERSION: u16 = 1;
@@ -103,10 +103,16 @@ impl WalWriter {
     pub fn create(dir: &Path, tmp_dir: &Path, header: WalHeader) -> Result<Self> {
         let path = dir.join(wal_file_name(header.wal_id));
         let tmp = tmp_dir.join(format!("{}.{}.tmp", header.signal.as_str(), wal_file_name(header.wal_id)));
-        {
+        let written = (|| {
+            fault::check("wal.create", &tmp).ctx(&tmp)?;
             let mut f = File::create(&tmp).ctx(&tmp)?;
             f.write_all(&encode_header(header)).ctx(&tmp)?;
-            f.sync_all().ctx(&tmp)?;
+            f.sync_all().ctx(&tmp)
+        })();
+        if let Err(e) = written {
+            // Nothing refers to the temp file; don't leave it filling the disk.
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
         }
         fsutil::rename(&tmp, &path)?;
         fsutil::sync_dir(dir)?;
@@ -156,10 +162,16 @@ impl WalWriter {
             return Err(crate::StorageError::BatchTooLarge(payload.len()));
         }
         let rec = encode_record(payload);
-        if let Err(e) = self.file.write_all(&rec) {
-            // Some bytes may have been written. Remember to cut them off so
-            // the next record does not land after garbage.
+        let result = match fault::check_write("wal.append", &self.path, rec.len()) {
+            Some((n, e)) => self.file.write_all(&rec[..n]).and(Err(e)),
+            None => self.file.write_all(&rec),
+        };
+        if let Err(e) = result {
+            // Some bytes may have been written. Cut them off now so a
+            // restart does not find a torn record; if that fails too, the
+            // next append retries before writing anything.
             self.poisoned = true;
+            let _ = self.recover_from_partial_write();
             return Err(e).ctx(&self.path);
         }
         self.len += rec.len() as u64;
@@ -174,10 +186,28 @@ impl WalWriter {
         Ok(())
     }
 
+    /// Cut the file back to `len`, dropping records appended after it
+    /// (records whose fsync failed, so they were never acknowledged). If
+    /// the truncation itself fails, the next append retries it.
+    pub fn truncate_to(&mut self, len: u64) -> Result<()> {
+        debug_assert!((HEADER_LEN..=self.len).contains(&len));
+        self.unsynced = self.unsynced.saturating_sub(self.len - len);
+        self.len = len;
+        self.poisoned = true;
+        self.recover_from_partial_write()
+    }
+
+    /// Finish a pending truncation (see [`WalWriter::truncate_to`]) so a
+    /// restart does not find a partial record. Used at shutdown.
+    pub fn discard_partial_write(&mut self) -> Result<()> {
+        if self.poisoned { self.recover_from_partial_write() } else { Ok(()) }
+    }
+
     /// fsync file data. In `strict` durability this runs before every
     /// acknowledgement; in `normal` mode it runs on a timer.
     pub fn sync(&mut self) -> Result<()> {
         if self.unsynced > 0 {
+            fault::check("wal.sync", &self.path).ctx(&self.path)?;
             self.file.sync_data().ctx(&self.path)?;
             self.unsynced = 0;
         }
@@ -423,6 +453,25 @@ mod tests {
         drop(w);
         let (recs, rep) = collect(&path);
         assert_eq!(recs, vec![b"one".to_vec(), b"two".to_vec()]);
+        assert_eq!(rep.tail, TailState::Clean);
+    }
+
+    #[test]
+    fn truncate_to_drops_unacknowledged_records() {
+        let (_d, wal, tmp) = setup();
+        let mut w = WalWriter::create(&wal, &tmp, header(1)).unwrap();
+        w.append(b"acked").unwrap();
+        w.sync().unwrap();
+        let acked = w.len();
+        w.append(b"fsync failed for this one").unwrap();
+        w.truncate_to(acked).unwrap();
+        assert_eq!(w.len(), acked);
+        assert_eq!(w.unsynced_bytes(), 0);
+        w.append(b"next").unwrap();
+        let path = w.path().to_path_buf();
+        drop(w);
+        let (recs, rep) = collect(&path);
+        assert_eq!(recs, vec![b"acked".to_vec(), b"next".to_vec()]);
         assert_eq!(rep.tail, TailState::Clean);
     }
 

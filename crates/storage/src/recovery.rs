@@ -33,6 +33,8 @@ use crate::wal::{self, ReplayError, TailState, WalHeader, WalReplay, WalWriter, 
 
 #[derive(Debug, Clone)]
 pub struct StreamDirs {
+    /// The data directory; fault paths are reported relative to it.
+    pub root: PathBuf,
     pub wal: PathBuf,
     pub segments: PathBuf,
     pub quarantine: PathBuf,
@@ -42,6 +44,7 @@ pub struct StreamDirs {
 impl StreamDirs {
     pub fn new(data_dir: &Path, signal: Signal) -> Self {
         Self {
+            root: data_dir.to_path_buf(),
             wal: data_dir.join("wal").join(signal.as_str()),
             segments: data_dir.join("segments").join(signal.as_str()),
             quarantine: data_dir.join("quarantine").join(signal.as_str()),

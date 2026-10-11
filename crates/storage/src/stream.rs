@@ -17,7 +17,17 @@
 //! If sealing falls behind, the writer waits, the queue fills and callers
 //! get [`StorageError::QueueFull`] — predictable backpressure instead of
 //! unbounded growth.
+//!
+//! Write failures never produce an acknowledgement: a batch whose WAL write
+//! or required fsync failed is answered with [`StorageError::WriteFailed`]
+//! and cut from the WAL again. Each failure is recorded as a
+//! [`StorageFault`] until the same part of the write path succeeds again;
+//! while a WAL fault is present every acknowledgement waits for an fsync,
+//! in `normal` durability too. If sealing keeps failing and the writer has
+//! to wait for it, new batches fail fast with the seal's fault instead of
+//! queueing until they time out.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -31,6 +41,7 @@ use crate::codec;
 use crate::config::{CompactionConfig, Durability, StreamConfig};
 use crate::crash;
 use crate::error::{Result, StorageError};
+use crate::fault::{FaultArea, FaultOp, StorageFault};
 use crate::fsutil;
 use crate::recovery::{Recovered, RecoveryReport, StreamDirs};
 use crate::segment::{Segment, SegmentWriteOptions, write_segment};
@@ -122,9 +133,17 @@ pub struct StreamStats {
     pub rejected_batches: u64,
     pub oldest: Option<Timestamp>,
     pub newest: Option<Timestamp>,
-    pub last_error: Option<String>,
+    /// Current write failures, at most one per [`FaultArea`].
+    pub faults: Vec<StorageFault>,
     /// What startup recovery found, including anything quarantined.
     pub recovery: RecoveryReport,
+}
+
+impl StreamStats {
+    /// The fault that currently stops this signal's ingest path, if any.
+    pub fn ingest_fault(&self) -> Option<&StorageFault> {
+        self.faults.iter().find(|f| f.area().blocks_ingest())
+    }
 }
 
 struct Shared {
@@ -146,17 +165,76 @@ struct Shared {
     ingested: AtomicU64,
     rejected: AtomicU64,
     shutting_down: AtomicBool,
-    last_error: Mutex<Option<String>>,
+    /// The writer needs to rotate but cannot (waiting on a seal, or the
+    /// next WAL could not be created).
+    rotation_stalled: AtomicBool,
+    /// Indexed by [`area_index`].
+    faults: Mutex<[Option<StorageFault>; 3]>,
+}
+
+fn area_index(a: FaultArea) -> usize {
+    match a {
+        FaultArea::Wal => 0,
+        FaultArea::Segment => 1,
+        FaultArea::Maintenance => 2,
+    }
 }
 
 impl Shared {
-    fn set_error(&self, e: &StorageError) {
-        tracing::error!(signal = self.signal.as_str(), error = %e, "storage error");
-        *self.last_error.lock().unwrap() = Some(e.to_string());
+    /// Record a failure of `op`. `at` names the location when the error
+    /// carries no path. Repeats of the same fault are counted and logged at
+    /// debug level only, so a full disk does not flood the log.
+    fn set_fault(&self, op: FaultOp, e: &StorageError, at: &Path) -> StorageFault {
+        let new = StorageFault::from_error(op, e, at, &self.dirs.root);
+        let mut faults = self.faults.lock().unwrap();
+        let slot = &mut faults[area_index(new.area())];
+        let fault = match slot.take() {
+            Some(mut old) if old.op == new.op && old.reason == new.reason => {
+                old.last_seen = new.last_seen;
+                old.occurrences += 1;
+                old.path = new.path;
+                old.message = new.message;
+                tracing::debug!(signal = self.signal.as_str(), error = %e, occurrences = old.occurrences, "storage write failed again");
+                old
+            }
+            _ => {
+                tracing::error!(
+                    signal = self.signal.as_str(),
+                    area = new.area().as_str(),
+                    operation = op.as_str(),
+                    reason = new.reason.as_str(),
+                    path = %new.path,
+                    error = %e,
+                    "storage write failed"
+                );
+                new
+            }
+        };
+        *slot = Some(fault.clone());
+        fault
     }
 
-    fn clear_error(&self) {
-        *self.last_error.lock().unwrap() = None;
+    /// Clear the fault in `area` (only if it came from `op`, when given).
+    fn clear_fault(&self, area: FaultArea, op: Option<FaultOp>) {
+        let mut faults = self.faults.lock().unwrap();
+        let slot = &mut faults[area_index(area)];
+        if let Some(f) = slot.take_if(|f| op.is_none_or(|op| f.op == op)) {
+            tracing::info!(
+                signal = self.signal.as_str(),
+                area = area.as_str(),
+                operation = f.op.as_str(),
+                occurrences = f.occurrences,
+                "storage write path recovered"
+            );
+        }
+    }
+
+    fn fault(&self, area: FaultArea) -> Option<StorageFault> {
+        self.faults.lock().unwrap()[area_index(area)].clone()
+    }
+
+    fn has_fault(&self, area: FaultArea) -> bool {
+        self.faults.lock().unwrap()[area_index(area)].is_some()
     }
 }
 
@@ -210,7 +288,8 @@ impl Stream {
             ingested: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
-            last_error: Mutex::new(None),
+            rotation_stalled: AtomicBool::new(false),
+            faults: Mutex::new([None, None, None]),
             config: p.config,
         });
 
@@ -245,8 +324,10 @@ impl Stream {
     }
 
     /// Queue events for writing. Returns immediately: `Err` means the batch
-    /// was rejected (backpressure); otherwise `ack` runs once the batch is
-    /// in the WAL (and fsynced in strict mode) and visible to queries.
+    /// was rejected (backpressure, or sealing has stalled on a write
+    /// failure); otherwise `ack` runs once the batch is in the WAL (and
+    /// fsynced in strict mode) and visible to queries, or with the error
+    /// that kept it from being stored.
     pub fn submit(&self, events: Vec<TelemetryEvent>, ack: Ack) -> Result<()> {
         let n = events.len();
         if n == 0 {
@@ -259,6 +340,13 @@ impl Stream {
         }
         if self.shared.shutting_down.load(Ordering::Acquire) {
             return Err(StorageError::Unavailable("shutting down".into()));
+        }
+        // The writer is stuck until a seal succeeds: queueing would only
+        // turn a clear storage error into an acknowledgement timeout.
+        if self.shared.rotation_stalled.load(Ordering::Acquire)
+            && let Some(f) = self.shared.fault(FaultArea::Segment)
+        {
+            return Err(StorageError::WriteFailed(f));
         }
         // Reserve queue capacity in events, not messages, so a few huge
         // batches cannot hide behind a small message count.
@@ -329,7 +417,7 @@ impl Stream {
             queue_capacity: self.shared.config.queue_events,
             ingested_events: self.shared.ingested.load(Ordering::Relaxed),
             rejected_batches: self.shared.rejected.load(Ordering::Relaxed),
-            last_error: self.shared.last_error.lock().unwrap().clone(),
+            faults: self.shared.faults.lock().unwrap().iter().flatten().cloned().collect(),
             recovery: self.recovery.clone(),
             ..Default::default()
         };
@@ -391,11 +479,24 @@ struct Writer {
     next_event: u64,
     maint: Sender<MaintMsg>,
     last_sync: Instant,
+    /// WAL length after the last acknowledged batch. A failed fsync cuts
+    /// the WAL back to here, so unacknowledged batches do not come back
+    /// after a restart.
+    committed_len: u64,
+    /// A batch reached the WAL since the last WAL fault; if its fsync also
+    /// succeeds, the fault is over.
+    recovering: bool,
 }
 
 impl Writer {
     fn new(shared: Arc<Shared>, wal: WalWriter, next_event: u64, maint: Sender<MaintMsg>) -> Self {
-        Self { shared, wal, next_event, maint, last_sync: Instant::now() }
+        let committed_len = wal.len();
+        Self { shared, wal, next_event, maint, last_sync: Instant::now(), committed_len, recovering: false }
+    }
+
+    fn wal_fault(&mut self, op: FaultOp, e: &StorageError) -> StorageFault {
+        self.recovering = false;
+        self.shared.set_fault(op, e, self.wal.path())
     }
 
     fn run(mut self, rx: Receiver<WriterMsg>) {
@@ -429,8 +530,8 @@ impl Writer {
                     }
                     WriterMsg::Shutdown(done) => {
                         self.commit(&mut pending);
-                        if let Err(e) = self.wal.sync() {
-                            self.shared.set_error(&e);
+                        if let Err(e) = self.wal.discard_partial_write().and_then(|()| self.wal.sync()) {
+                            self.wal_fault(FaultOp::WalSync, &e);
                         }
                         let _ = done.send(());
                         return;
@@ -440,8 +541,10 @@ impl Writer {
             self.commit(&mut pending);
 
             if self.shared.durability == Durability::Normal && self.last_sync.elapsed() >= self.shared.fsync_interval {
+                // What was acknowledged stays acknowledged; the fault makes
+                // the following acknowledgements wait for a working fsync.
                 if let Err(e) = self.wal.sync() {
-                    self.shared.set_error(&e);
+                    self.wal_fault(FaultOp::WalSync, &e);
                 }
                 self.last_sync = Instant::now();
             }
@@ -460,18 +563,24 @@ impl Writer {
         }
         let bytes = codec::encode_batch(&events);
         match self.wal.append(&bytes) {
-            Ok(()) => pending.push(Pending {
-                committed: Committed { first_id: EventId(first), count: events.len() },
-                batch: Arc::new(Batch::new(events)),
-                reserved,
-                ack,
-            }),
+            Ok(()) => {
+                self.recovering |= self.shared.has_fault(FaultArea::Wal);
+                pending.push(Pending {
+                    committed: Committed { first_id: EventId(first), count: events.len() },
+                    batch: Arc::new(Batch::new(events)),
+                    reserved,
+                    ack,
+                })
+            }
             Err(e) => {
                 // Ids are not reused: gaps are harmless and avoid any
                 // chance of two events sharing an id after a retry.
-                self.shared.set_error(&e);
                 self.shared.queued.fetch_sub(reserved, Ordering::AcqRel);
-                ack(Err(StorageError::Unavailable("write-ahead log write failed".into())));
+                let err = match e {
+                    StorageError::BatchTooLarge(_) => e,
+                    e => StorageError::WriteFailed(self.wal_fault(FaultOp::WalAppend, &e)),
+                };
+                ack(Err(err));
             }
         }
     }
@@ -482,17 +591,33 @@ impl Writer {
             return;
         }
         crash::point("wal.before_sync");
-        if self.shared.durability == Durability::Strict {
+        // After a WAL fault `normal` mode also syncs before acknowledging,
+        // until a write gets through: the OS may have failed to keep data
+        // it accepted, so "in the page cache" no longer means "survives".
+        if self.shared.durability == Durability::Strict || self.shared.has_fault(FaultArea::Wal) {
             if let Err(e) = self.wal.sync() {
-                self.shared.set_error(&e);
+                let fault = self.wal_fault(FaultOp::WalSync, &e);
+                // These batches are not acknowledged, so they must not
+                // reappear after a restart either.
+                if let Err(e) = self.wal.truncate_to(self.committed_len) {
+                    tracing::warn!(
+                        signal = self.shared.signal.as_str(),
+                        error = %e,
+                        "could not cut unacknowledged records from the WAL; retrying before the next write"
+                    );
+                }
                 for p in pending.drain(..) {
                     self.shared.queued.fetch_sub(p.reserved, Ordering::AcqRel);
-                    (p.ack)(Err(StorageError::Unavailable("fsync failed".into())));
+                    (p.ack)(Err(StorageError::WriteFailed(fault.clone())));
                 }
                 return;
             }
             self.last_sync = Instant::now();
+            if std::mem::take(&mut self.recovering) {
+                self.shared.clear_fault(FaultArea::Wal, None);
+            }
         }
+        self.committed_len = self.wal.len();
         crash::point("wal.before_ack");
         {
             let mut st = self.shared.state.write().unwrap();
@@ -528,10 +653,18 @@ impl Writer {
     }
 
     /// Freeze the active buffer, start a new WAL and ask the maintenance
-    /// thread to seal the frozen one.
+    /// thread to seal the frozen one. Marks rotation stalled if it fails.
     fn rotate(&mut self, done: Option<Done>) {
+        let ok = self.try_rotate(done);
+        // A failed on-demand rotation of a small buffer stalls nothing.
+        let stalled = !ok && self.should_rotate();
+        self.shared.rotation_stalled.store(stalled, Ordering::Release);
+    }
+
+    fn try_rotate(&mut self, done: Option<Done>) -> bool {
         // Only one frozen buffer may exist: wait for the previous seal.
-        // While we wait, the queue fills and producers see backpressure.
+        // While we wait, the queue fills and producers see backpressure,
+        // or fail fast if the seal itself is failing.
         {
             let (lock, cv) = &self.shared.sealed;
             let mut guard = lock.lock().unwrap();
@@ -539,11 +672,12 @@ impl Writer {
                 if self.shared.state.read().unwrap().frozen.is_none() {
                     break;
                 }
+                self.shared.rotation_stalled.store(true, Ordering::Release);
                 if self.shared.shutting_down.load(Ordering::Acquire) {
                     if let Some(d) = done {
                         d(Err(StorageError::Unavailable("shutting down".into())));
                     }
-                    return;
+                    return true;
                 }
                 guard = cv.wait_timeout(guard, Duration::from_millis(200)).unwrap().0;
             }
@@ -552,14 +686,14 @@ impl Writer {
             if let Some(d) = done {
                 d(Ok(()));
             }
-            return;
+            return true;
         }
         if let Err(e) = self.wal.sync() {
-            self.shared.set_error(&e);
+            let fault = self.wal_fault(FaultOp::WalSync, &e);
             if let Some(d) = done {
-                d(Err(e));
+                d(Err(StorageError::WriteFailed(fault)));
             }
-            return;
+            return false;
         }
         let new_id = self.shared.next_file_id.fetch_add(1, Ordering::AcqRel);
         let new_wal = match WalWriter::create(
@@ -570,15 +704,17 @@ impl Writer {
             Ok(w) => w,
             Err(e) => {
                 // Keep writing to the current WAL and try again later.
-                self.shared.set_error(&e);
+                let fault = self.shared.set_fault(FaultOp::WalCreate, &e, &self.shared.dirs.tmp);
                 if let Some(d) = done {
-                    d(Err(e));
+                    d(Err(StorageError::WriteFailed(fault)));
                 }
-                return;
+                return false;
             }
         };
+        self.shared.clear_fault(FaultArea::Segment, Some(FaultOp::WalCreate));
         crash::point("rotate.after_wal_create");
         let old = std::mem::replace(&mut self.wal, new_wal);
+        self.committed_len = self.wal.len();
         {
             let mut st = self.shared.state.write().unwrap();
             let batches = std::mem::take(&mut st.active);
@@ -591,6 +727,7 @@ impl Writer {
         // Close the frozen WAL so it can be deleted after sealing (Windows).
         drop(old);
         let _ = self.maint.send(MaintMsg::Seal(done));
+        true
     }
 }
 
@@ -609,6 +746,9 @@ fn maintenance_loop(shared: Arc<Shared>, rx: Receiver<MaintMsg>) {
             }
             Ok(MaintMsg::RunNow(done)) => {
                 let r = run_periodic(&shared);
+                if let Err(e) = &r {
+                    shared.set_fault(FaultOp::Maintenance, e, &shared.dirs.segments);
+                }
                 done(r);
             }
             Ok(MaintMsg::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
@@ -630,8 +770,9 @@ fn maintenance_loop(shared: Arc<Shared>, rx: Receiver<MaintMsg>) {
                 }
                 Err(e) => {
                     // Keep the frozen buffer (and its WAL) and retry. The
-                    // data is safe; ingestion slows via backpressure.
-                    shared.set_error(&e);
+                    // data is safe; once the writer has to wait for this
+                    // seal, new batches fail fast with this fault.
+                    shared.set_fault(FaultOp::SegmentWrite, &e, &shared.dirs.segments);
                     retry_at = Some(Instant::now() + Duration::from_secs(5));
                 }
             }
@@ -639,7 +780,7 @@ fn maintenance_loop(shared: Arc<Shared>, rx: Receiver<MaintMsg>) {
 
         if Instant::now() >= next_periodic {
             if let Err(e) = run_periodic(&shared) {
-                shared.set_error(&e);
+                shared.set_fault(FaultOp::Maintenance, &e, &shared.dirs.segments);
             }
             next_periodic = Instant::now() + shared.maintenance_interval;
         }
@@ -649,6 +790,7 @@ fn maintenance_loop(shared: Arc<Shared>, rx: Receiver<MaintMsg>) {
 fn run_periodic(shared: &Shared) -> Result<()> {
     apply_retention(shared, Timestamp::now())?;
     compact(shared)?;
+    shared.clear_fault(FaultArea::Maintenance, None);
     Ok(())
 }
 
@@ -699,7 +841,7 @@ fn seal_frozen(shared: &Shared) -> Result<()> {
         }
         st.frozen = None;
     }
-    shared.clear_error();
+    shared.clear_fault(FaultArea::Segment, Some(FaultOp::SegmentWrite));
     let (lock, cv) = &shared.sealed;
     let _g = lock.lock().unwrap();
     cv.notify_all();

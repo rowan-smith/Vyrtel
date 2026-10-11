@@ -228,3 +228,46 @@ directory file by file while Vyrtel runs — sealing can move events from a
 WAL into a segment between the two copies. To restore, stop Vyrtel, replace
 the data directory with the backup and start it. The on-disk format is
 unchanged in this release; no migration is needed.
+
+## Storage failures
+
+When the data volume fills up, turns read-only or denies access, Vyrtel
+stops acknowledging writes instead of pretending they were stored. There is
+nothing to configure; this section covers what operators see and do.
+Details are in [Storage write failures](storage-format.md#storage-write-failures).
+
+**What clients see.** Ingest requests get `503` with `Retry-After: 1`:
+
+```json
+{"error": {"code": "storage_write_failed", "reason": "noSpace",
+  "message": "the request was not stored: no space left on the storage device. Nothing in it was acknowledged; retry once storage is writable"}}
+```
+
+Nothing in a request that got 503 is stored, so retrying it is safe.
+Requests that got a 2xx before the failure stay stored.
+
+**How to notice.**
+
+* `GET /ready` returns `503 {"status": "degraded", "storageWritable": false, ...}`
+  when a test write to `data/tmp/` fails (full or read-only volume), and
+  lists the affected `signals` while a signal's WAL or sealing keeps
+  failing. Point your orchestrator's readiness probe at it. `GET /health`
+  stays 200: the process is alive and queries still work.
+* `GET /api/v1/system/storage` shows `writeProbe` and, per signal,
+  `ingestHealthy` and `faults`. Each fault has the operation, the reason,
+  the file relative to the data directory, the OS error text, when it was
+  first and last seen, and how often it occurred. Host paths and secrets
+  are never included.
+* The log has one `ERROR storage write failed` line per new fault, with
+  `signal`, `operation`, `reason` and `path`, and an `INFO storage write
+  path recovered` line when it clears.
+
+**What to do.** Free space (shorten `[retention]`, remove files that are
+not Vyrtel's, grow the volume), or fix the mount and permissions so the
+user Vyrtel runs as can write the whole data directory. Vyrtel retries by
+itself: the next successful write clears the fault and readiness returns,
+usually within a few seconds. A restart is not needed but is safe, and
+recovery brings back every acknowledged event. Do not delete files under
+`wal/` or `segments/` to make room; they hold acknowledged telemetry. If
+the disk fills up during a backup or restore, start that backup or restore
+again; the rules above still apply.

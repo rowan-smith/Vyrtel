@@ -93,6 +93,11 @@ The OTLP fixtures contain `{{now-…}}` placeholders; see
   run `VYRTEL_CRASH_AT=wal.after_ack cargo run --features
   storage/crash-points`, ingest one event so it aborts, then start it normally (see
   [Testing](testing.md#process-kill-tests)).
+* `cargo test -p storage --features fault-injection --test faults` injects
+  full-disk, permission, read-only and short-write errors into the WAL and
+  segment paths (see [Testing](testing.md#storage-write-failure-tests)).
+  Current faults are listed under `signals.<signal>.faults` in
+  `/api/v1/system/storage`.
 * `vyrtel config` prints the effective configuration.
 
 ## Formatting and linting

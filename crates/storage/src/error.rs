@@ -51,6 +51,10 @@ pub enum StorageError {
     /// Storage is shutting down or has failed (HTTP 503).
     #[error("storage unavailable: {0}")]
     Unavailable(String),
+    /// Storage could not write the batch, so it was not acknowledged
+    /// (HTTP 503). The fault is safe to show to operators.
+    #[error("storage write failed: {0}")]
+    WriteFailed(crate::fault::StorageFault),
 }
 
 pub type Result<T, E = StorageError> = std::result::Result<T, E>;
