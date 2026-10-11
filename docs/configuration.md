@@ -280,6 +280,9 @@ Options:
       --memory-limit <SIZE>   storage.max_memory
       --log-level <FILTER>    log.level
       --log-format <FORMAT>   text | json
+      --accept-incomplete-restore
+                              start without missing parts of a restored data
+                              directory (see Backup and restore)
   -h, --help
   -V, --version
 ```
@@ -534,7 +537,7 @@ has no export or import step.
 
 | Entry                  | Contents                                                                                       | In a backup  |
 |------------------------|------------------------------------------------------------------------------------------------|--------------|
-| `vyrtel.json`          | Manifest: the data-directory `format` and the Vyrtel version that last wrote it                | required     |
+| `vyrtel.json`          | Manifest: the data-directory `format`, the Vyrtel version that last wrote it and, while stopped after a clean shutdown, the `inventory` of WAL and segment files with their sizes | required |
 | `metadata/metadata.db` | Dashboards, alerts and their state, saved queries, API keys (hashed), users (Argon2id), sessions (hashed), query statistics | required |
 | `metadata/metadata.db-wal`, `-shm` | SQLite journal; present only while running or after a crash                        | if present   |
 | `wal/<signal>/`        | Write-ahead logs: the newest telemetry, not yet sealed                                         | required     |
@@ -556,9 +559,14 @@ keys and change the admin password.
 
 1. **Stop Vyrtel** (`docker stop vyrtel`, `systemctl stop vyrtel`, Ctrl+C)
    and check that it logged `shutdown complete` and exited with status 0.
-   After an [incomplete shutdown](#when-the-deadline-passes-the-signal-is-repeated-or-the-flush-fails)
-   (status 1), the backup is still consistent and restores like one taken
-   after a crash.
+   A clean shutdown records every WAL and segment file and its size in
+   `vyrtel.json` (`inventory`), so the restored copy is checked for missing
+   or truncated files when it starts. After an
+   [incomplete shutdown](#when-the-deadline-passes-the-signal-is-repeated-or-the-flush-fails)
+   (status 1) or a crash there is no inventory: the backup is still
+   consistent and restores like one taken after a crash, but a file left out
+   of it cannot be detected. Start and stop Vyrtel cleanly once before
+   backing up if you can.
 2. **Copy the whole data directory**, for example:
 
    ```bash
@@ -641,29 +649,44 @@ checks that the directory is complete and that this version can read it.
 If not, it exits with status 1, prints why and changes nothing, so you can
 fix the restore and start again:
 
-| Found                                                                            | Message starts with (after `vyrtel: data directory <path>`)            | What to do |
+| Found                                                                            | Message (after `vyrtel: data directory <path>`)                         | What to do |
 |----------------------------------------------------------------------------------|-------------------------------------------------------------------------|------------|
+| A WAL or segment file in the inventory is missing                                | `is incomplete: wal/logs/000000000003.wal is missing`                   | Restore the whole directory again |
+| A WAL or segment file in the inventory has another size (a truncated copy)      | `is incomplete: segments/logs/000000000002.seg has 4096 bytes, 81920 at the last clean shutdown` | Restore the whole directory again |
 | A required entry is missing (`vyrtel.json` present)                             | `is incomplete: wal/metrics is missing`                                 | Restore the whole directory again |
 | WAL or segment files but no `metadata/metadata.db` (with or without `vyrtel.json`) | `is incomplete: metadata/metadata.db is missing`                      | Restore the whole directory again |
-| `metadata/metadata.db` but a signal's `wal/` or `segments/` directory is missing (no `vyrtel.json`) | `is incomplete: wal/logs, … are missing`                 | Restore the whole directory again |
-| `vyrtel.json` is not valid JSON or has no usable `format`                        | `has an unusable vyrtel.json: …`                                        | Restore `vyrtel.json` from the same backup |
+| `metadata/metadata.db` is empty (no schema) next to `vyrtel.json` or telemetry  | `is incomplete: metadata/metadata.db is empty (it has no schema)`       | Restore it from the same backup |
+| `metadata/metadata.db` but a signal's `wal/` or `segments/` directory is missing (no `vyrtel.json`) | `is incomplete: wal/logs is missing; …`                  | Restore the whole directory again |
+| `vyrtel.json` is not valid JSON, has no usable `format`, or its inventory lists something other than WAL and segment files | `has an unusable vyrtel.json: …` | Restore `vyrtel.json` from the same backup |
 | `vyrtel.json` has a newer `format`                                               | `has format 2 (written by Vyrtel 0.3.0), but Vyrtel 0.1.2 reads only format 1` | Start it with that version or newer |
 | A segment or WAL file in a newer format                                          | `cannot be read by Vyrtel 0.1.2: segments/logs/000000000004.seg uses segment format version 2, …` | Start it with the version that wrote it, or newer |
 | `metadata/metadata.db` migrated by a newer version                              | `cannot be read by Vyrtel 0.1.2: metadata/metadata.db has schema version 2, …` | Start it with the version that wrote it, or newer |
 | `metadata/metadata.db` is not an SQLite database                                 | `has an unreadable metadata/metadata.db: …`                             | Restore it from the same backup |
 
-For example, a backup without its metadata database:
+An incomplete directory lists every problem found (the first ten, then how
+many more), separated by `;`. For example, a backup that left out one WAL
+file:
 
 ```
-vyrtel: data directory /var/lib/vyrtel/data is incomplete: metadata/metadata.db is missing. Vyrtel did not start and changed nothing in it. If it is a restored backup, restore the whole data directory again; to start without the missing parts on purpose, create them empty (directories, or an empty metadata.db file) (see docs/configuration.md#backup-and-restore)
+vyrtel: data directory /var/lib/vyrtel/data is incomplete: wal/logs/000000000003.wal is missing. Vyrtel did not start and changed nothing in it. If it is a restored backup, restore the whole data directory again; to start without the missing parts on purpose, start once with --accept-incomplete-restore (see docs/configuration.md#backup-and-restore)
 ```
 
-To start without a missing part on purpose (for example telemetry without
-its dashboards), create it empty: `mkdir -p wal/metrics`, or an empty
-`metadata/metadata.db` (`touch`), which starts with no dashboards, alerts,
-keys or users. A directory without any of Vyrtel's entries (empty, or a new
-volume with only `lost+found`) is a new data directory, and one from
-before 0.1.2 (no `vyrtel.json`) is accepted and gets one.
+**Continuing without the missing parts.** If the rest of the backup is all
+there is, start once with `--accept-incomplete-restore`
+(`vyrtel --accept-incomplete-restore`, or append it to the container's
+command). Vyrtel logs one `WARN starting without part of the data
+directory` line per problem and starts without them: events in missing WAL
+and segment files are gone, missing directories are created, and a missing
+or empty metadata database starts with no dashboards, alerts, keys or
+users (with authentication enabled and no `auth.admin_password`, a new
+admin password is generated and printed). The flag only covers missing,
+truncated and empty parts; a newer format is always refused. It is not a
+configuration setting on purpose, so it is not left on by accident: once
+started, the directory is complete as it is, and later starts need no flag.
+
+A directory without any of Vyrtel's entries (empty, or a new volume with
+only `lost+found`) is a new data directory, and one from before 0.1.2 (no
+`vyrtel.json`) is accepted and gets one.
 
 Damaged files are not refused: recovery
 [quarantines](#crash-recovery-and-backups) them as after a crash, and the
@@ -672,10 +695,26 @@ newer Vyrtel is never quarantined.
 
 **Limitations.**
 
-* The check knows which directories a complete data directory has, not
-  which files belong in them. A backup missing individual `.wal` or `.seg`
-  files starts without their events. Always copy the whole directory, and
-  compare the verification queries.
+* Missing WAL and segment files are detected only through the inventory a
+  clean shutdown records. A directory without one — a backup taken after a
+  crash or an [incomplete shutdown](#when-the-deadline-passes-the-signal-is-repeated-or-the-flush-fails),
+  a filesystem snapshot of a running server, or a directory from before
+  0.1.2 — is checked for its directories and metadata only, so a file left
+  out of such a backup starts without its events. Startup logs `INFO data
+  directory has no inventory from a clean shutdown` in that case.
+* The inventory holds names and sizes, not checksums: a file with the right
+  size but wrong bytes is found by recovery's own checksums instead (every
+  WAL record and segment chunk has one) and quarantined, not refused.
+  Checksumming every file at every start would read the whole data
+  directory.
+* The metadata database is not in the inventory (SQLite changes its files
+  as it closes). A missing or empty database is refused; one replaced by a
+  different, valid database is not detected.
+* The inventory describes the directory as the last clean shutdown left it,
+  and the next start removes it before changing anything. A start by 0.1.1,
+  which does not know about it, leaves it in place while changing files, so
+  0.1.2 then refuses the directory as incomplete. Start that once with
+  `--accept-incomplete-restore` after checking nothing was actually lost.
 * Segment and WAL headers and the metadata schema are checked before
   anything changes. A newer version of an individual WAL record or event
   encoding is found while recovering that signal's WAL: startup stops there
@@ -691,13 +730,16 @@ newer Vyrtel is never quarantined.
 [`scripts/backup/restore-drill.sh`](../scripts/backup/restore-drill.sh)
 runs this procedure end to end against a built binary on Linux or macOS:
 it populates an instance with the [shared fixtures](../tests/fixtures/README.md)
-(all three signals, a dashboard with a panel, an alert, a saved query, an
-API key), stops it, takes a `tar` backup, deletes the original, restores
-the backup into a new directory, starts it without an admin password
-configured and compares every verification query. It then checks the API
-key, anonymous refusal and login, and that a copy without
-`metadata/metadata.db` is refused with exit status 1 and left unchanged.
-CI runs it on every change:
+(all three signals in sealed segments and in WALs, a dashboard with a
+panel, an alert, a saved query, an API key), stops it, takes a `tar`
+backup, deletes the original, restores the backup into a new directory,
+starts it without an admin password configured and compares every
+verification query. It then checks the API key, anonymous refusal and
+login; that copies without `metadata/metadata.db`, with an empty one,
+without one WAL file and without one segment file each exit with status 1
+and are left unchanged; and that `--accept-incomplete-restore` starts the
+copy without the WAL file, after which it starts without the flag. CI runs
+it on every change:
 
 ```bash
 cargo build --release -p server
@@ -709,18 +751,24 @@ scripts/backup/restore-drill.sh target/release/vyrtel
 * New data directories get a manifest, `vyrtel.json`. Directories from
   earlier versions get one on their first start with 0.1.2; nothing else
   changes on disk. Include it in backups.
-* A data directory with WAL or segment files but no
-  `metadata/metadata.db` now refuses to start. Before, Vyrtel created an
-  empty metadata database: dashboards, alerts, saved queries and API keys
-  were lost without a message, and with authentication enabled and no
-  `auth.admin_password`, a new admin password was generated.
+* A clean shutdown records the WAL and segment files and their sizes in
+  `vyrtel.json`; a start refuses the directory if any of them is missing
+  or has another size.
+* A data directory with WAL or segment files, or a manifest, but no
+  metadata database or an empty one, now refuses to start. Before, Vyrtel
+  created an empty metadata database: dashboards, alerts, saved queries
+  and API keys were lost without a message, and with authentication
+  enabled and no `auth.admin_password`, a new admin password was generated.
+* New `--accept-incomplete-restore` flag to start such a directory
+  anyway.
 * A segment or WAL file in a format version this release cannot read now
   stops startup and is left in place. Before, it was moved to
   `quarantine/` as if damaged, and its events were not visible.
 * A metadata database migrated by a newer version now stops startup.
   Before, it was opened as is.
 * Once started by 0.1.2, a data directory still starts with 0.1.1, which
-  ignores `vyrtel.json`.
+  ignores `vyrtel.json`; see the limitation above before going back to
+  0.1.2 afterwards.
 
 ## Storage failures
 

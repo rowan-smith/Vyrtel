@@ -26,6 +26,7 @@ use tokio::sync::{Semaphore, broadcast, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::config::{Config, Durability, format_duration, human_bytes};
+use crate::datadir::{Layout, Manifest};
 use crate::state::{AppState, LiveBatch, SharedState};
 
 /// Batches retained for live-tail subscribers that fall behind.
@@ -98,6 +99,11 @@ impl App {
             tracing::warn!(problem = %problem, "starting without part of the data directory (--accept-incomplete-restore)");
         }
         let layout = checked.layout.clone();
+        if matches!(&layout, Layout::Unversioned | Layout::Versioned(Manifest { inventory: None, .. })) {
+            tracing::info!(
+                "data directory has no inventory from a clean shutdown; missing WAL or segment files cannot be detected"
+            );
+        }
         crate::datadir::begin(dir, &checked).context("updating the data directory manifest")?;
         std::fs::create_dir_all(dir).with_context(|| format!("creating data directory {}", dir.display()))?;
         crate::datadir::prepare(dir).context("creating data directory")?;

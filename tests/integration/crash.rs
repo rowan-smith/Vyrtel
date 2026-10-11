@@ -62,6 +62,7 @@ async fn storage_api_reports_quarantined_wal_tail() {
     let (config, dir) = s.stop().await;
 
     // Tear the final WAL record, as a crash mid-write would.
+    as_after_crash(&config.storage.path);
     let wal_dir = config.storage.path.join("wal").join("logs");
     let wal = std::fs::read_dir(&wal_dir).unwrap().flatten().map(|e| e.path()).next().unwrap();
     let len = std::fs::metadata(&wal).unwrap().len();

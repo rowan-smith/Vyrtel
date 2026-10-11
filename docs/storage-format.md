@@ -36,7 +36,13 @@ the segment sealed from it share the same id.
 ```json
 {
   "format": 1,
-  "writtenBy": "0.1.2"
+  "writtenBy": "0.1.2",
+  "inventory": {
+    "files": {
+      "segments/logs/000000000002.seg": 81920,
+      "wal/logs/000000000003.wal": 4211
+    }
+  }
 }
 ```
 
@@ -44,11 +50,24 @@ the segment sealed from it share the same id.
 below that the directory may contain. Format 1 is WAL file format 1, WAL
 record version 1, event codec 1, segment format 1 and metadata schema
 version 1. `writtenBy` is the Vyrtel version that last wrote the file.
-Unknown keys are ignored. The manifest is written (to `tmp/`, fsynced,
-renamed, directory fsynced) once the metadata database and every stream
-directory exist, and again when a different Vyrtel version starts the
-directory. Directories from before 0.1.2 have none and get one on their
-next start.
+Unknown keys are ignored.
+
+`inventory` exists only while the directory is stopped after a clean
+shutdown. It lists every `wal/<signal>/*.wal` and
+`segments/<signal>/*.seg` file, relative to the data directory, with its
+size in bytes. It is written after the WAL flush, the background jobs and
+any seal or compaction have finished, so nothing changes those files until
+the next start; an incomplete shutdown or a crash writes none. The next
+start checks it (see below), then removes it before anything else in the
+directory changes, so a later crash cannot make it describe files that
+have since been sealed, compacted or deleted. The metadata database is not
+listed: SQLite may still change its files as the connection closes.
+
+The manifest is replaced atomically (`vyrtel.json.tmp` written and
+fsynced, renamed over it, directory fsynced): once the metadata database
+and every stream directory exist on a start, with the inventory at a
+clean shutdown, and without it when a start removes it. Directories from
+before 0.1.2 have none and get one on their next start.
 
 ### Startup check
 
@@ -59,13 +78,20 @@ Vyrtel's top-level entries (`vyrtel.json`, `.lock`, `metadata`, `wal`,
 refused, with nothing changed, when:
 
 * `vyrtel.json` is unreadable, has `format` 0 or a `format` above the one
-  this build writes;
-* with a manifest: `metadata/metadata.db`, `wal/<signal>/` or
+  this build writes, or its inventory names anything but WAL and segment
+  files;
+* *incomplete*: a file in the inventory is missing or has another size;
+* *incomplete*, with a manifest: `metadata/metadata.db`, `wal/<signal>/` or
   `segments/<signal>/` is missing for any signal;
-* without one: WAL or segment files exist but `metadata/metadata.db` does
-  not, or the database exists but a stream directory does not (a first
-  start creates the stream directories, then the database, then WAL files,
-  so an interrupted first start is never refused);
+* *incomplete*, without one: WAL or segment files exist but
+  `metadata/metadata.db` does not, or the database exists but a stream
+  directory does not (a first start creates the stream directories, then
+  the database, then WAL files, so an interrupted first start is never
+  refused);
+* *incomplete*: `metadata/metadata.db` has no schema (an empty file) while
+  a manifest or WAL or segment files exist. Every start migrates the
+  database before it writes either, so such a database was truncated or
+  replaced;
 * a `*.seg` or `*.wal` file declares a format version this build does not
   read (`storage::check_formats`: headers and footers only, see
   [Versioning](#versioning));
@@ -73,6 +99,10 @@ refused, with nothing changed, when:
   `schema_migrations` holds a version above the newest migration. It is
   opened read-only and, when there is no `-wal` file, with SQLite's
   `immutable` flag, so no journal or lock file is created.
+
+The *incomplete* cases are accepted when the server is started with
+`--accept-incomplete-restore` (`StartOptions::accept_incomplete_restore`);
+each is then logged as a warning. The others never are.
 
 Operator-facing messages are in
 [configuration → backup and restore](configuration.md#what-startup-checks).

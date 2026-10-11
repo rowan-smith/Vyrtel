@@ -328,6 +328,55 @@ fn failed_seal_fails_fast_and_keeps_data_for_restart() {
 }
 
 #[test]
+fn batches_queued_as_a_failing_seal_blocks_rotation_fail_fast_too() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = config(d.path(), Durability::Strict);
+    c.logs.segment_max_events = 1;
+    let s = Storage::open(c, None).unwrap();
+    let guard = inject(d.path(), "segment.write", Injected::NoSpace);
+    submit_ok(&s, "first");
+    wait_for("seal fault", || faults(&s).iter().any(|f| f.op == FaultOp::SegmentWrite));
+
+    // A burst, not waiting in between: some batches are queued after the
+    // writer took its last group and before it marked rotation stalled, so
+    // they wait behind a seal that keeps failing. They must be answered
+    // like a new submission would be, not after their acknowledgement
+    // timeout (the seal is retried every 5 s and fails every time).
+    let mut waiting = Vec::new();
+    let mut accepted = vec!["first".to_string()];
+    let mut failed_fast = 0;
+    for i in 0..200 {
+        let msg = format!("burst {i}");
+        let (tx, rx) = mpsc::sync_channel(1);
+        match s.submit(Signal::Logs, vec![log(i, &msg)], Box::new(move |r| drop(tx.send(r)))) {
+            Ok(()) => waiting.push((msg, rx)),
+            Err(StorageError::WriteFailed(_)) => failed_fast += 1,
+            Err(e) => panic!("unexpected error: {e}"),
+        }
+    }
+    let mut failed_queued = 0;
+    for (msg, rx) in waiting {
+        match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(Ok(_)) => accepted.push(msg),
+            Ok(Err(StorageError::WriteFailed(f))) => {
+                assert_eq!((f.op, f.reason), (FaultOp::SegmentWrite, FaultReason::NoSpace));
+                failed_queued += 1;
+            }
+            Ok(Err(e)) => panic!("{msg}: unexpected error: {e}"),
+            Err(_) => panic!("{msg} was queued behind the failing seal and never answered"),
+        }
+    }
+    assert!(failed_fast + failed_queued > 0, "the burst ran into the stalled writer");
+    assert_eq!(s.stats().logs.queue_depth, 0, "failed batches release their queue reservation");
+    assert_eq!(messages(&s), accepted);
+
+    drop(s);
+    drop(guard);
+    let s = Storage::open(config(d.path(), Durability::Strict), None).unwrap();
+    assert_eq!(messages(&s), accepted, "exactly the acknowledged batches are back");
+}
+
+#[test]
 fn failed_wal_creation_stalls_rotation_until_storage_recovers() {
     let d = tempfile::tempdir().unwrap();
     let mut c = config(d.path(), Durability::Normal);

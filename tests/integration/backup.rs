@@ -278,6 +278,87 @@ async fn incomplete_backups_are_refused_without_changes() {
     assert_refused_unchanged(dir, "is incomplete: metadata/metadata.db is missing");
 }
 
+/// The first `*.<ext>` file in `dir/<sub>`, relative to `dir`.
+fn first_file(dir: &Path, sub: &str, ext: &str) -> String {
+    let mut names: Vec<String> = std::fs::read_dir(dir.join(sub))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.ends_with(ext))
+        .collect();
+    names.sort();
+    format!("{sub}/{}", names.first().unwrap_or_else(|| panic!("a {ext} file in {sub}")))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn backups_missing_single_files_or_an_emptied_database_are_refused() {
+    let backup = stopped_backup().await;
+    let dir = backup.path();
+    let manifest: Value = serde_json::from_slice(&std::fs::read(dir.join("vyrtel.json")).unwrap()).unwrap();
+    let wal = first_file(dir, "wal/logs", ".wal");
+    let seg = first_file(dir, "segments/traces", ".seg");
+    let size = |rel: &str| std::fs::metadata(dir.join(rel)).unwrap().len();
+    assert_eq!(manifest["inventory"]["files"][&wal], size(&wal), "{manifest}");
+    assert_eq!(manifest["inventory"]["files"][&seg], size(&seg), "{manifest}");
+
+    // One populated WAL and one segment left out, every directory present.
+    let (wal_bytes, seg_bytes) = (std::fs::read(dir.join(&wal)).unwrap(), std::fs::read(dir.join(&seg)).unwrap());
+    assert!(wal_bytes.len() > 24, "the WAL holds records");
+    std::fs::remove_file(dir.join(&wal)).unwrap();
+    std::fs::remove_file(dir.join(&seg)).unwrap();
+    let err = assert_refused_unchanged(dir, "is incomplete: ");
+    assert!(err.contains(&format!("{seg} is missing; {wal} is missing")), "{err}");
+    assert!(err.contains("start once with --accept-incomplete-restore"), "{err}");
+
+    // A truncated copy.
+    std::fs::write(dir.join(&wal), &wal_bytes).unwrap();
+    std::fs::write(dir.join(&seg), &seg_bytes[..seg_bytes.len() / 2]).unwrap();
+    let half = seg_bytes.len() / 2;
+    assert_refused_unchanged(
+        dir,
+        &format!("is incomplete: {seg} has {half} bytes, {} at the last clean shutdown", seg_bytes.len()),
+    );
+    std::fs::write(dir.join(&seg), &seg_bytes).unwrap();
+
+    // The metadata database replaced by an empty file: not consent to lose
+    // dashboards, alerts, users and keys.
+    let db = dir.join("metadata").join("metadata.db");
+    let db_bytes = std::fs::read(&db).unwrap();
+    std::fs::write(&db, b"").unwrap();
+    assert_refused_unchanged(dir, "is incomplete: metadata/metadata.db is empty (it has no schema)");
+    std::fs::write(&db, &db_bytes).unwrap();
+
+    // Complete again: starts, and the start drops the inventory.
+    let s = TestServer::launch(secure(dir), None).await;
+    let m: Value = serde_json::from_slice(&std::fs::read(dir.join("vyrtel.json")).unwrap()).unwrap();
+    assert_eq!(m.get("inventory"), None, "a running directory has no inventory: {m}");
+    s.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_files_are_accepted_only_on_request() {
+    let (source, _, _, _, before) = populated().await;
+    let dir = source.path();
+    let wal = first_file(dir, "wal/logs", ".wal");
+    std::fs::remove_file(dir.join(&wal)).unwrap();
+    assert_refused_unchanged(dir, &format!("is incomplete: {wal} is missing"));
+
+    // --accept-incomplete-restore: starts without the WAL's events, keeps
+    // everything else.
+    let options = server::app::StartOptions { accept_incomplete_restore: true };
+    let app = App::build_with(secure(dir), options).expect("accepted");
+    let logs = app.state.engine.count(telemetry::Signal::Logs, "", query::TimeRange::new(None, None)).unwrap().0;
+    let all = before["counts"]["logs"].as_u64().unwrap();
+    assert!(logs > 0 && logs < all, "segment events remain, the WAL's are gone: {logs} of {all}");
+    app.shutdown().await.unwrap();
+
+    // Accepted once: the clean shutdown recorded the directory as it is now.
+    let s = TestServer::launch(secure(dir), None).await;
+    let a = Admin::login(&s).await;
+    assert_eq!(a.get("/api/v1/dashboards").await, before["dashboards"]);
+    s.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn backups_from_a_newer_version_are_refused_without_changes() {
     let backup = stopped_backup().await;

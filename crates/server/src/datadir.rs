@@ -552,7 +552,8 @@ mod tests {
         std::fs::write(d.path().join("segments/traces/notes.txt"), b"not telemetry").unwrap();
         record_stopped(d.path()).unwrap();
         let Layout::Versioned(m) = layout(d.path()) else { panic!("manifest written") };
-        let files: Vec<(&str, u64)> = m.inventory.as_ref().unwrap().files.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        let files: Vec<(&str, u64)> =
+            m.inventory.as_ref().unwrap().files.iter().map(|(k, v)| (k.as_str(), *v)).collect();
         assert_eq!(files, [("segments/traces/000000000002.seg", 100), ("wal/logs/000000000003.wal", 40)]);
 
         // One file left out of the restore, another truncated.

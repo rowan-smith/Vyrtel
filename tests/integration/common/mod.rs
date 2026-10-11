@@ -199,6 +199,16 @@ impl TestServer {
     }
 }
 
+/// Make a cleanly stopped data directory look as a crash leaves it: without
+/// the inventory a clean shutdown records in `vyrtel.json`. For tests that
+/// damage files to simulate a crash after stopping the server normally.
+pub fn as_after_crash(dir: &Path) {
+    let path = dir.join("vyrtel.json");
+    let mut m: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    m.as_object_mut().unwrap().remove("inventory");
+    std::fs::write(path, serde_json::to_vec(&m).unwrap()).unwrap();
+}
+
 pub fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }

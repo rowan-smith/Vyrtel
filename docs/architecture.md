@@ -190,15 +190,18 @@ server.
 
 There is exactly one OS process. At startup (`App::build`) the server first
 checks the data directory without changing it (`crates/server/src/datadir.rs`):
-the `vyrtel.json` manifest's format, that a used directory has its metadata
-database and every stream directory, the segment and WAL format versions
-and the metadata schema version. A directory that fails is refused with
-exit status 1 and left untouched, so a partial or newer backup is never
-started half-empty. Then it creates the stream directories, opens the
-metadata store (migrations), opens storage (takes the lock, runs recovery)
-and records the manifest. See
+the `vyrtel.json` manifest's format, that a used directory has a metadata
+database with a schema and every stream directory, that every file in the
+inventory of the last clean shutdown is there with its size, the segment
+and WAL format versions and the metadata schema version. A directory that
+fails is refused with exit status 1 and left untouched, so a partial or
+newer backup is never started half-empty (`--accept-incomplete-restore`
+starts a partial one on purpose). Then it removes the inventory, creates
+the stream directories, opens the metadata store (migrations), opens
+storage (takes the lock, runs recovery) and records the manifest. See
 [backup and restore](configuration.md#backup-and-restore).
- On a stop signal (SIGINT/SIGTERM; on
+
+On a stop signal (SIGINT/SIGTERM; on
 Windows Ctrl+C, Ctrl+Break, console close or system shutdown) the server
 stops accepting connections, answers new ingest, query and live-tail
 requests with `503 shutting_down`, reports `/ready` as draining, ends
@@ -212,7 +215,9 @@ keeps shutdown fast. The whole drain shares one deadline,
 `server.shutdown_timeout`; past it, on a second stop signal in any of these
 steps, or if the final fsync fails, the process logs what was unfinished
 and exits with status 1 without waiting further
-(`App::serve_until` in `crates/server/src/app.rs`). See
+(`App::serve_until` in `crates/server/src/app.rs`). A shutdown that
+finished every step then records the WAL and segment files and their sizes
+in `vyrtel.json`, for the next start to check. See
 [stopping and upgrading](configuration.md#stopping-and-upgrading). A data-directory lock
 (`data/.lock`) prevents two processes from using the same directory.
 
