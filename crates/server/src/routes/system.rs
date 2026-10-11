@@ -197,6 +197,10 @@ pub async fn info(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
         "queue": { "logs": queue(&stats.logs), "traces": queue(&stats.traces), "metrics": queue(&stats.metrics) },
         "ingest": {
             "maxConcurrent": state.ingest_max_concurrent,
+            "concurrencySource": if state.ingest_admission.derived { "derived" } else { "explicit" },
+            "maxRequestBytes": state.ingest_admission.max_request_bytes,
+            "budgetBytes": state.ingest_admission.budget,
+            "estimatedPeakBytes": state.ingest_admission.estimated_peak,
             "inFlight": state.ingest_max_concurrent.saturating_sub(state.ingest_permits.available_permits()),
             "rejected": state.ingest_rejected.load(Ordering::Relaxed),
             "discarding": crate::routes::ingest::MAX_DISCARD_PENDING

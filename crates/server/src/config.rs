@@ -274,14 +274,14 @@ pub struct IngestSection {
     pub ack_timeout: Duration,
     /// Ingest requests admitted at once, from reading the body until the
     /// write is acknowledged. Beyond this, 429. `0` derives it from the
-    /// memory budget (see [`Config::ingest_max_concurrent`]).
+    /// memory budget (see [`Config::ingest_admission`]).
     pub max_concurrent: usize,
 }
 
 impl Default for IngestSection {
     fn default() -> Self {
         Self {
-            max_request_size: ByteSize(16 << 20),
+            max_request_size: ByteSize(1 << 20),
             queue_capacity: 10_000,
             ack_timeout: Duration::from_secs(30),
             max_concurrent: 0,
@@ -491,6 +491,13 @@ impl Config {
         if self.ingest.queue_capacity == 0 {
             return Err("ingest.queue_capacity must be positive".into());
         }
+        if self.ingest.max_concurrent > INGEST_MAX_CONCURRENT_LIMIT {
+            return Err(format!("ingest.max_concurrent must be at most {INGEST_MAX_CONCURRENT_LIMIT} (0 derives it)"));
+        }
+        let admission = self.ingest_admission();
+        if admission.limit == 0 {
+            return Err(admission.invalid_message());
+        }
         if self.query.max_concurrent == 0 {
             return Err("query.max_concurrent must be positive".into());
         }
@@ -514,14 +521,127 @@ impl Config {
         MemoryBudgets::from_limit(self.storage.max_memory.0, self.storage.segment_target_size.0)
     }
 
+    /// How many ingest requests are admitted at once, and what they are
+    /// estimated to hold. See [`IngestAdmission`].
+    pub fn ingest_admission(&self) -> IngestAdmission {
+        let budget = self.budgets().ingest;
+        let max_request_bytes = self.ingest.max_request_size.0;
+        let per_request = max_request_bytes.saturating_mul(INGEST_BYTES_PER_REQUEST_BYTE).max(1);
+        let derived = self.ingest.max_concurrent == 0;
+        let limit = if derived {
+            let fits = budget.saturating_sub(INGEST_FIXED_OVERHEAD) / per_request;
+            fits.min(INGEST_MAX_DERIVED_CONCURRENCY as u64) as usize
+        } else {
+            self.ingest.max_concurrent
+        };
+        let estimated_peak =
+            per_request.saturating_mul(u64::try_from(limit).unwrap_or(u64::MAX)).saturating_add(INGEST_FIXED_OVERHEAD);
+        IngestAdmission { limit, derived, budget, max_request_bytes, per_request, estimated_peak }
+    }
+
     /// Effective ingest admission limit: `ingest.max_concurrent` when set,
-    /// otherwise as many maximum-size requests as fit in the ingest budget
-    /// (at least 2, at most 1024).
+    /// otherwise as many maximum-size requests as the ingest budget holds.
     pub fn ingest_max_concurrent(&self) -> usize {
-        if self.ingest.max_concurrent > 0 {
-            return self.ingest.max_concurrent;
+        self.ingest_admission().limit
+    }
+}
+
+/// Estimated heap held by one admitted request, per byte of
+/// `ingest.max_request_size`: the read (and gzip-decoded) body, the parse
+/// working set and the parsed batch, which stays admitted until its write
+/// is acknowledged. Measured per format by the `amplification` test in
+/// `tests/overload`: representative fixtures of every format and signal
+/// peak at 7.0–16.0×, and the worst supported one (OTLP/JSON logs of
+/// ~20-byte records) at 17.0× (17.3× with 1 MB fixtures). Event shapes
+/// that amplify more, such as tiny native events, deeply nested properties
+/// or tiny OTLP/protobuf records, are outside this estimate and are not
+/// refused; see docs/configuration.md#ingest-memory.
+pub const INGEST_BYTES_PER_REQUEST_BYTE: u64 = 20;
+
+/// hyper's default HTTP/1 read buffer limit (`max_buf_size`).
+const HTTP1_MAX_READ_BUFFER: u64 = 8192 + 4096 * 100;
+
+/// Ingest memory not tied to admitted requests: rejected bodies being
+/// drained. At most `MAX_DISCARDING` are read at once, each through its
+/// connection's read buffer, so this is an upper bound by construction
+/// (12.75 MB); the `rejected_body_drain_overhead_is_within_the_fixed_allowance`
+/// test in `tests/overload` measures it. Read buffers of connections that
+/// are not draining a rejected body are not included.
+pub const INGEST_FIXED_OVERHEAD: u64 = crate::routes::ingest::MAX_DISCARDING as u64 * HTTP1_MAX_READ_BUFFER;
+
+/// Upper bound on a derived admission limit.
+pub const INGEST_MAX_DERIVED_CONCURRENCY: usize = 1024;
+
+/// Largest explicit `ingest.max_concurrent` (the admission semaphore's
+/// own limit).
+pub const INGEST_MAX_CONCURRENT_LIMIT: usize = tokio::sync::Semaphore::MAX_PERMITS;
+
+/// The effective ingest admission limit and the memory it is estimated to
+/// need. Derived (`ingest.max_concurrent = 0`), the limit is
+/// `(ingest budget − fixed overhead) ÷ (max_request_size ×
+/// INGEST_BYTES_PER_REQUEST_BYTE)`, rounded down and capped at
+/// [`INGEST_MAX_DERIVED_CONCURRENCY`]; zero means the configuration is
+/// invalid. An explicit value is used as is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestAdmission {
+    pub limit: usize,
+    pub derived: bool,
+    /// The ingest share of `storage.max_memory`.
+    pub budget: u64,
+    pub max_request_bytes: u64,
+    /// Estimated bytes held by one maximum-size request.
+    pub per_request: u64,
+    /// `limit × per_request + fixed overhead`, saturating.
+    pub estimated_peak: u64,
+}
+
+impl IngestAdmission {
+    pub fn within_budget(&self) -> bool {
+        self.estimated_peak <= self.budget
+    }
+
+    /// Why a derived limit of zero is invalid, and how to fix it.
+    pub fn invalid_message(&self) -> String {
+        let needed = self.per_request.saturating_add(INGEST_FIXED_OVERHEAD);
+        // The ingest share is computed as max_memory / 100 * 15; both
+        // suggestions are rounded so that they really fit (whole MB up, KB
+        // down).
+        let min_memory_mb = needed.div_ceil(15).saturating_mul(100).div_ceil(1 << 20);
+        let max_request_kb = (self.budget.saturating_sub(INGEST_FIXED_OVERHEAD) / INGEST_BYTES_PER_REQUEST_BYTE) >> 10;
+        let mut msg = format!(
+            "ingest budget too small: one {} request needs an estimated {} ({INGEST_BYTES_PER_REQUEST_BYTE}× the request \
+             size, plus {} fixed ingest overhead) but the ingest share of storage.max_memory is {}; increase \
+             storage.max_memory to at least {min_memory_mb}MB",
+            human_bytes(self.max_request_bytes),
+            human_bytes(needed),
+            human_bytes(INGEST_FIXED_OVERHEAD),
+            human_bytes(self.budget),
+        );
+        if max_request_kb >= 1 {
+            msg.push_str(&format!(", reduce ingest.max_request_size to at most {max_request_kb}KB"));
         }
-        (self.budgets().ingest / self.ingest.max_request_size.0.max(1)).clamp(2, 1024) as usize
+        msg.push_str(", or set ingest.max_concurrent explicitly (see docs/configuration.md#ingest-memory)");
+        msg
+    }
+
+    /// A startup warning when an explicit `ingest.max_concurrent` is
+    /// estimated to exceed the ingest budget. `None` when derived or within
+    /// budget.
+    pub fn warning(&self) -> Option<String> {
+        if self.derived || self.within_budget() {
+            return None;
+        }
+        Some(format!(
+            "ingest.max_concurrent = {} with ingest.max_request_size = {} may need an estimated {} of ingest memory \
+             under load, more than the {} ingest budget; the limit is honoured. Lower ingest.max_concurrent or \
+             ingest.max_request_size, raise storage.max_memory, or set ingest.max_concurrent = 0 to derive it \
+             (see docs/configuration.md#ingest-memory)",
+            self.limit,
+            human_bytes(self.max_request_bytes),
+            human_bytes(self.estimated_peak),
+            human_bytes(self.budget),
+        ))
     }
 }
 
@@ -613,7 +733,7 @@ mod tests {
             metrics = "30d"
 
             [ingest]
-            max_request_size = "16MB"
+            max_request_size = "1MB"
             queue_capacity = 10000
             "#,
         )
@@ -679,29 +799,186 @@ mod tests {
         assert_eq!(big.segment_target[0], 64 << 20, "configured target respected when it fits");
     }
 
-    #[test]
-    fn ingest_admission_limit() {
-        // Default: 15% of 512MB ÷ 16MB requests = 4.
+    const MB: u64 = 1 << 20;
+
+    fn sized(memory: u64, request: u64) -> Config {
         let mut c = Config::default();
-        assert_eq!(c.ingest_max_concurrent(), 4);
-        // Never fewer than 2, never more than 1024 when derived.
-        c.storage.max_memory = ByteSize(64 << 20);
-        assert_eq!(c.ingest_max_concurrent(), 2);
-        c.storage.max_memory = ByteSize(64 << 30);
-        c.ingest.max_request_size = ByteSize(1024);
-        assert_eq!(c.ingest_max_concurrent(), 1024);
-        // An explicit value wins, including outside the derived range.
+        c.storage.max_memory = ByteSize(memory);
+        c.ingest.max_request_size = ByteSize(request);
+        c
+    }
+
+    // TC-01: the derived limit is (15% of max_memory − fixed overhead) ÷
+    // (max_request_size × factor), rounded down.
+    #[test]
+    fn derived_ingest_admission() {
+        // Defaults: 512MB, 1MB requests. 76.8MB budget, 20MB per request.
+        let c = Config::default();
+        let a = c.ingest_admission();
+        assert_eq!(c.ingest.max_request_size, ByteSize(MB));
+        assert_eq!((a.limit, a.derived, a.budget, a.per_request), (3, true, 80_530_635, 20 * MB));
+        assert_eq!(a.estimated_peak, 3 * 20 * MB + INGEST_FIXED_OVERHEAD);
+        assert!(a.within_budget());
+        assert_eq!(c.ingest_max_concurrent(), 3);
+        c.validate().unwrap();
+        // The pre-REL-14 defaults (512MB / 16MB requests) admitted 4 at a
+        // time; one such request is now estimated at 320MB, so the old
+        // default request size no longer fits at all.
+        assert_eq!(sized(512 * MB, 16 * MB).ingest_max_concurrent(), 0);
+        // Common combinations.
+        for (memory, request, limit) in [
+            (256 * MB, MB, 1),
+            (1 << 30, MB, 7),
+            (2 << 30, MB, 14),
+            (2 << 30, 4 * MB, 3),
+            (8 << 30, 16 * MB, 3),
+            (128 * MB, 256 << 10, 1),
+            (256 * MB, 256 << 10, 5),
+        ] {
+            assert_eq!(sized(memory, request).ingest_max_concurrent(), limit, "{memory} / {request}");
+        }
+        // Rounds down: exactly n requests plus the overhead fit at the
+        // boundary, one byte more per request fits n − 1.
+        let mut c = Config::default();
+        let budget = c.budgets().ingest;
+        for n in [1u64, 2, 3] {
+            c.ingest.max_request_size = ByteSize((budget - INGEST_FIXED_OVERHEAD) / n / INGEST_BYTES_PER_REQUEST_BYTE);
+            assert_eq!(c.ingest_max_concurrent(), n as usize);
+            c.ingest.max_request_size.0 += 1;
+            assert_eq!(c.ingest_max_concurrent(), n as usize - 1);
+        }
+        // Upper cap.
+        let c = sized(64 << 30, 1024);
+        assert_eq!(c.ingest_max_concurrent(), INGEST_MAX_DERIVED_CONCURRENCY);
+        c.validate().unwrap();
+    }
+
+    // TC-01 / AC2: one maximum-size request plus overhead must fit, or the
+    // configuration is rejected with what to change. No minimum of two.
+    #[test]
+    fn derived_ingest_admission_that_cannot_fit_one_request_is_invalid() {
+        // 219MB is the smallest max_memory that fits one 1MB request.
+        let ok = sized(219 * MB, MB);
+        assert_eq!(ok.ingest_max_concurrent(), 1);
+        ok.validate().unwrap();
+        let low = sized(218 * MB, MB);
+        assert_eq!(low.ingest_max_concurrent(), 0);
+        let err = low.validate().unwrap_err();
+        assert!(err.contains("ingest budget too small"), "{err}");
+        assert!(err.contains("one 1 MB request needs an estimated 32.8 MB"), "{err}");
+        assert!(err.contains("increase storage.max_memory to at least 219MB"), "{err}");
+        assert!(err.contains("reduce ingest.max_request_size to at most 1021KB"), "{err}");
+        assert!(err.contains("set ingest.max_concurrent explicitly"), "{err}");
+        assert!(sized(218 * MB, 1021 << 10).validate().is_ok());
+        assert!(sized(218 * MB, 1022 << 10).validate().is_err());
+
+        // At the 64MB minimum the ingest share (9.6MB) is below the fixed
+        // overhead alone: no request size fits, so none is suggested.
+        let err = sized(64 * MB, MB).validate().unwrap_err();
+        assert!(err.contains("at least 219MB"), "{err}");
+        assert!(!err.contains("reduce ingest.max_request_size"), "{err}");
+        assert_eq!(sized(64 * MB, 1024).ingest_max_concurrent(), 0);
+
+        // An explicit limit makes it valid again (with a warning).
+        let mut c = sized(64 * MB, MB);
+        c.ingest.max_concurrent = 1;
+        c.validate().unwrap();
+        assert!(c.ingest_admission().warning().is_some());
+    }
+
+    // TC-01: extreme and invalid values neither wrap nor panic.
+    #[test]
+    fn ingest_admission_arithmetic_saturates() {
+        for request in [0, 1, u64::MAX / INGEST_BYTES_PER_REQUEST_BYTE + 1, u64::MAX] {
+            for memory in [0, 64 * MB, u64::MAX] {
+                let a = sized(memory, request).ingest_admission();
+                assert!(a.limit <= INGEST_MAX_DERIVED_CONCURRENCY);
+                assert!(a.per_request >= 1);
+            }
+        }
+        let huge = sized(u64::MAX, u64::MAX).ingest_admission();
+        assert_eq!((huge.limit, huge.per_request), (0, u64::MAX));
+        assert!(huge.invalid_message().contains("ingest budget too small"));
+        // Zero is caught by the 1KB minimum, not by a division by zero.
+        assert!(sized(512 * MB, 0).validate().unwrap_err().contains("at least 1KB"));
+
+        let mut c = Config::default();
+        c.ingest.max_concurrent = INGEST_MAX_CONCURRENT_LIMIT;
+        c.validate().unwrap();
+        let a = c.ingest_admission();
+        assert_eq!(a.limit, INGEST_MAX_CONCURRENT_LIMIT);
+        assert!(a.estimated_peak > a.budget);
+        c.ingest.max_request_size = ByteSize(u64::MAX);
+        assert_eq!(c.ingest_admission().estimated_peak, u64::MAX);
+        c.ingest.max_concurrent = usize::MAX;
+        let err = c.validate().unwrap_err();
+        assert!(err.contains("ingest.max_concurrent must be at most"), "{err}");
+        assert_eq!(c.ingest_admission().estimated_peak, u64::MAX);
+    }
+
+    // TC-02 / AC4: explicit values are honoured as before, inside or
+    // outside the derived range; only over-budget ones warn.
+    #[test]
+    fn explicit_ingest_concurrency_is_honoured_and_warns_over_budget() {
+        let mut c = Config::default();
+        assert_eq!(c.ingest_admission().warning(), None, "derived never warns");
         c.ingest.max_concurrent = 1;
         assert_eq!(c.ingest_max_concurrent(), 1);
-        let mut c = Config::default();
-        c.apply_env(|k| (k == "VYRTEL_INGEST_MAX_CONCURRENT").then(|| "7".to_string())).unwrap();
-        assert_eq!(c.ingest_max_concurrent(), 7);
-        assert!(c.apply_env(|k| (k == "VYRTEL_INGEST_MAX_CONCURRENT").then(|| "lots".to_string())).is_err());
-        let c = Config::from_toml(
-            "[ingest]
-max_concurrent = 3",
+        assert_eq!(c.ingest_admission().warning(), None);
+        // 3 × 20MB + 12.75MB = 72.75MB fits in 76.8MB; 4 needs 92.75MB.
+        c.ingest.max_concurrent = 3;
+        assert!(!c.ingest_admission().derived);
+        assert_eq!(c.ingest_admission().warning(), None);
+        c.ingest.max_concurrent = 4;
+        assert_eq!(c.ingest_max_concurrent(), 4);
+        let w = c.ingest_admission().warning().expect("over budget");
+        for part in [
+            "ingest.max_concurrent = 4",
+            "ingest.max_request_size = 1 MB",
+            "estimated 92.8 MB",
+            "76.8 MB ingest budget",
+            "the limit is honoured",
+        ] {
+            assert!(w.contains(part), "{part:?} in {w}");
+        }
+        // Above the derived cap, and with the pre-REL-14 16MB requests.
+        c.ingest.max_concurrent = 5000;
+        assert_eq!(c.ingest_max_concurrent(), 5000);
+        c.validate().unwrap();
+        let mut old = sized(512 * MB, 16 * MB);
+        old.ingest.max_concurrent = 4;
+        old.validate().unwrap();
+        assert_eq!(old.ingest_max_concurrent(), 4);
+        assert!(old.ingest_admission().warning().unwrap().contains("estimated 1.3 GB"));
+    }
+
+    // TC-02: TOML and environment precedence for both settings.
+    #[test]
+    fn ingest_admission_config_sources() {
+        let mut c = Config::from_toml(
+            r#"
+            [storage]
+            max_memory = "1GB"
+            [ingest]
+            max_concurrent = 3
+            max_request_size = "2MB"
+            "#,
         )
         .unwrap();
         assert_eq!(c.ingest_max_concurrent(), 3);
+        assert!(!c.ingest_admission().derived);
+        // The environment wins over the file, including back to derived.
+        c.apply_env(|k| (k == "VYRTEL_INGEST_MAX_CONCURRENT").then(|| "0".to_string())).unwrap();
+        assert!(c.ingest_admission().derived);
+        assert_eq!(c.ingest_max_concurrent(), 3, "(153.6MB − 12.75MB) ÷ 40MB");
+        c.apply_env(|k| (k == "VYRTEL_INGEST_MAX_REQUEST_SIZE").then(|| "512KB".to_string())).unwrap();
+        assert_eq!(c.ingest_max_concurrent(), 14);
+        c.apply_env(|k| (k == "VYRTEL_INGEST_MAX_CONCURRENT").then(|| "7".to_string())).unwrap();
+        assert_eq!(c.ingest_max_concurrent(), 7);
+        assert!(c.apply_env(|k| (k == "VYRTEL_INGEST_MAX_CONCURRENT").then(|| "lots".to_string())).is_err());
+        assert!(c.apply_env(|k| (k == "VYRTEL_INGEST_MAX_CONCURRENT").then(|| "-1".to_string())).is_err());
+        // A file that is invalid only because of derived sizing.
+        let c = Config::from_toml("[storage]\nmax_memory = \"64MB\"").unwrap();
+        assert!(c.validate().unwrap_err().contains("ingest budget too small"));
     }
 }

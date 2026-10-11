@@ -224,6 +224,7 @@ async fn cancelled_while_decoding_releases_slot() {
     let s = TestServer::start_with(|c| {
         c.ingest.max_concurrent = 1;
         c.ingest.queue_capacity = 100_000;
+        c.ingest.max_request_size = server::config::ByteSize(16 << 20);
     })
     .await;
     // Large enough that parsing is still running when the client leaves.
@@ -270,5 +271,65 @@ async fn cancelled_while_waiting_for_acknowledgement_releases_slot() {
     assert_eq!(next.await.unwrap().status(), 200);
     // The abandoned batch was already queued, so it is still written.
     assert_eq!(s.messages("").await, ["abandoned", "next"]);
+    s.stop().await;
+}
+
+// REL-14 AC5: with `max_concurrent = 0` the derived limit is what admission
+// enforces and what system info reports, and the 429 is the same.
+#[tokio::test(flavor = "multi_thread")]
+async fn derived_limit_is_enforced_and_reported() {
+    let s = TestServer::start().await;
+    let expected = s.config.ingest_admission();
+    assert_eq!((expected.limit, expected.derived), (3, true), "512MB / 1MB defaults");
+    let info = s.get_ok("/api/v1/system/info").await;
+    assert_eq!(info["ingest"]["maxConcurrent"], 3);
+    assert_eq!(info["ingest"]["concurrencySource"], "derived");
+    assert_eq!(info["ingest"]["maxRequestBytes"], 1 << 20);
+    assert_eq!(info["ingest"]["budgetBytes"], expected.budget);
+    assert_eq!(info["ingest"]["estimatedPeakBytes"], expected.estimated_peak);
+    assert!(expected.estimated_peak <= expected.budget);
+
+    let release = stall_writer(&s, Signal::Logs);
+    let mut pending = Vec::new();
+    for i in 0..3 {
+        let (client, url) = (s.client.clone(), s.u("/api/v1/events"));
+        pending.push(tokio::spawn(async move {
+            client.post(url).json(&json!({ "message": format!("m{i}") })).send().await.unwrap().status()
+        }));
+        wait_until("batch queued", || queue_depth(&s, Signal::Logs) == i + 1).await;
+    }
+    assert_eq!(ingest_in_flight(&s), 3);
+    assert_rate_limited(ingest_one(&s, "fourth").await).await;
+    drop(release);
+    for p in pending {
+        assert_eq!(p.await.unwrap(), 200);
+    }
+    wait_until("slots freed", || ingest_in_flight(&s) == 0).await;
+    assert_eq!(ingest_one(&s, "after").await.status(), 200);
+    s.stop().await;
+}
+
+// REL-14 AC4: an explicit limit above the estimated budget is honoured.
+#[tokio::test(flavor = "multi_thread")]
+async fn explicit_limit_over_budget_is_honoured() {
+    let s = limited(8).await;
+    assert!(s.config.ingest_admission().warning().is_some());
+    let info = s.get_ok("/api/v1/system/info").await;
+    assert_eq!(info["ingest"]["maxConcurrent"], 8);
+    assert_eq!(info["ingest"]["concurrencySource"], "explicit");
+    assert!(info["ingest"]["estimatedPeakBytes"].as_u64().unwrap() > info["ingest"]["budgetBytes"].as_u64().unwrap());
+    let release = stall_writer(&s, Signal::Logs);
+    let mut pending = Vec::new();
+    for i in 0..8 {
+        let (client, url) = (s.client.clone(), s.u("/api/v1/events"));
+        pending
+            .push(tokio::spawn(async move { client.post(url).json(&json!({ "message": i })).send().await.unwrap() }));
+        wait_until("batch queued", || queue_depth(&s, Signal::Logs) == i + 1).await;
+    }
+    assert_rate_limited(ingest_one(&s, "ninth").await).await;
+    drop(release);
+    for p in pending {
+        assert_eq!(p.await.unwrap().status(), 200);
+    }
     s.stop().await;
 }

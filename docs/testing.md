@@ -202,7 +202,10 @@ talks HTTP to it:
   promptly without their bodies being read, every error frees the slot, and
   so does a client disconnecting while the body is read, while it is parsed
   and while the write awaits acknowledgement (the writer thread is parked
-  with `stall_writer` to hold a request there);
+  with `stall_writer` to hold a request there); with
+  `max_concurrent = 0` the derived limit (3 at the defaults) is what is
+  enforced and what `system/info` reports, and an explicit limit over the
+  estimated budget is honoured (REL-14);
 * storage write failures (`storage_faults.rs`, needs `--features
   fault-injection`): native, NDJSON and OTLP logs, traces and metrics get
   `503 storage_write_failed` with a reason and store nothing while the WAL cannot write; `/ready` is 503, names the
@@ -262,6 +265,175 @@ the 429, that peak heap growth stays below `max_memory`, and that everything
 is released after the 10 s discard timeout. One run: 256 discard tasks,
 512 new runtime tasks, 18.2 MB peak heap growth; without the cap, 1,200 new
 tasks and 38.2 MB.
+
+The two REL-02 tests set `ingest.max_concurrent` explicitly, so they are
+unaffected by the derived sizing below (and log its over-budget warning).
+
+### Ingest amplification and derived admission
+
+REL-14 replaced the derived ingest limit with one budgeted from measured
+parse amplification ([formula](configuration.md#ingest-memory)). Three
+tests in the same `overload` binary back it. Clients run on a separate
+runtime whose allocations the counting allocator skips, so only the
+server's heap is measured. Run them on a release build; the figures below
+are from one Windows 11 x86_64 laptop (`cargo test --release`, Rust 1.96),
+so expect other machines to differ somewhat.
+
+```bash
+cargo test -p server --release --test overload -- --nocapture --test-threads 1
+# the pre-REL-14 comparison (needs ~2 GB of memory):
+cargo test -p server --release --test overload pre_rel14 -- --nocapture --ignored
+```
+
+**Fixtures** (`tests/overload/fixtures.rs`). Every body is generated from
+seed `0x5EED0014` (xorshift), so reruns are byte-identical. Each one is
+filled to just under the target decoded size (2 MB by default;
+`VYRTEL_AMPLIFICATION_TARGET=<bytes>` changes it) and sent plain and gzip.
+OTLP fixtures are built once as protobuf structs and encoded both ways, so
+both encodings carry the same records.
+
+| Fixture | Record shape | Events in 2 MB |
+|---|---|---:|
+| native JSON / NDJSON representative | app event, level, service, trace ids, 5 properties (~330 B) | 6,150 |
+| CLEF representative | Serilog request log, template and 7 properties, 10% with `@x` | 5,940 |
+| NDJSON string-heavy | 12 KB of strings per event | 173 |
+| native JSON / NDJSON nested properties | 6 levels, ~40 small values | ~7,950 |
+| native JSON / NDJSON many small events | `{"message":"…"}` (~30 B) | 87,626 |
+| NDJSON empty objects | `{}` | 699,050 |
+| OTLP logs representative | SDK resource (7 attributes), body, 4 attributes, trace ids | 9,078 protobuf / 4,017 JSON |
+| OTLP logs many small records | body only (~20 B) | 131,072 / 13,189 |
+| OTLP logs large shared resource | 200-attribute resource, tiny records | 15,887 / 5,745 |
+| OTLP traces representative | 5 attributes, 1 in 8 with an event, 1 in 10 failed | 8,594 / 3,432 |
+| OTLP metrics representative | gauges and sums (2 points), histograms (11 buckets) | 11,650 / 5,287 data points |
+
+**Per-format peaks** (`amplification_per_format_is_within_the_admission_estimate`).
+For every fixture and encoding it measures, as multiples of the decoded
+body: *parse*, decoding alone in-process over a body already in memory;
+*admission*, from sending the request until its batch is in the storage
+queue, with the writer parked (body read and gzip-decoded, parse, parsed
+batch: what an admitted request owns); and *end to end*, until the
+response, which adds the WAL record and the active segment (storage's
+budget). A fresh server per request keeps earlier writes out of the
+window. It asserts that every fixture inside the supported envelope stays
+at or under the 20× estimate.
+
+| Fixture | Admission ×body, plain / gzip | End to end ×body | In the 20× envelope |
+|---|---:|---:|:---:|
+| native JSON representative | 9.42 / 9.35 | 9.42 | yes |
+| NDJSON representative | 9.42 / 9.35 | 9.42 | yes |
+| CLEF representative | 6.96 / 6.82 | 6.96 | yes |
+| NDJSON string-heavy | 2.33 / 2.48 | 3.66 | yes |
+| OTLP protobuf logs representative | 12.54 / 12.46 | 12.65 | yes |
+| OTLP JSON logs representative | 13.34 / 13.20 | 13.34 | yes |
+| OTLP JSON logs many small records | 17.00 / 16.83 | 17.00 | yes |
+| OTLP protobuf traces representative | 14.60 / 14.52 | 14.60 | yes |
+| OTLP JSON traces representative | 14.36 / 14.22 | 14.36 | yes |
+| OTLP protobuf metrics representative | 13.67 / 13.59 | 14.22 | yes |
+| OTLP JSON metrics representative | 15.95 / 15.78 | 15.95 | yes |
+| native JSON / NDJSON nested properties | 30.42 / 30.28 | 30.42 | no |
+| native JSON / NDJSON many small events | 32.10 / 32.03 | 34.72 | no |
+| OTLP protobuf logs many small records | 92.28 / 92.28 | 130.86 | no |
+| OTLP JSON logs large shared resource | 124.76 / 124.29 | 222.75 | no |
+| NDJSON empty objects | 213.25 / 213.05 | 269.24 | no |
+| OTLP protobuf logs large shared resource | 1696.56 / 1695.99 | 3079.30 | no |
+
+At 1 MB (`VYRTEL_AMPLIFICATION_TARGET=1048576`, the new default request
+size) every figure is within 3% of the 2 MB one: the highest supported
+fixture is 17.29× (OTLP/JSON small records) and the worst representative
+16.20× (OTLP/JSON metrics); empty objects peak at 213.49×, i.e. 213 MB for
+one 1 MB request. These shapes are accepted in production; see the
+limitations in [configuration](configuration.md#ingest-memory).
+
+Parse alone is consistently 1.25× body below admission (the body itself
+plus read buffers). gzip adds nothing measurable at these sizes: decoding
+is streamed in 64 KB reads. The highest supported figure is 17.0× (17.29×
+at 1 MB); 20× keeps a 16–18% margin over it and 23–25% over the worst
+representative batch (OTLP/JSON metrics, 15.95–16.20×). The shapes outside the envelope amplify by event count
+(each event costs a few hundred bytes however small its JSON) or by copying
+a shared OTLP resource into every event. Count-based admission cannot cover
+them at useful request sizes; see the limitations in
+[configuration](configuration.md#ingest-memory).
+
+**Sustained overload** (`derived_admission_holds_the_ingest_budget_under_overload`).
+Default and constrained derived configurations, three consecutive runs
+each. `4 × limit + 16` clients cycle through every supported fixture at the
+request-size limit, plain and gzip, retrying 429s after 5 ms. Each run has
+three phases: 1 s of warm-up with every slot held by the test, so all
+clients are rejected and their connections' read buffers reach working
+size (reported, not counted: per-connection HTTP overhead); 2 s with every
+writer parked, so admitted requests hold their slots with their batches
+queued and unacknowledged while everyone else is rejected and drained; and
+2 s with the writers running. In the parked phase storage allocates
+nothing, so all heap growth is attributed to ingest; it includes the
+server's connection and runtime buffers, which over-counts. It must stay
+within the ingest budget. Process heap growth over both phases includes the
+WAL and active segments and must stay within `max_memory`.
+
+| Config | Run | Limit | Clients | Ingest budget | Conn. buffers | Ingest peak (parked) | 429s parked | 200s / 429s running | Process heap peak | RSS before / parked / after |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| default (512MB, 1MB) | 1 | 3 | 28 | 76.8 MB | 12.0 MB | 36.2 MB | 4,959 | 22 / 6,673 | 129.7 MB | 67.5 / 97.8 / 200.9 MB |
+| default (512MB, 1MB) | 2 | 3 | 28 | 76.8 MB | 12.3 MB | 37.7 MB | 4,590 | 26 / 6,656 | 142.4 MB | 142.8 / 145.9 / 220.5 MB |
+| default (512MB, 1MB) | 3 | 3 | 28 | 76.8 MB | 12.3 MB | 43.4 MB | 4,606 | 22 / 6,385 | 102.3 MB | 42.8 / 112.0 / 183.9 MB |
+| constrained (128MB, 256KB) | 1 | 1 | 20 | 19.2 MB | 6.2 MB | 3.5 MB | 2,966 | 76 / 5,151 | 45.9 MB | 53.2 / 60.9 / 115.0 MB |
+| constrained (128MB, 256KB) | 2 | 1 | 20 | 19.2 MB | 5.9 MB | 4.1 MB | 2,907 | 86 / 5,192 | 43.2 MB | 114.9 / 115.6 / 78.5 MB |
+| constrained (128MB, 256KB) | 3 | 1 | 20 | 19.2 MB | 5.9 MB | 3.5 MB | 2,996 | 68 / 5,067 | 49.0 MB | 32.5 / 47.0 / 106.1 MB |
+
+Every run saturated at exactly the derived limit, returned only 200s and
+429s (no resets) and accepted a request afterwards. The default runs peak at
+36–43 MB of ingest heap, under both the 72.75 MB estimate and the 76.8 MB
+budget. RSS is the whole test process (clients, fixtures and earlier runs
+included) and is reported for context only.
+
+**Before and after.** `pre_rel14_defaults_under_the_same_overload` runs the
+same harness with the old defaults (16MB requests, 4 slots) and
+`queue_capacity = 200000`, so that 16MB batches are parsed and queued rather
+than refused for exceeding the queue.
+
+| | Before (512MB, 16MB, 4 slots) | After (512MB, 1MB, 3 slots) |
+|---|---:|---:|
+| Ingest heap peak, writers parked (76.8 MB budget) | 494.7–714.7 MB | 36.2–43.4 MB |
+| Process heap peak (512 MB `max_memory`) | 540.0–825.5 MB | 102.3–142.4 MB |
+| Requests / MB accepted in 2 s of writing | 4–8 / 64–128 MB | 22–26 / 22–26 MB |
+| 429s in 2 s of writing | 692–709 | 6,385–6,673 |
+
+The trade-off: with 1MB requests and 3 slots, the same overload accepts
+fewer bytes per second of writing and rejects far more requests, and
+clients that sent 16MB batches must send smaller ones. In return ingest
+stays inside its budget instead of exceeding `max_memory`.
+
+**Linux release run.** The same suite in a `rust:1-bookworm` container
+(Docker Desktop, Linux x86_64, 22 cores, 15 GB, Rust 1.99.0, `--release
+--locked`), with the repository mounted read-only:
+
+```bash
+docker run --rm -v "$PWD:/src:ro" -v vyrtel-target:/target -e CARGO_TARGET_DIR=/target -w /src \
+  rust:1-bookworm cargo test -p server --release --locked --test overload -- --nocapture --test-threads 1
+```
+
+| | Linux x86_64 | Windows x86_64 |
+|---|---:|---:|
+| Admission ×body, every fixture | within 0.15 of Windows | table above |
+| Highest supported fixture | 17.00× | 17.00× |
+| Default ingest peak, writers parked (3 runs) | 21.2–28.5 MB | 36.2–43.4 MB |
+| Constrained ingest peak (3 runs) | 1.6–4.4 MB | 3.5–4.1 MB |
+| Drain peak (12.75 MB allowance) | 2.87 MB | 2.9–6.7 MB |
+| Pre-REL-14 ingest peak (3 runs) | 458.7–773.8 MB | 494.7–714.7 MB |
+
+Linux RSS climbed to about 507 MB during the run and stayed there: glibc
+keeps freed memory, and the amplification test that runs first allocates
+over 400 MB for its out-of-envelope fixtures. RSS from this harness is
+therefore a process high-water mark, not a per-run figure. Measure RSS for
+release sign-off on a dedicated server process, as PERF-GATE-1 (#170)
+requires.
+
+**Rejected-body drain** (`rejected_body_drain_overhead_is_within_the_fixed_allowance`).
+One slot, held by a stalled upload; 64 clients send 1 MB bodies (half gzip)
+as fast as they are rejected, for 3 s. After 1 s of warm-up the
+connections' read buffers are at working size (about 470 KB each, about
+29 MB in all, not counted). The remaining 2 s measure the drain itself
+against the 12.75 MB fixed overhead (32 drains × hyper's 408 KB read
+buffer). Measured drain peaks: 2.9–6.7 MB in release runs, 6.8 MB in a debug
+run.
 
 ## Frontend tests
 

@@ -95,7 +95,10 @@ sequenceDiagram
   ready, so it bounds bodies, decoded events and requests awaiting their
   acknowledgement together. It is released however the request ends,
   including client disconnects; a request abandoned mid-parse keeps it until
-  the parse (and its memory) is gone.
+  the parse (and its memory) is gone. Derived from the memory budget, the
+  number of slots assumes each request holds 20× `max_request_size` (the
+  measured parse amplification plus a margin); see
+  [ingest memory](configuration.md#ingest-memory).
 * The writer drains whatever is queued into one group commit, so `strict`
   durability costs one fsync per group, not per request.
 * A request is acknowledged only after its WAL record is written (and

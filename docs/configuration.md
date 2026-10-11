@@ -34,7 +34,7 @@ traces = "14d"
 metrics = "30d"
 
 [ingest]
-max_request_size = "16MB"
+max_request_size = "1MB"
 queue_capacity = 10000
 
 [auth]
@@ -55,7 +55,7 @@ admin_password = "change-me"     # or VYRTEL_AUTH_ADMIN_PASSWORD
 | Key                   | Default   | Env                                    | Description                                                                                                                                        |
 |-----------------------|-----------|----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------|
 | `path`                | `./data`  | `VYRTEL_STORAGE_PATH`                | Data directory. Everything persistent lives here.                                                                                                  |
-| `max_memory`          | `512MB`   | `VYRTEL_STORAGE_MAX_MEMORY`          | Global memory budget (see below). Minimum 64MB.                                                                                                    |
+| `max_memory`          | `512MB`   | `VYRTEL_STORAGE_MAX_MEMORY`          | Global memory budget (see below). Minimum 64MB; with a derived ingest limit, at least 219MB for 1MB requests ([ingest memory](#ingest-memory)).    |
 | `segment_target_size` | `64MB`    | `VYRTEL_STORAGE_SEGMENT_TARGET_SIZE` | Seal the active segment at this *uncompressed in-memory* size (capped by the memory budget). Compressed segment files are typically 5–15× smaller. |
 | `segment_max_age`     | `5m`      | `VYRTEL_STORAGE_SEGMENT_MAX_AGE`     | Seal the active segment after this long, even if small.                                                                                            |
 | `segment_max_events`  | `2000000` | –                                      | Seal after this many events.                                                                                                                       |
@@ -82,18 +82,146 @@ by up to one segment's time span.
 
 | Key                | Default | Env                                | Description                                                                                                      |
 |--------------------|---------|------------------------------------|------------------------------------------------------------------------------------------------------------------|
-| `max_request_size` | `16MB`  | `VYRTEL_INGEST_MAX_REQUEST_SIZE` | Maximum ingest body size, both after gzip decoding and on the wire (inclusive). Larger requests get 413; see [request size and encoding](api.md#request-size-and-encoding). |
+| `max_request_size` | `1MB`   | `VYRTEL_INGEST_MAX_REQUEST_SIZE` | Maximum ingest body size, both after gzip decoding and on the wire (inclusive). Larger requests get 413; see [request size and encoding](api.md#request-size-and-encoding). Was `16MB` before 0.1.2. |
 | `queue_capacity`   | `10000` | `VYRTEL_INGEST_QUEUE_CAPACITY`   | Events waiting to be written, per signal. When full, requests get 429. A single batch larger than this gets 413. |
 | `ack_timeout`      | `30s`   | –                                  | Give up waiting for a write acknowledgement (503).                                                               |
-| `max_concurrent`   | `0`     | `VYRTEL_INGEST_MAX_CONCURRENT`   | Ingest requests in progress at once, from reading the body until the write is acknowledged. More get 429 without their body being read. `0` derives it from the memory budget (see below). |
+| `max_concurrent`   | `0`     | `VYRTEL_INGEST_MAX_CONCURRENT`   | Ingest requests in progress at once, from reading the body until the write is acknowledged. More get 429 without their body being read. `0` derives it from the memory budget ([ingest memory](#ingest-memory)); an explicit value is always honoured. |
 
-Each admitted request holds its body (up to `max_request_size`) and, while
-it is parsed, the decoded events: typically 4–5× the body size for
-NDJSON/JSON (a 1.8 MB NDJSON body peaks at about 8 MB while parsing).
-Worst-case ingest memory is therefore roughly `max_concurrent ×
-max_request_size × 5`. Requests are usually far smaller than the limit; if
-yours are not, lower `max_concurrent` or `max_request_size`. Status codes
-and retry behaviour are in the [API reference](api.md#ingest-limits-and-retries).
+Status codes and retry behaviour are in the
+[API reference](api.md#ingest-limits-and-retries).
+
+#### Ingest memory
+
+Admission counts requests, not bytes, so the derived limit budgets every
+admitted request as if it were a maximum-size one with a high-amplification
+format. With `ingest.max_concurrent = 0`:
+
+```
+ingest budget   = 15% of storage.max_memory
+per request     = 20 × max_request_size
+fixed overhead  = 12.75 MB
+max_concurrent  = floor((ingest budget − fixed overhead) ÷ per request), at most 1024
+```
+
+The defaults (512MB, 1MB requests) give `(76.8 MB − 12.75 MB) ÷ 20 MB = 3`
+requests, an estimated 72.75 MB at most. `GET /api/v1/system/info` reports
+the effective limit and the estimate under `ingest`
+(`maxConcurrent`, `concurrencySource`, `budgetBytes`,
+`estimatedPeakBytes`).
+
+**What is counted.** Per admitted request: the body as it is read and
+gzip-decoded, the parse working set and the parsed batch, which stays
+admitted in the storage queue until its write is acknowledged. The fixed
+overhead covers rejected bodies being drained so their clients read the 429
+(at most 32 at once, each through its connection's read buffer of up to
+408 KB). The rest of the process is budgeted elsewhere and not counted
+here: the WAL record and the active segment a batch is written into (the
+active segments budget), batches still queued after their client went away
+(bounded by `queue_capacity`), the read buffers of connections that are not
+draining a rejected body, and the runtime.
+
+So the ingest budget bounds what admission owns; it is not a ceiling on
+all memory used to receive data over the network. Every connection that
+uploads quickly has a read buffer of up to 408 KB, whether its request is
+admitted, rejected and waiting to be drained (up to 256 are kept), or idle
+between keep-alive requests, and Vyrtel does not limit the number of
+connections. In the overload test, 28 connections held about 12 MB this way
+and 64 held about 29 MB. Limit connections at a reverse proxy or load
+balancer if many clients upload at once.
+
+**Where 20× comes from.** The `amplification` test measures each format's
+peak heap per byte of decoded body
+([details and full table](testing.md#ingest-amplification-and-derived-admission)).
+Representative batches of native JSON, NDJSON and CLEF peak at 7.0–9.4×;
+OTLP/JSON and OTLP/protobuf logs, traces and metrics at 12.5–16.0×; gzip
+makes no measurable difference. The highest supported fixture, OTLP/JSON
+logs of ~20-byte records, peaks at 17.0×.
+
+**Limitations.** This is an estimate from finite fixtures, not a hard
+memory bound. Event shapes that amplify more than 20× are outside it:
+very small native events (~32× for `{"message":"…"}` lines), deeply
+nested properties (~30×), very small OTLP/protobuf records (~92×), OTLP
+batches that share a large resource across many tiny records (the resource
+is copied into every event; over 100×), and empty objects (`{}`, ~210×).
+Rerun with 1 MB fixtures, the new default request size, every figure is
+within 3% of these.
+
+Such payloads are valid and **are accepted**: nothing limits a request's
+event count or nesting before it is parsed, and the queue's batch limit
+(`queue_capacity`) is checked only after parsing. One 1 MB request of
+empty objects was measured at a 213 MB peak, more than ten times its
+20 MB share, so a few at once can exceed `max_memory`. Until decoding
+enforces such limits, do not expose ingestion to untrusted producers
+without a limit in front of it. If your own producers send such batches,
+keep `max_request_size` well below what you would otherwise use, or set
+`max_concurrent` explicitly from your own measurements.
+
+**Too little memory for one request.** If not even one maximum-size request
+fits, Vyrtel refuses to start rather than admit more than the budget. For
+example `vyrtel --memory-limit 128MB` exits with status 2 and:
+
+```
+vyrtel: configuration error: ingest budget too small: one 1 MB request needs an estimated 32.8 MB (20× the request size, plus 12.8 MB fixed ingest overhead) but the ingest share of storage.max_memory is 19.2 MB; increase storage.max_memory to at least 219MB, reduce ingest.max_request_size to at most 330KB, or set ingest.max_concurrent explicitly (see docs/configuration.md#ingest-memory)
+```
+
+At the 64MB minimum `max_memory` the ingest share is smaller than the fixed
+overhead alone, so a derived limit is never valid there; set
+`max_concurrent` explicitly.
+
+**Explicit limits.** A positive `max_concurrent` is used as given, even
+above 1024 or above the budget. When `max_concurrent × per request + fixed
+overhead` exceeds the ingest budget, startup logs one warning with the
+numbers, for example `VYRTEL_INGEST_MAX_CONCURRENT=8`:
+
+```
+WARN server::app: ingest.max_concurrent = 8 with ingest.max_request_size = 1 MB may need an estimated 172.8 MB of ingest memory under load, more than the 76.8 MB ingest budget; the limit is honoured. Lower ingest.max_concurrent or ingest.max_request_size, raise storage.max_memory, or set ingest.max_concurrent = 0 to derive it (see docs/configuration.md#ingest-memory) max_concurrent=8 max_request_bytes=1048576 ingest_budget_bytes=80530635 estimated_peak_bytes=181141504
+```
+
+Values above 2,305,843,009,213,693,951 (the admission semaphore's limit) are
+rejected.
+
+**Common configurations.** Derived limits before 0.1.2
+(`ingest budget ÷ max_request_size`, at least 2) and now:
+
+| `max_memory` | `max_request_size` | Ingest budget | Before | Now     | Estimated peak now |
+|-------------:|-------------------:|--------------:|-------:|:--------|-------------------:|
+|        64 MB |               1 MB |        9.6 MB |      9 | invalid |                  — |
+|       128 MB |               1 MB |       19.2 MB |     19 | invalid |                  — |
+|       256 MB |               1 MB |       38.4 MB |     38 | 1       |            32.8 MB |
+|   **512 MB** |          **16 MB** |       76.8 MB |  **4** | invalid |                  — |
+|       512 MB |               4 MB |       76.8 MB |     19 | invalid |                  — |
+|   **512 MB** |           **1 MB** |       76.8 MB |     76 | **3**   |            72.8 MB |
+|       512 MB |             256 KB |       76.8 MB |    307 | 12      |            72.8 MB |
+|         1 GB |               4 MB |      153.6 MB |     38 | 1       |            92.8 MB |
+|         1 GB |               1 MB |      153.6 MB |    153 | 7       |           152.8 MB |
+|         2 GB |               4 MB |      307.2 MB |     76 | 3       |           252.8 MB |
+|         2 GB |               1 MB |      307.2 MB |    307 | 14      |           292.8 MB |
+|         4 GB |              16 MB |      614.4 MB |     38 | 1       |           332.8 MB |
+|         8 GB |              16 MB |        1.2 GB |     76 | 3       |           972.8 MB |
+
+Bold rows are the old and new defaults. The old limits ignored parsing
+entirely; under the same overload test the old defaults peaked at 495–715
+MB of ingest heap against the 76.8 MB budget
+([results](testing.md#ingest-amplification-and-derived-admission)).
+
+#### Upgrading to 0.1.2
+
+* `max_request_size` now defaults to `1MB` (was `16MB`). Clients that send
+  larger batches get `413 payload_too_large`: lower their batch size (for
+  example the OpenTelemetry Collector's `send_batch_max_size`, or a Serilog
+  sink's batch limit), or raise `max_request_size` together with
+  `max_memory` (16MB requests need at least 2219MB for one derived slot).
+* With `max_concurrent = 0`, fewer requests are admitted at once (3 instead
+  of 4 at the defaults; see the table), so busy producers may see more
+  `429`s. They are retryable with `Retry-After`.
+* Configurations whose ingest budget cannot hold one request now fail at
+  startup with the message above, instead of starting with 2 slots. This
+  includes `max_memory` below 219MB with 1MB requests, and a `vyrtel.toml`
+  copied from an older example that sets `max_request_size = "16MB"` with
+  512MB. Fix it by raising `max_memory`, lowering `max_request_size`, or
+  setting `max_concurrent` explicitly (which also restores the old
+  behaviour exactly, with a startup warning if it is over budget).
+* Explicit `max_concurrent` values behave exactly as before.
 
 ### `[query]`
 
@@ -163,7 +291,7 @@ budget is enforced by its owner; nothing grows without bound.
 |-----------------|------:|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Active segments |   40% | Split logs 50% / traces 30% / metrics 20%. Each signal seals at the smaller of `segment_target_size` and half its share (the active buffer plus one buffer being sealed must fit). If sealing falls behind, writers wait and ingestion returns 429. |
 | Index cache     |   15% | LRU of segment index regions (Bloom filters, zone maps); evicts when full. Segment summaries are always resident and small.                                                                                                                         |
-| Ingest          |   15% | Unless `ingest.max_concurrent` is set, admits `share ÷ max_request_size` requests at once (2–1024), each from body read to acknowledgement; more get 429. Event queues are bounded by `queue_capacity`.                                            |
+| Ingest          |   15% | Unless `ingest.max_concurrent` is set, admits `(share − 12.75 MB) ÷ (20 × max_request_size)` requests at once (at most 1024; startup fails if that is 0), each from body read to acknowledgement; more get 429 ([ingest memory](#ingest-memory)). Event queues are bounded by `queue_capacity`. |
 | Queries         |   20% | `max_concurrent` queries; each holds at most one page of results plus one decoded block at a time.                                                                                                                                                  |
 | Background      |   10% | Compaction input is capped at a third of this share.                                                                                                                                                                                                |
 
