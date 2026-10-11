@@ -18,6 +18,9 @@ zstd.workspace = true
 # Test-only fault injection: `VYRTEL_CRASH_AT=<point>` aborts the process at
 # a named point (see src/crash.rs). Never enable in release builds.
 crash-points = []
+# Test-only: `storage::fault::inject` makes named write points fail (full
+# disk, permission denied, read-only, short write). Never enable in release builds.
+fault-injection = []
 
 [dev-dependencies]
 criterion.workspace = true
@@ -34,3 +37,8 @@ harness = false
 [[test]]
 name = "crash"
 required-features = ["crash-points"]
+
+# Injects write failures; needs `--features fault-injection`.
+[[test]]
+name = "faults"
+required-features = ["fault-injection"]

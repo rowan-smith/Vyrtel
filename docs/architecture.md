@@ -121,6 +121,12 @@ writer thread, maintenance thread, WAL files, segments and retention. See
 [storage-format.md](storage-format.md) for file layouts, the commit
 procedure and recovery.
 
+A write that fails (full disk, read-only volume, permission denied) is never
+acknowledged: the writer answers it with `storage_write_failed` and records
+a per-signal fault. `/ready` and `/api/v1/system/storage` report the fault
+until that part of the write path works again (see
+[Storage write failures](storage-format.md#storage-write-failures)).
+
 ## Query path
 
 ```mermaid

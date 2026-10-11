@@ -111,6 +111,44 @@ cargo test -p storage --features crash-points --test crash
 restarts it and checks every acknowledged event through the query API, plus
 the `recovery` section of `/api/v1/system/storage`.
 
+## Storage write-failure tests
+
+`crates/storage/tests/faults.rs` injects storage errors at named points in
+the write path. With the test-only `fault-injection` feature,
+`storage::fault::inject(dir, point, fault)` makes `point` fail for files
+below `dir` until the returned guard is dropped. The points are
+`wal.append`, `wal.sync`, `wal.create`, `segment.write`, `segment.sync` and
+`probe`. The faults are full disk, permission denied, read-only and short
+write (half the bytes, then an error). Without the feature the checks
+compile to nothing. The tests check that:
+
+* a failed WAL append (each fault, both durability modes) gets
+  `WriteFailed`, is not visible, and leaves no torn record: after a restart
+  exactly the acknowledged events are back and nothing is quarantined;
+* a failed `strict` fsync rejects the batch, cuts it from the WAL and fsyncs that cut before replying (`notStored`). The
+  order is checked with
+  `storage::fault::inject::record(dir)`, which lists the fault points reached, because a process restart cannot show
+  lost filesystem metadata the way a power loss would;
+* if the cut's fsync fails too, the reply is `WriteUncertain` (`unknown`), the idle writer fsyncs the cut on its own
+  once storage works (no request needed), and any later acknowledgement waits for that fsync;
+* a WAL fault clears without new requests once storage works, but not while writes in the WAL directory still fail;
+* after a failed background fsync, `normal` mode waits for an fsync before
+  acknowledging, and rejects requests while it keeps failing;
+* a failing seal (segment write or fsync) makes new batches fail fast once
+  the writer has to wait, and every acknowledged batch is sealed after a
+  restart;
+* a failed WAL creation stalls rotation, and ingest resumes by itself once
+  storage works;
+* faults name the operation, the reason and a data-directory-relative path,
+  clear once that part of the write path works again, and never contain the
+  host path;
+* the write probe reports full, read-only and permission-denied storage,
+  and on Unix a real read-only directory (skipped as root).
+
+```bash
+cargo test -p storage --features fault-injection --test faults
+```
+
 ## Storage correctness (indexed vs brute force)
 
 `crates/query/tests/correctness.rs` generates messy datasets (the same field
@@ -164,6 +202,16 @@ talks HTTP to it:
   so does a client disconnecting while the body is read, while it is parsed
   and while the write awaits acknowledgement (the writer thread is parked
   with `stall_writer` to hold a request there);
+* storage write failures (`storage_faults.rs`, needs `--features
+  fault-injection`): native, NDJSON and OTLP logs, traces and metrics get
+  `503 storage_write_failed` with a reason and store nothing while the WAL cannot write; `/ready` is 503, names the
+  signals and recovers without a restart, and also with no new traffic at all;
+  `outcome` is `notStored`, or `unknown` when the rollback's fsync is denied too; a failing write probe (full or
+  read-only) makes `/ready` report
+  `storageWritable: false`; `/api/v1/system/storage` shows the fault without
+  the host path; after a short write and a denied fsync, a restart brings
+  back exactly the pre-fault dataset (`logs.ndjson` plus one event) with
+  nothing quarantined;
 * missing auth, bad auth, ingest-only keys, sessions, logout, revocation;
 * pagination, time ranges, empty results, facets, histograms;
 * live stream (SSE) delivery and filtering, and that open streams do not
@@ -244,6 +292,20 @@ Vitest + React Testing Library in `web/tests/unit/`:
    non-matching one does not);
 7. pause again — results stay;
 8. open the related trace and verify the span hierarchy and related logs.
+
+`web/tests/e2e/storage.spec.ts` checks the storage-failure contract against
+the same binary, through HTTP only:
+
+1. `/ready` is `{"status": "ready", "storageWritable": true}` and every
+   signal in `/api/v1/system/storage` is healthy with no `faults`;
+2. on Linux and macOS (skipped on Windows and as root), `data/tmp/` is made
+   read-only for real: `/ready` turns 503 with `storageWritable: false` and
+   all signals listed, the `writeProbe` fault says `permissionDenied` on
+   `tmp/.write-probe` and the response never contains the data directory;
+   once permissions are restored `/ready` is 200 again and an event ingested
+   before the fault is still queryable.
+
+The data directory is exported to the specs as `VYRTEL_E2E_DATA`.
 
 ```bash
 cd web && npm ci && npm run build && cd ..

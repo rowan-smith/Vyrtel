@@ -12,6 +12,8 @@ const exe = process.platform === 'win32' ? 'vyrtel.exe' : 'vyrtel';
 const bin = process.env.VYRTEL_BIN ?? path.resolve(here, '..', 'target', 'debug', exe);
 const port = Number(process.env.VYRTEL_E2E_PORT ?? 18765);
 const dataDir = process.env.VYRTEL_E2E_DATA ?? fs.mkdtempSync(path.join(os.tmpdir(), 'vyrtel-e2e-'));
+// Workers load this file again; share the directory so specs can reach it.
+process.env.VYRTEL_E2E_DATA = dataDir;
 
 export default defineConfig({
   testDir: 'tests/e2e',

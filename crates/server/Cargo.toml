@@ -11,6 +11,11 @@ default-run = "vyrtel"
 name = "vyrtel"
 path = "src/main.rs"
 
+[features]
+# Test-only: lets the integration tests inject storage write failures
+# (see crates/storage/src/fault.rs). Never enable in release builds.
+fault-injection = ["storage/fault-injection"]
+
 [dependencies]
 telemetry.workspace = true
 storage.workspace = true

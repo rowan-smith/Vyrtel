@@ -111,6 +111,27 @@ impl From<storage::StorageError> for ApiError {
                 tracing::warn!(error = %e, "storage unavailable");
                 ApiError::unavailable("storage is unavailable")
             }
+            // Already logged with its full path by storage. The client gets
+            // the category only, never paths.
+            S::WriteFailed(f) => ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_write_failed",
+                format!(
+                    "the request was not stored: {}. Nothing in it was acknowledged; retry once storage is writable",
+                    f.reason.describe()
+                ),
+            )
+            .with_details(json!({ "reason": f.reason.as_str(), "outcome": "notStored" })),
+            S::WriteUncertain(f) => ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_write_failed",
+                format!(
+                    "the request was not acknowledged: {}. It may still be stored after a power loss, so a retry \
+                     can store it twice",
+                    f.reason.describe()
+                ),
+            )
+            .with_details(json!({ "reason": f.reason.as_str(), "outcome": "unknown" })),
             S::Corrupt { .. } => {
                 tracing::error!(error = %e, "storage corruption detected during query");
                 ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", "stored data could not be read")

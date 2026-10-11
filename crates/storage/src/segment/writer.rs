@@ -255,6 +255,9 @@ struct CountingWriter {
 
 impl CountingWriter {
     fn write(&mut self, b: &[u8]) -> Result<()> {
+        if let Some((n, e)) = crate::fault::check_write("segment.write", &self.path, b.len()) {
+            self.inner.write_all(&b[..n]).and(Err(e)).ctx(&self.path)?;
+        }
         self.inner.write_all(b).ctx(&self.path)?;
         self.offset += b.len() as u64;
         Ok(())
@@ -507,6 +510,7 @@ fn write_file(
     let file_len = out.offset;
     let file = out.inner.into_inner().map_err(|e| e.into_error()).ctx(path)?;
     // Durability: the data must be on disk before the rename publishes it.
+    crate::fault::check("segment.sync", path).ctx(path)?;
     file.sync_all().ctx(path)?;
     summary.index_bytes = file_len - data_bytes;
     Ok(summary)

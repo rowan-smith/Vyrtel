@@ -112,7 +112,9 @@ into `wal/<signal>/` and the directory is fsynced. A WAL never has a torn
 header.
 
 **Appending**: the record is written with a single `write_all`. On failure
-the writer truncates back to the last good offset before the next append.
+the writer truncates back to the last good offset straight away (and again
+before the next append if that truncation fails too), so a short write
+never leaves a torn record behind.
 
 **Durability**:
 
@@ -151,6 +153,59 @@ When `normal` mode loses an unsynced tail to power loss, later events may
 reuse the ids of the lost ones (ids continue from the largest id that
 survived). Use `strict` if a client stores event ids and needs them to stay
 unique across power loss.
+
+### Storage write failures
+
+A request is acknowledged only after its batch was written to the WAL (and fsynced, where the contract above requires
+it). When storage cannot write, the request gets **HTTP 503
+`storage_write_failed`**. Nothing in it is acknowledged or visible to queries, and the response's `outcome` says whether
+it can still turn up later:
+
+* `notStored`: the batch never reached the WAL whole, or it did and was cut off again with the new WAL length fsynced.
+  It cannot reappear, even after a power loss, so retrying is safe.
+* `unknown`: the batch reached the WAL whole, its fsync failed, and the cut could be made but not fsynced. It stays
+  unacknowledged, but after a power loss it may come back, and a retry can then store it twice.
+
+| What fails                                                               | Effect on requests                                                                                                                                     | WAL                                                                                                                                                                                                                                  |
+|--------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| WAL append (full disk, permission denied, read-only volume, short write) | 503; the batch is not stored                                                                                                                           | partial bytes are cut off immediately                                                                                                                                                                                                |
+| WAL fsync before acknowledging                                           | 503 for every request in the group commit: `notStored` if the cut below is durable, else `unknown`                                                     | their records are cut from the WAL and the new length is fsynced before the response is sent. If that fsync fails, the cut stays pending: it is retried by the next fsync, which runs before any later acknowledgement and when idle |
+| Background fsync (`normal` mode)                                         | earlier acknowledgements stand (they were already in the OS)                                                                                           | until a later write *and* fsync succeed, `normal` mode also fsyncs before every acknowledgement, and a failed fsync means 503                                                                                                        |
+| Creating the next WAL during rotation                                    | writing continues in the current WAL until the buffer must be sealed; then new requests get 503                                                        | rotation is retried automatically; nothing is lost                                                                                                                                                                                   |
+| Writing or fsyncing a segment (sealing)                                  | acknowledged data stays in its WAL; once the writer has to wait for that seal, new requests get 503 straight away instead of waiting for `ack_timeout` | the seal is retried every 5 s, and again on restart                                                                                                                                                                                  |
+
+Each failure is recorded as a *fault* per signal, with the operation, a
+reason (`noSpace`, `permissionDenied`, `readOnly`, `shortWrite`, `ioError`,
+`other`), the file relative to the data directory and the OS error text.
+Faults are listed in `GET /api/v1/system/storage` and logged once at ERROR
+level (`storage write failed`; repeats are counted and logged at DEBUG). A
+fault clears when the same part of the write path works again: a WAL write that is appended and synced, a segment that
+is sealed, a maintenance run that completes. A WAL fault also clears without traffic: once a second, an idle writer
+fsyncs its WAL (finishing any pending cut) and writes a 4 KiB probe file in its WAL directory, and if both work the
+fault is over. Without this, an unready instance that an orchestrator sends no traffic to would never become ready
+again. `GET /ready` is 503 while a WAL or segment fault is present, or while a 4 KiB write-and-fsync probe in `tmp/`
+fails, which catches a full or read-only volume before ingest runs into it. That probe runs at most once per second
+however often `/ready` is polled. Retention and compaction faults are reported but do not affect readiness.
+
+Recovery works the same way as after a crash: restore free space or
+permissions, then let Vyrtel retry by itself or restart it. Every
+acknowledged event is still in a WAL or segment. A write failure never
+causes anything to be quarantined.
+
+Limitations:
+
+* A volume that is already full or read-only when Vyrtel **starts** stops
+  startup (taking the data-directory lock or replaying the WAL fails); it
+  does not start in a degraded state.
+* The probe writes to `tmp/` only. A permission problem limited to one
+  signal's `wal/` or `segments/` directory shows up as a fault when a write
+  is first attempted there.
+* In `normal` mode, after a failed fsync some operating systems drop the
+  dirty pages they could not write, and a later fsync can report success
+  anyway. Requests acknowledged *before* the failure can then be lost on
+  power loss. `strict` mode never acknowledges data whose fsync failed.
+* A 503 with `outcome: "unknown"` can reappear after a power loss (not after a clean or crashed process: the cut is
+  already in the OS). A client that retried it then has it twice.
 
 ## Segment files (format version 1)
 
@@ -289,9 +344,12 @@ Sealing the active buffer (rotation by size, age or event count):
 5. Atomically (under the stream lock) add the segment to the catalog and
    drop the frozen buffer, so queries never see both or neither.
 
-At most one frozen buffer exists. If sealing falls behind or fails (e.g.
-disk full) the writer waits, the ingest queue fills and clients receive
-HTTP 429 — data already acknowledged stays safe in the WAL.
+At most one frozen buffer exists. If sealing falls behind, the writer
+waits, the ingest queue fills and clients receive HTTP 429. If sealing
+*fails* (e.g. disk full), new requests get HTTP 503 `storage_write_failed`
+as soon as the writer has to wait for it (see
+[Storage write failures](#storage-write-failures)). Either way, data
+already acknowledged stays safe in the WAL.
 
 Compaction merges small segments (raw size < ¼ of the segment target, at
 least 4 of them) into a new segment whose summary lists the inputs in

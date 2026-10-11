@@ -12,3 +12,6 @@ mod ingest_limits;
 mod live;
 mod signals;
 mod storage_flows;
+// Needs `--features fault-injection` (CI runs `--all-features`).
+#[cfg(feature = "fault-injection")]
+mod storage_faults;
