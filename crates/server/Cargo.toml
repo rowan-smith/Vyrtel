@@ -20,6 +20,7 @@ metadata.workspace = true
 
 anyhow.workspace = true
 argon2.workspace = true
+async-compression.workspace = true
 axum.workspace = true
 clap.workspace = true
 futures-util.workspace = true
@@ -34,6 +35,7 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 tower-http.workspace = true
 tracing.workspace = true

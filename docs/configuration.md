@@ -82,7 +82,7 @@ by up to one segment's time span.
 
 | Key                | Default | Env                                | Description                                                                                                      |
 |--------------------|---------|------------------------------------|------------------------------------------------------------------------------------------------------------------|
-| `max_request_size` | `16MB`  | `VYRTEL_INGEST_MAX_REQUEST_SIZE` | Maximum body size (after gzip decoding). Larger requests get 413.                                                |
+| `max_request_size` | `16MB`  | `VYRTEL_INGEST_MAX_REQUEST_SIZE` | Maximum ingest body size, both after gzip decoding and on the wire (inclusive). Larger requests get 413; see [request size and encoding](api.md#request-size-and-encoding). |
 | `queue_capacity`   | `10000` | `VYRTEL_INGEST_QUEUE_CAPACITY`   | Events waiting to be written, per signal. When full, requests get 429. A single batch larger than this gets 413. |
 | `ack_timeout`      | `30s`   | –                                  | Give up waiting for a write acknowledgement (503).                                                               |
 | `max_concurrent`   | `0`     | `VYRTEL_INGEST_MAX_CONCURRENT`   | Ingest requests in progress at once, from reading the body until the write is acknowledged. More get 429 without their body being read. `0` derives it from the memory budget (see below). |

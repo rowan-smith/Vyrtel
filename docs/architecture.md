@@ -67,7 +67,10 @@ sequenceDiagram
     alt every slot busy
         H-->>C: 429 + Retry-After (body discarded unread)
     end
-    H->>H: read body ≤ max_request_size (after gzip)
+    H->>H: read body, decoding gzip as it arrives
+    alt over max_request_size (decoded or on the wire), or bad gzip
+        H-->>C: 413 / 400 invalid_encoding (rest of body discarded)
+    end
     H->>P: parse + map
     P-->>H: Vec<TelemetryEvent>
     H->>Q: try reserve N events

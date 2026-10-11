@@ -1897,6 +1897,7 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "argon2",
+ "async-compression",
  "axum",
  "clap",
  "flate2",
@@ -1919,6 +1920,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "toml 0.8.23",
  "tower",
  "tower-http",
