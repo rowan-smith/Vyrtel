@@ -18,9 +18,13 @@ traces = "14d"
 metrics = "30d"
 
 [ingest]
-max_request_size = "16MB"    # per request, after gzip decoding; larger bodies get 413
+max_request_size = "1MB"     # per request, after gzip decoding; larger bodies get 413
 queue_capacity = 10000
-max_concurrent = 0           # requests in progress at once; 0 = derive from max_memory
+# Requests in progress at once. 0 derives it from max_memory: each admitted
+# request is budgeted at 20x max_request_size (3 at these settings). Startup
+# fails if not even one fits; an explicit value is honoured, with a warning
+# if it is estimated to exceed the ingest budget. See docs/configuration.md.
+max_concurrent = 0
 
 [query]
 timeout = "30s"

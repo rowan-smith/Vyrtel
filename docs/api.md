@@ -152,8 +152,10 @@ These apply to `POST /api/v1/events` and `POST /v1/{logs,traces,metrics}`
 alike.
 
 **Admission.** At most `ingest.max_concurrent` ingest requests are in
-progress at once (default: derived from the memory budget, see
-[configuration](configuration.md#ingest)). A request holds its slot from
+progress at once (default: derived from the memory budget, 3 at the default
+512MB / 1MB settings; see
+[ingest memory](configuration.md#ingest-memory)). The limit is the same
+for native and OTLP endpoints, which share one pool. A request holds its slot from
 before its body is read, through decompression and parsing, until its
 write is acknowledged and the response is ready. Requests that finish, fail
 (any 4xx/5xx) or are abandoned by the client (connection closed at any
@@ -180,7 +182,7 @@ the time bound, the server drops the body and closes the connection. Treat a con
 
 ### Request size and encoding
 
-`ingest.max_request_size` (default 16 MB) bounds every ingest body, both
+`ingest.max_request_size` (default 1 MB; 16 MB before 0.1.2) bounds every ingest body, both
 the bytes after gzip decoding and the bytes on the wire. A body of exactly
 the limit is accepted; one byte more is rejected.
 
@@ -263,9 +265,29 @@ done
 echo "$status"
 ```
 
-`GET /api/v1/system/info` reports the limit, current use and rejections
-since start under `ingest`: `{"maxConcurrent": 4, "inFlight": 1,
-"rejected": 0, "discarding": 0}`.
+`GET /api/v1/system/info` reports the effective limit, how it was chosen,
+current use and rejections since start under `ingest`:
+
+```json
+{
+  "maxConcurrent": 3,
+  "concurrencySource": "derived",
+  "maxRequestBytes": 1048576,
+  "budgetBytes": 80530635,
+  "estimatedPeakBytes": 76283904,
+  "inFlight": 1,
+  "rejected": 0,
+  "discarding": 0
+}
+```
+
+`concurrencySource` is `derived` (`ingest.max_concurrent = 0`) or
+`explicit`. `budgetBytes` is the ingest share of `storage.max_memory` and
+`estimatedPeakBytes` the estimate for `maxConcurrent` maximum-size requests
+plus rejected-body drains; with an explicit limit it can exceed the budget
+(see [explicit limits](configuration.md#ingest-memory)). If 429s are
+frequent while memory is plentiful, raise `storage.max_memory` or lower
+`ingest.max_request_size` rather than sending larger batches.
 
 ## Querying logs
 

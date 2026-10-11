@@ -91,7 +91,17 @@ impl App {
             },
         ));
 
-        let ingest_slots = config.ingest_max_concurrent();
+        let admission = config.ingest_admission();
+        if let Some(warning) = admission.warning() {
+            tracing::warn!(
+                max_concurrent = admission.limit,
+                max_request_bytes = admission.max_request_bytes,
+                ingest_budget_bytes = admission.budget,
+                estimated_peak_bytes = admission.estimated_peak,
+                "{warning}"
+            );
+        }
+        let ingest_slots = admission.limit;
         let http = reqwest::Client::builder()
             .user_agent(concat!("vyrtel/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -108,6 +118,7 @@ impl App {
             query_permits: Arc::new(Semaphore::new(config.query.max_concurrent)),
             ingest_permits: Arc::new(Semaphore::new(ingest_slots)),
             ingest_max_concurrent: ingest_slots,
+            ingest_admission: admission,
             ingest_rejected: AtomicU64::new(0),
             discard_permits: Arc::new(Semaphore::new(crate::routes::ingest::MAX_DISCARDING)),
             discard_pending: Arc::new(Semaphore::new(crate::routes::ingest::MAX_DISCARD_PENDING)),
@@ -252,5 +263,61 @@ async fn purge_sessions(state: SharedState, mut shutdown: watch::Receiver<bool>)
             }
             _ = shutdown.changed() => return,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Start an app with `max_concurrent` and return what it logged.
+    async fn startup_log(max_concurrent: usize) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.storage.path = dir.path().to_path_buf();
+        config.alerts.enabled = false;
+        config.ingest.max_concurrent = max_concurrent;
+        let out = Captured::default();
+        let writer = out.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .finish();
+        let app = tracing::subscriber::with_default(subscriber, || App::build(config)).unwrap();
+        app.shutdown().await;
+        String::from_utf8(out.0.lock().unwrap().clone()).unwrap()
+    }
+
+    // REL-14 AC4: one warning at startup for an over-budget explicit limit,
+    // none within budget or when derived.
+    #[tokio::test]
+    async fn over_budget_explicit_ingest_limit_warns_once_at_startup() {
+        let log = startup_log(8).await;
+        assert_eq!(log.matches("the limit is honoured").count(), 1, "{log}");
+        for part in
+            ["max_concurrent=8", "max_request_bytes=1048576", "ingest_budget_bytes=80530635", "estimated_peak_bytes="]
+        {
+            assert!(log.contains(part), "{part} in {log}");
+        }
+        assert!(!startup_log(2).await.contains("honoured"));
+        assert!(!startup_log(0).await.contains("honoured"));
     }
 }

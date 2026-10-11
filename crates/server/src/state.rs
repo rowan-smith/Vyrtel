@@ -33,6 +33,8 @@ pub struct AppState {
     pub ingest_permits: Arc<Semaphore>,
     /// Total permits in `ingest_permits`.
     pub ingest_max_concurrent: usize,
+    /// How `ingest_max_concurrent` was chosen and its memory estimate.
+    pub ingest_admission: crate::config::IngestAdmission,
     /// Ingest requests turned away because every permit was taken.
     pub ingest_rejected: AtomicU64,
     /// Bounds rejected ingest bodies being discarded at once.

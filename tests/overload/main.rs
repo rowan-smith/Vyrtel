@@ -5,8 +5,11 @@
 //! the tests here take [`SERIAL`] so they do not overlap either.
 //! The figures are printed; run with `--nocapture` to record them.
 
+mod amplification;
 #[path = "../integration/common/mod.rs"]
 mod common;
+mod derived;
+mod fixtures;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
@@ -18,13 +21,29 @@ use server::config::ByteSize;
 
 struct Counting;
 
-static CURRENT: AtomicUsize = AtomicUsize::new(0);
-static PEAK: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// Set on [`client_runtime`] threads: allocations made there are not
+    /// counted, so load generated in this process is not charged to the
+    /// server. Client and server share nothing but sockets, so memory is
+    /// allocated and freed on the same side.
+    static UNCOUNTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn counted() -> bool {
+    UNCOUNTED.try_with(|u| !u.get()).unwrap_or(true)
+}
+
+/// Only differences of these counters mean anything. They start at a large
+/// bias so that a client allocation freed on a counted thread (when a
+/// client runtime shuts down) cannot wrap them below zero.
+const BIAS: usize = 1 << (usize::BITS - 2);
+static CURRENT: AtomicUsize = AtomicUsize::new(BIAS);
+static PEAK: AtomicUsize = AtomicUsize::new(BIAS);
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let p = unsafe { System.alloc(layout) };
-        if !p.is_null() {
+        if !p.is_null() && counted() {
             let now = CURRENT.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
             PEAK.fetch_max(now, Ordering::Relaxed);
         }
@@ -33,12 +52,14 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe { System.dealloc(ptr, layout) };
-        CURRENT.fetch_sub(layout.size(), Ordering::Relaxed);
+        if counted() {
+            CURRENT.fetch_sub(layout.size(), Ordering::Relaxed);
+        }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let p = unsafe { System.realloc(ptr, layout, new_size) };
-        if !p.is_null() {
+        if !p.is_null() && counted() {
             if new_size >= layout.size() {
                 let now = CURRENT.fetch_add(new_size - layout.size(), Ordering::Relaxed) + new_size - layout.size();
                 PEAK.fetch_max(now, Ordering::Relaxed);
@@ -61,6 +82,17 @@ fn reset_peak() -> usize {
 }
 
 const MB: f64 = (1 << 20) as f64;
+
+/// A runtime for load-generating clients whose allocations are not
+/// counted. Shut it down with `shutdown_background`.
+fn client_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .on_thread_start(|| UNCOUNTED.with(|u| u.set(true)))
+        .build()
+        .unwrap()
+}
 
 /// Heap measurements are process-wide: one test at a time.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -185,7 +217,7 @@ async fn sustained_overload_stays_within_memory_budget() {
 // everything is let go after the discard timeout.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flood_of_rejected_slow_uploads_is_bounded() {
-    use server::routes::ingest::{MAX_DISCARD_PENDING, MAX_DISCARDING};
+    use server::routes::ingest::{MAX_DISCARDING, MAX_DISCARD_PENDING};
     const FLOOD: usize = 600;
     let _serial = SERIAL.lock().await;
     let s = TestServer::start_with(|c| {
