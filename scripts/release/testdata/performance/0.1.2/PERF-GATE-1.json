@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "gate": "PERF-GATE-1",
+  "issue": 170,
+  "version": "0.1.2",
+  "candidate": {
+    "sha": "1111111111111111111111111111111111111111",
+    "artifacts": [
+      { "name": "vyrtel-linux-x86_64", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+    ]
+  },
+  "baseline": { "release": "v0.1.1", "sha": "2222222222222222222222222222222222222222" },
+  "environment": "Example fixture, not a measurement. Record runner/hardware, OS, cores, RAM limit, disk, config, seed and tool versions here.",
+  "budgetsDeclaredAt": "2026-10-01T09:00:00Z",
+  "measuredAt": "2026-10-02T09:00:00Z",
+  "review": { "verdict": "PASS", "reviewer": "example-reviewer", "reviewedAt": "2026-10-03T09:00:00Z" },
+  "reports": ["https://github.com/rowan-smith/Vyrtel/issues/170#example-report"],
+  "metrics": [
+    { "category": "footprint", "name": "steady RSS", "unit": "MiB", "value": 48, "baseline": 46, "delta": 2, "limit": { "max": 50.6 }, "result": "pass" },
+    { "category": "cpu", "name": "CPU per accepted event", "unit": "µs", "value": 2.1, "baseline": 2.0, "delta": 0.1, "limit": { "max": 2.2 }, "result": "pass" },
+    { "category": "ingestion", "name": "accepted events/s (NDJSON)", "unit": "events/s", "value": 98000, "baseline": 100000, "delta": -2000, "limit": { "min": 90000 }, "result": "pass" },
+    { "category": "queries", "name": "warm selective query p99", "unit": "ms", "value": 12, "baseline": 11.5, "delta": 0.5, "limit": { "max": 12.65 }, "result": "pass" },
+    { "category": "correctness", "name": "acknowledged events missing after restart", "unit": "events", "value": 0, "noBaseline": "hard correctness limit", "limit": { "max": 0 }, "result": "pass" },
+    { "category": "backpressure", "name": "time back to idle after saturation", "unit": "s", "value": 3, "noBaseline": "new REL-02 metric; absolute budget", "limit": { "max": 10 }, "result": "pass" },
+    { "category": "storage", "name": "bytes per stored event", "unit": "B", "value": 41, "baseline": 40, "delta": 1, "limit": { "max": 44 }, "result": "pass" },
+    { "category": "networking", "name": "transport errors", "unit": "count", "value": 0, "noBaseline": "hard limit", "limit": { "max": 0 }, "result": "pass" },
+    { "category": "ui", "na": "0.1.2 ships no UI change; the UI is exercised by E2E only" },
+    { "category": "lifecycle", "name": "release binary size", "unit": "MiB", "value": 9.4, "baseline": 9.2, "delta": 0.2, "limit": { "max": 10.1 }, "result": "pass" }
+  ]
+}

@@ -8,6 +8,7 @@ cargo test --workspace --all-features    # all Rust tests (~220, many property-b
 cd web && npm test                       # frontend unit tests
 cd web && npm run e2e                    # Playwright (needs a built server, see below)
 cargo bench -p storage -p query          # Criterion benchmarks
+node --test scripts/release/*.test.mjs        # release gate (see docs/releasing.md)
 ```
 
 ## Unit tests
@@ -314,6 +315,35 @@ cd web && npx playwright install chromium && npm run e2e
 ```
 
 Set `VYRTEL_BIN` to test a different binary (e.g. a release build).
+
+## Release gate tests
+
+`scripts/release/release.test.mjs` and `scripts/release/performance.test.mjs` (`node --test`,
+CI job **Release gate tests**) cover the checks in
+[`scripts/release/release.mjs`](../scripts/release/release.mjs) and
+[`scripts/release/performance.mjs`](../scripts/release/performance.mjs) that
+[`release.yml`](../.github/workflows/release.yml) runs before publishing (see
+[releasing.md](releasing.md)):
+
+| Acceptance criterion | Tests |
+|---|---|
+| A tag whose version differs from the workspace fails | stable and prerelease tags against temporary workspaces; stale `Cargo.toml`, `Cargo.lock` or `web/package.json`; malformed tags; the repository's own version is consistent |
+| Failed checks publish nothing | the workflow's job graph: `image` and `release` transitively need `preflight`, `performance`, `ci` (the whole callable CI workflow), `binaries` and `verify`; only a tag push publishes (a manual run is a rehearsal); release builds set `VYRTEL_REQUIRE_WEB_UI` |
+| Embedded UI, version output and checksums are verified | artifact sets that are complete, missing a binary, tampered, missing `SHA256SUMS` or an entry, holding unexpected or empty files; the artifact list matches the build matrix; a fake binary (`testdata/fake-vyrtel.mjs`) that is correct, prints or serves the wrong version, serves the placeholder UI, misses its UI assets or exits on startup |
+| A prerelease does not replace the stable latest channel | stable plans are Latest and tag `X.Y.Z`, `X.Y`, `latest`; prereleases (`-rc.1`, `-beta`, `-alpha.3`) are not Latest and tag only `X.Y.Z-pre`; image names are lowercased |
+| TC-PERF-01: missing or failed performance evidence blocks tagging and publication | in throwaway git repositories: no record → `pretag --create` (function and CLI) exits 1 and creates no tag; FAIL verdict, missing reviewer, failing or mis-marked metric rows, missing limit/baseline/category/reports/artifact hashes, N/A without reason, budgets declared after measuring; a version with no declared gates; a review after the tag or a lightweight tag is refused by the workflow check; uncommitted changes and existing tags |
+| TC-PERF-02: stale evidence is rejected until revalidated | a commit after PASS makes the record stale (no tag) until a PASS for the new commit; same-version gates (0.2.0) on different commits, or one missing; a record for another gate or version; rebuilt artifacts whose hash differs without documented `equivalence` |
+| TC-PERF-03: a complete passing matrix for the exact candidate passes | the documented template covers every metric category and passes; `pretag --create` makes an annotated tag on the candidate with the PASS lines, which `check-performance --tag-date` (the workflow's check) accepts; matching or documented-equivalent artifacts; prereleases need no sign-off; the manifest declares unique gates with issues; the workflow wiring |
+
+```bash
+node --test scripts/release/*.test.mjs
+VYRTEL_BIN=target/debug/vyrtel node --test scripts/release/*.test.mjs   # also checks a real binary
+```
+
+The CI **End-to-end** job also builds the server with `VYRTEL_REQUIRE_WEB_UI=1` and runs
+`verify-binary` against it, so the gate is exercised against a real binary on every pull request. The performance tests
+run git with an empty global configuration (`GIT_CONFIG_GLOBAL`), so local signing or hook
+settings do not affect them.
 
 ## Benchmarks
 

@@ -1,37 +1,108 @@
 name: Release
 
+# Publishes a release only after it has been validated (docs/releasing.md):
+#
+#   preflight ─┬─ performance ────────────┐
+#              ├─ ci (the full CI suite) ─┤
+#              └──────────────────────────┴─ binaries ─ verify ─ image ─ release
+#
+# - preflight: the tag must be v<semver> and match the workspace version, or nothing runs.
+# - performance: every performance gate for the version has a reviewer PASS for this exact
+#   commit on the release-evidence branch, signed off before the tag was created. The
+#   sign-off itself happens before tagging (scripts/release/release.mjs pretag); this job
+#   refuses to publish a tag that bypassed it.
+# - ci: every required CI check, run against the tagged commit.
+# - binaries: built with the UI that CI tested; each one's --version and embedded UI are
+#   checked on its own runner before it is uploaded.
+# - verify: the full artifact set and SHA256SUMS, plus the Linux binary as shipped, and the
+#   built artifacts match the hashes the performance gates approved (or documented equivalence).
+# - image: smoke-tested locally before it is pushed; prereleases do not move `latest`.
+# - release: the GitHub release, last, from the verified artifacts. Prereleases are
+#   marked as such and never become the "latest" release.
+#
+# Any failed job skips everything after it. A manual run (workflow_dispatch) is a rehearsal:
+# every check runs against the chosen branch and tag, but nothing is pushed or released.
+
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to rehearse, e.g. v0.1.2-rc.1 (must match the branch''s workspace version). Nothing is published.'
+        required: true
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  PUBLISH: ${{ github.event_name == 'push' }}
 
 jobs:
-  web:
+  preflight:
+    name: Tag matches workspace version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      make_latest: ${{ steps.plan.outputs.make_latest }}
+      image_tags: ${{ steps.plan.outputs.image_tags }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: plan
+        run: node scripts/release/release.mjs plan --tag "$TAG" --image "ghcr.io/${{ github.repository }}"
+
+  performance:
+    name: Pre-tag performance sign-off
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci && npm run build
-        working-directory: web
+      - name: Fetch approval records
+        # A missing branch leaves evidence/ empty, which fails the check below as missing evidence.
+        run: |
+          mkdir -p evidence
+          if git fetch --depth=1 origin release-evidence; then git archive FETCH_HEAD | tar -x -C evidence; fi
+      - name: Check sign-off for this commit
+        run: |
+          args=()
+          if [ "$PUBLISH" = "true" ]; then
+            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+            # Empty for a lightweight tag, which the check rejects when gates are required.
+            args=(--tag-date "$(git for-each-ref "refs/tags/$TAG" --format='%(taggerdate:iso-strict)')")
+          fi
+          node scripts/release/release.mjs check-performance --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence "${args[@]}"
       - uses: actions/upload-artifact@v4
         with:
-          name: web-dist
-          path: web/dist
+          name: performance-evidence
+          path: evidence/performance
+          if-no-files-found: ignore
+
+  ci:
+    name: Required checks
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      checks: write
 
   binaries:
-    needs: web
+    name: Build and check ${{ matrix.name }}
+    needs: [preflight, performance, ci]
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, name: vyrtel-linux-x86_64 }
@@ -41,6 +112,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # The UI that passed lint, unit and E2E tests in the ci job.
       - uses: actions/download-artifact@v4
         with:
           name: web-dist
@@ -52,7 +124,13 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - name: Build
+        # Fails the build instead of embedding the "UI not built" placeholder.
+        env:
+          VYRTEL_REQUIRE_WEB_UI: '1'
         run: cargo build --release --locked -p server --target ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Package
         shell: bash
         run: |
@@ -63,57 +141,137 @@ jobs:
           cd dist
           if command -v sha256sum >/dev/null; then sha256sum ./* > "../${{ matrix.name }}.sha256"; else shasum -a 256 ./* > "../${{ matrix.name }}.sha256"; fi
           mv "../${{ matrix.name }}.sha256" .
+      - name: Check version output and embedded UI
+        shell: bash
+        run: |
+          ext=""
+          if [[ "${{ matrix.target }}" == *windows* ]]; then ext=".exe"; fi
+          node scripts/release/release.mjs verify-binary "dist/${{ matrix.name }}${ext}" --version "${{ needs.preflight.outputs.version }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
           path: dist/*
 
-  publish:
-    needs: binaries
+  verify:
+    name: Verify release artifacts
+    needs: [preflight, performance, binaries]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           pattern: vyrtel-*
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: performance-evidence
+          path: evidence/performance
+        continue-on-error: true
       - name: Combined checksums
         run: |
           cd artifacts
           cat ./*.sha256 | sed 's#\./##' > SHA256SUMS
           rm ./*.sha256
           cat SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - name: Check artifact set and checksums
+        run: node scripts/release/release.mjs verify-artifacts artifacts
+      - name: Check the Linux binary as shipped
+        run: |
+          chmod +x artifacts/vyrtel-linux-x86_64
+          node scripts/release/release.mjs verify-binary artifacts/vyrtel-linux-x86_64 --version "${{ needs.preflight.outputs.version }}"
+      - name: Check artifacts match the approved candidate
+        run: |
+          mkdir -p evidence
+          node scripts/release/release.mjs check-performance --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence --artifacts artifacts
+      - uses: actions/upload-artifact@v4
         with:
-          files: artifacts/*
-          generate_release_notes: true
+          name: release-artifacts
+          path: artifacts/*
 
-  docker:
+  image:
+    name: Container image
+    needs: [preflight, verify]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - name: Build candidate (linux/amd64)
+        uses: docker/build-push-action@v6
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: vyrtel:release-candidate
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Check version output and embedded UI
+        run: |
+          printed="$(docker run --rm vyrtel:release-candidate --version)"
+          [ "$printed" = "vyrtel ${{ needs.preflight.outputs.version }}" ] || { echo "release gate: image --version printed '$printed'"; exit 1; }
+          docker run -d --name vyrtel -p 8080:8080 vyrtel:release-candidate
+          node scripts/release/release.mjs verify-server http://localhost:8080 --version "${{ needs.preflight.outputs.version }}"
+          docker exec vyrtel /vyrtel healthcheck
+      - name: Container logs
+        if: always()
+        run: docker logs vyrtel || true
       - id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
-          flavor: |
-            latest=true
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - uses: docker/build-push-action@v6
+      - uses: docker/login-action@v3
+        if: env.PUBLISH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image tags
+        run: echo "${{ needs.preflight.outputs.image_tags }}"
+      - name: Push
+        if: env.PUBLISH == 'true'
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          # From the preflight plan: prereleases get only their exact version tag.
+          tags: ${{ needs.preflight.outputs.image_tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  release:
+    name: Publish GitHub release
+    needs: [preflight, verify, image]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: artifacts
+      - name: Re-check checksums before publishing
+        run: node scripts/release/release.mjs verify-artifacts artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ needs.preflight.outputs.prerelease }}
+          make_latest: ${{ needs.preflight.outputs.make_latest }}

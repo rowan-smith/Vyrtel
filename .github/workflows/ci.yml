@@ -4,9 +4,12 @@ on:
   pull_request:
   push:
     branches: [main]
+  # The release workflow runs this whole suite as its required checks (docs/releasing.md).
+  workflow_call:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # github.workflow is the caller's name when called, so a release never cancels CI or vice versa.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -87,6 +90,16 @@ jobs:
           path: web/dist
           retention-days: 3
 
+  release-tooling:
+    name: Release gate tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test scripts/release/*.test.mjs
+
   e2e:
     name: End-to-end (Playwright)
     runs-on: ubuntu-latest
@@ -100,12 +113,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build server with embedded UI
+        env:
+          VYRTEL_REQUIRE_WEB_UI: '1'
         run: cargo build -p server
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Release gate against the built binary
+        run: node scripts/release/release.mjs verify-binary target/debug/vyrtel
       - run: npm ci
         working-directory: web
       - run: npx playwright install --with-deps chromium

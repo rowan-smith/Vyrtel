@@ -187,6 +187,7 @@ const DOCS = [
   { slug: 'storage-format', file: 'docs/storage-format.md', group: 'Internals' },
   { slug: 'development', file: 'docs/development.md', group: 'Contributing' },
   { slug: 'testing', file: 'docs/testing.md', group: 'Contributing' },
+  { slug: 'releasing', file: 'docs/releasing.md', group: 'Contributing' },
   { slug: 'contributing', file: 'CONTRIBUTING.md', group: 'Project' },
   { slug: 'cla-individual', file: 'docs/cla/individual.md', title: 'Individual CLA', group: 'Project' },
   { slug: 'cla-corporate', file: 'docs/cla/corporate.md', title: 'Corporate CLA', group: 'Project' },

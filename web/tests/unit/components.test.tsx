@@ -30,6 +30,21 @@ describe('LiveToggle', () => {
     await userEvent.click(live);
     expect(onChange).toHaveBeenLastCalledWith(false);
   });
+
+  it('is only green once the stream is connected', () => {
+    // Just switched on: the stream has not started yet, so the status is still "off".
+    const { rerender } = render(<LiveToggle live={true} status="off" onChange={() => {}} />);
+    const btn = screen.getByRole('button', { name: 'Live' });
+    expect(btn).toHaveClass('is-connecting');
+    expect(btn).not.toHaveClass('is-live');
+    expect(btn).toHaveAttribute('title', expect.stringMatching(/connecting/));
+
+    rerender(<LiveToggle live={true} status="error" onChange={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Live' })).toHaveClass('is-connecting');
+
+    rerender(<LiveToggle live={true} onChange={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Live' })).toHaveClass('is-connecting');
+  });
 });
 
 describe('QueryBar', () => {
