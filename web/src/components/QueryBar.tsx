@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { RANGE_PRESETS } from '../lib/query';
 
@@ -54,8 +54,11 @@ export function QueryBar({
 
 export function LiveToggle({ live, status, onChange }: { live: boolean; status?: string; onChange: (live: boolean) => void }) {
   // Always labelled "Live"; the dot shows the state (red off, amber connecting, green on) and
-  // aria-pressed carries it for assistive tech.
-  const state = live ? (status === 'connecting' ? 'is-connecting' : 'is-live') : 'is-paused';
+  // aria-pressed carries it for assistive tech. Green only once the stream reports it is
+  // connected: right after the click the status is still "off" until the stream starts, and
+  // events ingested before then are not delivered.
+  const connected = status === 'live';
+  const state = live ? (connected ? 'is-live' : 'is-connecting') : 'is-paused';
   return (
     <button
       type="button"
@@ -63,9 +66,9 @@ export function LiveToggle({ live, status, onChange }: { live: boolean; status?:
       aria-pressed={live}
       title={
         live
-          ? status === 'connecting'
-            ? 'Live tail: connecting… Click to stop.'
-            : 'Live tail on: new matching events appear automatically. Click to stop.'
+          ? connected
+            ? 'Live tail on: new matching events appear automatically. Click to stop.'
+            : 'Live tail: connecting… Click to stop.'
           : 'Live tail off: results stay put. Click to go live.'
       }
       onClick={() => onChange(!live)}
