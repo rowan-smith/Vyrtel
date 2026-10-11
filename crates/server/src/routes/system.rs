@@ -20,8 +20,12 @@ pub async fn health() -> Json<Value> {
 /// Ready when the data directory accepts writes and no signal's ingest
 /// path (WAL, sealing) is failing. Unauthenticated, so it reports which
 /// signals are affected but never reasons or paths; those are in
-/// `/api/v1/system/storage`.
+/// `/api/v1/system/storage`. Once shutdown starts it is 503 `draining`.
 pub async fn ready(State(state): State<SharedState>) -> Response {
+    // Take the instance out of rotation while it drains.
+    if state.draining() {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "status": "draining" }))).into_response();
+    }
     let st = state.clone();
     let Ok((stats, probe)) =
         tokio::task::spawn_blocking(move || (st.storage.stats(), st.storage.probe_writable())).await

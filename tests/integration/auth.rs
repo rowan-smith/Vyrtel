@@ -187,7 +187,7 @@ async fn generated_admin_password_when_none_configured() {
     assert!(app.banner("127.0.0.1:8080".parse().unwrap()).contains(&pw));
     let user = app.state.metadata.find_user("admin").unwrap().unwrap();
     assert!(server::auth::verify_password(&pw, &user.password_hash));
-    app.shutdown().await;
+    app.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -204,5 +204,5 @@ async fn banner_shows_a_browsable_web_ui_url() {
     // A specific address is used as-is.
     let b = app.banner("192.168.1.20:8080".parse().unwrap());
     assert!(b.contains("Web UI              http://192.168.1.20:8080\n"), "{b}");
-    app.shutdown().await;
+    app.shutdown().await.unwrap();
 }

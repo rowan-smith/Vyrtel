@@ -8,7 +8,9 @@
 //! permit free the request gets 429 with `Retry-After` before its body is
 //! read, and the body is then discarded (never buffered) so the client sees
 //! the 429 rather than a reset connection. A full queue also gets 429. The
-//! server never buffers unboundedly on behalf of a client.
+//! server never buffers unboundedly on behalf of a client. Once shutdown
+//! starts, requests not yet admitted get 503 `shutting_down` the same way,
+//! while admitted ones still run to their acknowledgement.
 
 use std::io;
 use std::sync::Arc;
@@ -94,9 +96,14 @@ pub const MAX_DISCARD_PENDING: usize = 256;
 const DISCARD_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Take an ingest slot without waiting. When none is free, fail with 429
-/// before any of the body is read. `body` is handed back on success; on
-/// rejection it is discarded in the background.
+/// before any of the body is read; once shutdown has started, with 503.
+/// `body` is handed back on success; on rejection it is discarded in the
+/// background.
 pub fn admit(state: &AppState, body: Body) -> ApiResult<(IngestPermit, Body)> {
+    if state.draining() {
+        discard(state, body.into_data_stream());
+        return Err(ApiError::shutting_down());
+    }
     match state.ingest_permits.clone().try_acquire_owned() {
         Ok(p) => Ok((IngestPermit { _slot: Arc::new(p) }, body)),
         Err(_) => {

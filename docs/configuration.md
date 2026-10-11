@@ -20,6 +20,7 @@ or a bare number of seconds.
 ```toml
 [server]
 bind = "0.0.0.0:8080"
+shutdown_timeout = "8s"
 
 [storage]
 path = "./data"
@@ -46,9 +47,10 @@ admin_password = "change-me"     # or VYRTEL_AUTH_ADMIN_PASSWORD
 
 ### `[server]`
 
-| Key    | Default        | Env                    | Description                                   |
-|--------|----------------|------------------------|-----------------------------------------------|
-| `bind` | `0.0.0.0:8080` | `VYRTEL_SERVER_BIND` | Listen address for the UI, API and OTLP/HTTP. |
+| Key                | Default        | Env                              | Description                                                                                                                                                                          |
+|--------------------|----------------|----------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `bind`             | `0.0.0.0:8080` | `VYRTEL_SERVER_BIND`             | Listen address for the UI, API and OTLP/HTTP.                                                                                                                                        |
+| `shutdown_timeout` | `8s`           | `VYRTEL_SERVER_SHUTDOWN_TIMEOUT` | After a stop signal, how long accepted work may take to drain before Vyrtel reports what is unfinished and exits with status 1. Must be positive. See [stopping and upgrading](#stopping-and-upgrading). |
 
 ### `[storage]`
 
@@ -308,6 +310,158 @@ directory writable for that user first:
 mkdir -p vyrtel-data && sudo chown 65532:65532 vyrtel-data
 docker run -p 8080:8080 -v ./vyrtel-data:/data ghcr.io/rowan-smith/vyrtel:latest
 ```
+
+## Stopping and upgrading
+
+Stop Vyrtel with a stop signal, then start the new version on the same data
+directory. Nothing has to be flushed or exported by hand.
+
+| Platform | Stop signals                                                                 | Sent by                                                  |
+|----------|------------------------------------------------------------------------------|----------------------------------------------------------|
+| Linux, macOS | `SIGTERM`, `SIGINT` (Ctrl+C)                                             | `docker stop`, `systemctl stop`, Kubernetes, `kill`      |
+| Windows  | Ctrl+C, Ctrl+Break, closing the console window, system shutdown              | the console, service wrappers such as NSSM or WinSW      |
+
+### What happens
+
+From the first stop signal, Vyrtel:
+
+1. **Refuses new work.** The listener closes, so new connections are
+   refused. A request that still arrives on an open keep-alive connection
+   gets `503 shutting_down` with `Retry-After: 1` and `Connection: close`
+   (ingest, queries and live tail; the body is not read). `/ready` returns
+   `503 {"status": "draining"}` so a load balancer stops routing to it;
+   `/health` stays `200` until exit.
+2. **Ends live-tail streams.** Each stream sends the events it has already
+   matched, then a `shutdown` event with `retry: 2000`, and ends normally.
+   `EventSource` clients reconnect after two seconds. Browsers give up if a
+   reconnect is answered with an HTTP error (a proxy's `503`, say), so the
+   web UI then opens a new stream itself, backing off from 1 to 30 seconds;
+   it shows *connecting* meanwhile and *live* again once reconnected.
+3. **Drains accepted work.** Requests already admitted run to their
+   response: each ingest request is written to the WAL, acknowledged and
+   answered (`200`), and queries in progress complete.
+4. **Flushes storage.** Background jobs stop, query statistics are saved,
+   and each signal writes out its queue and fsyncs its WAL. Unsealed data is
+   not sealed into segments; the next start replays it from the WAL. A seal
+   or compaction already in progress is waited for until the deadline and
+   then abandoned with a `WARN`; that is not unfinished work (its input is
+   still in the WAL) and the exit status stays 0.
+5. **Exits with status 0**, after logging `shutdown complete`.
+
+All of this shares one deadline, `server.shutdown_timeout` (default `8s`),
+counted from the first signal. An idle server stops in milliseconds; a
+request waiting for its acknowledgement holds the drain for at most
+`ingest.ack_timeout`, and a slow upload for as long as the client takes to
+send it.
+
+### When the deadline passes, or the signal is repeated
+
+Vyrtel stops waiting, logs an `ERROR`, prints the same text to stderr and
+exits with status **1**. A second stop signal (Ctrl+C twice, `kill -TERM`
+twice) does the same at once, without waiting for the deadline:
+
+```
+vyrtel: shutdown incomplete: server.shutdown_timeout (1s) passed while waiting for in-flight requests; unfinished: 1 ingest request not acknowledged (the client gets no response and should retry). Acknowledged events are already in the WAL and are replayed on the next start; raise server.shutdown_timeout if draining regularly takes longer
+```
+
+The message names what Vyrtel was waiting for (`in-flight requests`, or
+`storage was writing queued batches and flushing the WAL`) and lists only
+the kinds of work that were unfinished:
+
+| Unfinished work                   | What it means                                                                                                                                                                                                      |
+|-----------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `N ingest requests not acknowledged` | Their clients get no response, only a closed connection. Retry them: each batch is all-or-nothing, but one already written to the WAL just before the exit is replayed, so a retry can duplicate it (as after a `503 unavailable`). |
+| `N queued events not written (logs N, …)` | Events of those requests that were still waiting for the writer, per signal.                                                                                                                                 |
+| `N live-tail streams still open`   | A client stopped reading and its connection's buffers are full, so its stream could not end. Nothing is lost.                                                                                                     |
+
+**Acknowledged events are never affected.** A request is acknowledged only
+after its batch is in the WAL, so the next start replays it whether the
+drain finished or not (in `normal` durability an OS crash or power loss
+straight after exiting can still lose up to `fsync_interval`, exactly as
+for a running server; see [crash recovery](#crash-recovery-and-backups)).
+After an incomplete shutdown, start Vyrtel as usual; recovery may report a
+`walTail` quarantine if the process exited while writing a record.
+
+If drains regularly hit the deadline, raise `server.shutdown_timeout` (and
+the orchestrator's grace period with it), or look for clients holding
+uploads or live-tail streams open.
+
+### Grace periods
+
+The orchestrator must wait longer than `server.shutdown_timeout` before it
+force-kills the process, or the diagnostic is never printed. Leave at least
+two seconds of margin:
+
+| Runs under                 | Default grace period                 | With a longer `shutdown_timeout`                                      |
+|----------------------------|--------------------------------------|-----------------------------------------------------------------------|
+| `docker run` / `docker stop` | 10 s                                | `docker run --stop-timeout 35 …` or `docker stop -t 35 vyrtel`        |
+| Docker Compose             | 10 s                                 | `stop_grace_period: 35s` on the service                               |
+| Kubernetes                 | 30 s (`terminationGracePeriodSeconds`) | raise `terminationGracePeriodSeconds`                               |
+| systemd                    | 90 s (`TimeoutStopSec`)              | usually enough                                                        |
+
+The default of `8s` fits inside Docker's 10 seconds. On Windows, closing
+the console window or shutting the system down gives a process only a few
+seconds (about 5 for a closed console) before Windows terminates it
+whatever it is doing; acknowledged events are still safe, but prefer Ctrl+C
+or Ctrl+Break, and configure service wrappers to send one of them and wait
+longer than `shutdown_timeout`.
+
+### Upgrade runbook
+
+1. Stop the running version: `docker stop vyrtel`, `systemctl stop vyrtel`,
+   or Ctrl+C. If you run more than one instance behind a load balancer,
+   `/ready` turns `503` as soon as the drain starts.
+2. Check the last lines it logged: `shutdown complete` and exit status 0
+   means everything accepted was acknowledged. `shutdown incomplete` (exit
+   status 1) lists what was not; see above.
+3. Replace the binary or image (`docker pull`, new package) and read the
+   release notes for configuration changes, such as
+   [Upgrading to 0.1.2](#upgrading-to-012).
+4. Start it on the same data directory. Each signal logs a `recovered
+   stream` line with the WAL records it replayed. After a clean stop,
+   `GET /api/v1/system/storage` shows an empty `recovery.quarantined` list.
+5. Check `GET /ready` is `200` and that recent data is queryable.
+
+Zero-downtime upgrades of a single process are not supported: between the
+old process exiting and the new one listening, connections are refused.
+Producers should buffer and retry (the OpenTelemetry SDKs and Collector do).
+
+**Example** (Linux, from the repository root, using the shared fixture):
+
+```bash
+vyrtel --data-dir ./data &
+curl -s -X POST localhost:8080/api/v1/events \
+  -H 'Content-Type: application/x-ndjson' --data-binary @tests/fixtures/logs.ndjson
+# {"accepted":8}
+kill -TERM $!; wait $!; echo "exit $?"
+# exit 0   (stderr: "stop requested; draining accepted work for up to 8s …", "shutdown complete")
+vyrtel --data-dir ./data &
+curl -s -X POST localhost:8080/api/v1/query/logs/count \
+  -H 'Content-Type: application/json' -d '{"query": ""}'
+# {"count":8,"diagnostics":{…}}
+```
+
+The integration tests in `tests/integration/shutdown.rs` reproduce the
+deadline and repeated-signal cases by holding an upload open.
+
+#### Shutdown changes in 0.1.2
+
+* Shutdown now has a deadline, `server.shutdown_timeout` (default `8s`).
+  Before, Vyrtel waited for in-flight requests without limit, so a stuck
+  upload ended only when the orchestrator killed the process, with no
+  record of what was unfinished. If your drains need longer, raise it
+  together with the grace period.
+* A shutdown that does not finish in time, or is interrupted by a second
+  stop signal, exits with status **1** and an `ERROR` line starting
+  `shutdown incomplete:`. Supervisors that treat a non-zero exit as a crash
+  may restart or alert on it; that is intended.
+* Ingest, query and live-tail requests that reach a stopping server get
+  `503 shutting_down`, and `/ready` returns `503 {"status": "draining"}`.
+* Live-tail streams end with a `shutdown` event (`retry: 2000`) instead of
+  just closing. Clients that ignore unknown event types are unaffected.
+* A second stop signal now ends the drain at once; before, it was ignored.
+* On Windows, Ctrl+Break, closing the console and system shutdown now stop
+  Vyrtel gracefully too; before, only Ctrl+C did.
 
 ## Crash recovery and backups
 

@@ -185,11 +185,24 @@ impl Storage {
             .map_err(|_| StorageError::Unavailable("maintenance timed out".into()))?
     }
 
-    /// Stop accepting writes, flush WALs and stop background threads.
-    pub fn shutdown(&self) {
+    /// Stop accepting writes, write out every queued batch and flush the
+    /// WALs. Once this returns, every batch ever acknowledged is in a
+    /// flushed WAL; sealing or compaction may still be running (see
+    /// [`Storage::shutdown`]).
+    pub fn stop_writers(&self) {
         for s in &self.streams {
             s.begin_shutdown();
         }
+        for s in &self.streams {
+            s.stop_writer();
+        }
+    }
+
+    /// [`Storage::stop_writers`], then wait for any seal or compaction in
+    /// progress and stop the background threads. Interrupting that wait
+    /// (process exit) is safe: recovery redoes the seal from the WAL.
+    pub fn shutdown(&self) {
+        self.stop_writers();
         for s in &self.streams {
             s.shutdown();
         }

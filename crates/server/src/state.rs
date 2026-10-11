@@ -48,14 +48,20 @@ pub struct AppState {
     pub http: reqwest::Client,
     /// Last time each API key's `last_used_at` was persisted.
     pub key_touch: Mutex<HashMap<i64, Instant>>,
-    /// Flips to `true` when shutdown starts; long-lived responses (live
-    /// tail) end so graceful shutdown does not wait on them forever.
+    /// Flips to `true` when shutdown starts: new ingest, queries and live
+    /// streams are refused and live-tail streams end, so the drain only
+    /// waits for work that was already accepted.
     pub shutdown: watch::Receiver<bool>,
 }
 
 pub type SharedState = Arc<AppState>;
 
 impl AppState {
+    /// Shutdown has started; refuse new work.
+    pub fn draining(&self) -> bool {
+        *self.shutdown.borrow()
+    }
+
     /// Run blocking work (SQLite, filesystem) off the async runtime.
     pub async fn blocking<T, F>(&self, f: F) -> ApiResult<T>
     where
@@ -81,6 +87,9 @@ impl AppState {
         T: Send + 'static,
         F: FnOnce(&Engine) -> ApiResult<T> + Send + 'static,
     {
+        if self.draining() {
+            return Err(ApiError::shutting_down());
+        }
         let permit = tokio::time::timeout(Duration::from_secs(10), self.query_permits.clone().acquire_owned())
             .await
             .map_err(|_| ApiError::unavailable("too many concurrent queries; try again shortly"))?

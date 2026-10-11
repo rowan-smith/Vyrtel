@@ -4,6 +4,10 @@
 
 [server]
 bind = "0.0.0.0:8080"
+# After SIGTERM/Ctrl+C, how long accepted work may take to drain before
+# Vyrtel reports what is unfinished and exits with status 1. Keep it below
+# your orchestrator's grace period (Docker: 10s by default).
+shutdown_timeout = "8s"
 
 [storage]
 path = "./data"

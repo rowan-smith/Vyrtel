@@ -47,6 +47,17 @@ impl ApiError {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable", message)
     }
 
+    /// New work arriving after shutdown started. The connection closes so
+    /// the client retries against the next instance.
+    pub fn shutting_down() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "shutting_down",
+            "the server is shutting down and accepts no new work; retry shortly",
+        )
+        .closing_connection()
+    }
+
     /// Log the real cause, return a generic 500.
     pub fn internal(cause: impl std::fmt::Display) -> Self {
         tracing::error!(error = %cause, "internal error");

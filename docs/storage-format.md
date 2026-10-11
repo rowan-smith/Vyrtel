@@ -131,7 +131,8 @@ An *acknowledged* request is one whose ingest call returned success (HTTP
 
 | Failure                                          | `strict`                                   | `normal`                                                       |
 |--------------------------------------------------|--------------------------------------------|----------------------------------------------------------------|
-| Clean shutdown (SIGTERM, Ctrl-C)                 | nothing lost                               | nothing lost                                                   |
+| Clean shutdown (SIGTERM, Ctrl-C), drained in time | nothing lost; every accepted request is acknowledged first | nothing lost; every accepted request is acknowledged first |
+| Shutdown deadline passed or stop signal repeated | nothing acknowledged is lost; unacknowledged requests get no response ([details](configuration.md#when-the-deadline-passes-or-the-signal-is-repeated)) | same as `strict`                                               |
 | Process killed or crashed (`kill -9`, OOM, panic) | nothing lost                               | nothing lost — acknowledged bytes are already in the OS        |
 | OS crash or power loss                           | nothing lost                               | up to `fsync_interval` of acknowledged requests may be lost    |
 | Disk corrupts bytes after they were written      | the damaged record and everything after it in that WAL are quarantined, not replayed (see recovery) | same                                                           |

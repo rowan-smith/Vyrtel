@@ -6,9 +6,15 @@
 //! batches; a client that falls behind receives a `lagged` event with the
 //! number of skipped batches instead of making the server buffer for it.
 //! Per batch, at most [`MAX_EVENTS_PER_BATCH`] matches are sent.
+//!
+//! When shutdown starts, each stream sends what it has already matched, then
+//! a `shutdown` event carrying an SSE `retry` of [`RECONNECT_AFTER`], and
+//! ends. The response finishes normally (no reset), so `EventSource`
+//! reconnects by itself and reaches the next instance once it is up.
 
 use std::collections::VecDeque;
 use std::convert::Infallible;
+use std::time::Duration;
 
 use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -24,6 +30,9 @@ use crate::state::{LiveBatch, SharedState};
 
 pub const MAX_EVENTS_PER_BATCH: usize = 200;
 
+/// Reconnection delay suggested to clients when the server shuts down.
+pub const RECONNECT_AFTER: Duration = Duration::from_secs(2);
+
 #[derive(Deserialize)]
 pub struct LiveParams {
     #[serde(default)]
@@ -37,7 +46,16 @@ struct Tail {
     signal: Signal,
     pending: VecDeque<Event>,
     shutdown: watch::Receiver<bool>,
+    /// The `shutdown` event is queued; end once `pending` is sent.
+    closing: bool,
     _permit: OwnedSemaphorePermit,
+}
+
+impl Tail {
+    fn close(&mut self) {
+        self.closing = true;
+        self.pending.push_back(Event::default().event("shutdown").retry(RECONNECT_AFTER).data("{}"));
+    }
 }
 
 pub async fn live(
@@ -51,6 +69,9 @@ pub async fn live(
         _ => return Err(ApiError::bad_request("signal must be logs, traces or metrics")),
     };
     let filter = query::compile_query(&p.query, signal)?;
+    if state.draining() {
+        return Err(ApiError::shutting_down());
+    }
     let permit = state
         .live_permits
         .clone()
@@ -58,19 +79,33 @@ pub async fn live(
         .map_err(|_| ApiError::unavailable("too many live streams open"))?;
     let mut pending = VecDeque::new();
     pending.push_back(Event::default().event("ready").data("{}"));
-    let tail =
-        Tail { rx: state.live.subscribe(), filter, signal, pending, shutdown: state.shutdown.clone(), _permit: permit };
+    let tail = Tail {
+        rx: state.live.subscribe(),
+        filter,
+        signal,
+        pending,
+        shutdown: state.shutdown.clone(),
+        closing: false,
+        _permit: permit,
+    };
     let stream = futures_util::stream::unfold(tail, |mut t| async move {
         loop {
             if let Some(ev) = t.pending.pop_front() {
                 return Some((Ok(ev), t));
             }
-            if *t.shutdown.borrow() {
+            if t.closing {
                 return None;
+            }
+            if *t.shutdown.borrow() {
+                t.close();
+                continue;
             }
             let next = tokio::select! {
                 r = t.rx.recv() => r,
-                _ = t.shutdown.changed() => return None,
+                _ = t.shutdown.changed() => {
+                    t.close();
+                    continue;
+                }
             };
             match next {
                 Ok(lb) if lb.signal == t.signal => {

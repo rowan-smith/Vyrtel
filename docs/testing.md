@@ -220,6 +220,25 @@ talks HTTP to it:
 * pagination, time ranges, empty results, facets, histograms;
 * live stream (SSE) delivery and filtering, and that open streams do not
   block shutdown;
+* graceful shutdown (`shutdown.rs`, REL-05): with the queue full and the
+  writer parked, a stop request waits for all 4 admitted requests, refuses
+  new work (closed listener or `503 shutting_down`) and exits cleanly; all
+  43 acknowledged events are back exactly once after a restart; an idle
+  stop takes well under 2 s; when `server.shutdown_timeout` (500 ms) passes
+  with a request unacknowledged, or a second stop request arrives, shutdown
+  gives up on time and `IncompleteShutdown` names the request and its 5
+  queued events; the deadline also bounds a stuck final storage flush,
+  while a seal still running at the deadline neither holds nor fails the
+  shutdown and its events are back after a restart;
+  live-tail streams, including one whose client has not read 300 events,
+  end with `shutdown` and `retry: 2000` and a clean end of body, and a
+  client reconnecting to the same address after a restart receives new
+  events. On Unix the `process` tests send real SIGTERMs to the binary: an
+  upload in flight is answered `200` before exit status 0; past a 1 s
+  deadline it exits with status 1 within about a second and prints the
+  diagnostic; a second SIGTERM exits at once. Unit tests in `app.rs` check
+  each refused route and the diagnostic text, and `web/tests/unit/live-tail.test.ts`
+  the UI's reconnection and backoff;
 * dashboards, saved queries, alerts firing/resolving with webhook delivery,
   the background evaluator.
 

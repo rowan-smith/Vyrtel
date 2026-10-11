@@ -187,11 +187,19 @@ server.
 
 ## Process boundaries & shutdown
 
-There is exactly one OS process. On SIGINT/SIGTERM the server stops
-accepting connections, ends live-tail streams, drains in-flight requests,
-flushes query statistics, then each storage stream fsyncs its WAL and stops
-its threads. Unsealed data is not sealed at shutdown — WAL replay restores
-it on the next start, which keeps shutdown fast. A data-directory lock
+There is exactly one OS process. On a stop signal (SIGINT/SIGTERM; on
+Windows Ctrl+C, Ctrl+Break, console close or system shutdown) the server
+stops accepting connections, answers new ingest, query and live-tail
+requests with `503 shutting_down`, reports `/ready` as draining, ends
+live-tail streams with a `shutdown` event, drains in-flight requests to
+their acknowledgement, flushes query statistics, then each storage stream
+writes out its queue, fsyncs its WAL and stops its threads. Unsealed data
+is not sealed at shutdown — WAL replay restores it on the next start, which
+keeps shutdown fast. The whole drain shares one deadline,
+`server.shutdown_timeout`; past it, or on a second stop signal, the process
+logs what was unfinished and exits with status 1 without waiting further
+(`App::serve_until` in `crates/server/src/app.rs`). See
+[stopping and upgrading](configuration.md#stopping-and-upgrading). A data-directory lock
 (`data/.lock`) prevents two processes from using the same directory.
 
 Vyrtel's own diagnostics go to stderr via `tracing` (text or JSON). They

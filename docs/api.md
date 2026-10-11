@@ -249,6 +249,7 @@ done
 |    413 | `payload_too_large`                                     | batch has more events than `queue_capacity`                                                                    | no — split the batch                                                                                                                                                                                                |
 |    429 | `rate_limited`                                          | submission: the signal's queue is full                                                                         | yes, after `Retry-After`                                                                                                                                                                                            |
 |    503 | `unavailable`                                           | no acknowledgement within `ack_timeout`, or storage stopping                                                   | yes, after `Retry-After`; the batch may already be stored                                                                                                                                                           |
+|    503 | `shutting_down`                                         | the server is stopping; checked before admission, the body is not read and the connection closes             | yes, after `Retry-After`, against the restarted or another instance; nothing was stored                                                                                                                             |
 |    503 | `storage_write_failed`                                  | the WAL write or its fsync failed, or sealing is failing (full disk, read-only or inaccessible data directory) | yes, with backoff. `outcome: "notStored"`: nothing was stored. `outcome: "unknown"`: it may reappear after a power loss, so a retry can duplicate it. Fix storage ([what to do](configuration.md#storage-failures)) |
 
 Batches are all-or-nothing, so retrying a request rejected with 429 cannot
@@ -350,6 +351,12 @@ each new matching event. `dropped` (data: count) when more than 200 events
 matched in one batch, `lagged` (data: skipped batches) when the client fell
 behind — the server never buffers unboundedly for a slow client. Use
 `?signal=traces` for spans.
+
+When the server shuts down, each stream sends the events it has already
+matched, then `shutdown` (data: `{}`) with `retry: 2000`, and ends the
+response normally. `EventSource` reconnects after two seconds; until the
+server is back, reconnects fail and should be retried. A new stream opened
+while the server is stopping gets `503 shutting_down`.
 
 ## Traces
 
@@ -474,7 +481,7 @@ change is recorded and POSTed to the webhook (3 attempts, 10 s timeout):
 
 ```
 GET /health                      → 200 {"status": "ok"} while the process runs
-GET /ready                       → 200 {"status": "ready", "storageWritable": true} or 503 {"status": "degraded", ...}
+GET /ready                       → 200 {"status": "ready", "storageWritable": true}, 503 {"status": "degraded", ...} or, while shutting down, 503 {"status": "draining"}
 GET /api/v1/system/info          version, uptime, event counts, queue depths, ingest admission, active segments, memory budgets
 GET /api/v1/system/storage       raw/stored bytes, compression ratio, index overhead, per-signal detail
 GET /api/v1/system/query-stats   per-field query statistics (input for future adaptive indexing)

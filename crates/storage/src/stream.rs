@@ -408,6 +408,12 @@ impl Stream {
         &self.shared.cache
     }
 
+    /// Events submitted but not yet acknowledged. Lock-free, unlike
+    /// [`Stream::stats`], so it can be read while the writer is stuck.
+    pub fn queued_events(&self) -> usize {
+        self.shared.queued.load(Ordering::Acquire)
+    }
+
     pub fn stats(&self) -> StreamStats {
         let st = self.shared.state.read().unwrap();
         let mut s = StreamStats {
@@ -452,15 +458,22 @@ impl Stream {
         self.shared.sealed.1.notify_all();
     }
 
-    /// Flush and stop the threads. Unsealed data stays in the WAL and is
-    /// replayed on the next start, so shutdown is fast.
-    pub(crate) fn shutdown(&self) {
+    /// Write out the queue, flush the WAL and stop the writer. Unsealed
+    /// data stays in the WAL and is replayed on the next start, so this is
+    /// fast. Does nothing once the writer has stopped.
+    pub(crate) fn stop_writer(&self) {
         self.begin_shutdown();
         let (done_tx, done_rx) = mpsc::sync_channel(1);
         // A blocking send: the queue may be full of work that must finish.
         if self.tx.send(WriterMsg::Shutdown(done_tx)).is_ok() {
             let _ = done_rx.recv_timeout(Duration::from_secs(30));
         }
+    }
+
+    /// Stop the writer, then the maintenance thread, which first finishes
+    /// any seal or compaction in progress.
+    pub(crate) fn shutdown(&self) {
+        self.stop_writer();
         let _ = self.maint_tx.send(MaintMsg::Shutdown);
         for t in self.threads.lock().unwrap().drain(..) {
             let _ = t.join();

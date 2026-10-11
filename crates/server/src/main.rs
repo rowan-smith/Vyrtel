@@ -7,7 +7,9 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use server::App;
-use server::config::{ByteSize, Config, LogFormat};
+use server::app::IncompleteShutdown;
+use server::config::{ByteSize, Config, LogFormat, format_duration};
+use tokio::sync::watch;
 
 /// Vyrtel: small, fast, self-hosted observability (logs, traces, metrics).
 #[derive(Parser)]
@@ -108,23 +110,85 @@ fn healthcheck(config: &Config) -> ExitCode {
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
+/// The stop requests Vyrtel handles: SIGINT and SIGTERM on Unix; on
+/// Windows the console control events Ctrl+C, Ctrl+Break, closing the
+/// console, and system shutdown. Registered before serving, so a signal
+/// arriving during startup is not lost.
+struct StopSignals {
     #[cfg(unix)]
-    let term = async {
-        if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            s.recv().await;
-        }
-    };
-    #[cfg(not(unix))]
-    let term = std::future::pending::<()>();
-    tokio::select! {
-        _ = ctrl_c => {}
-        _ = term => {}
+    int: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    term: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    ctrl_c: tokio::signal::windows::CtrlC,
+    #[cfg(windows)]
+    ctrl_break: tokio::signal::windows::CtrlBreak,
+    #[cfg(windows)]
+    ctrl_close: tokio::signal::windows::CtrlClose,
+    #[cfg(windows)]
+    ctrl_shutdown: tokio::signal::windows::CtrlShutdown,
+}
+
+impl StopSignals {
+    #[cfg(unix)]
+    fn register() -> std::io::Result<StopSignals> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(StopSignals { int: signal(SignalKind::interrupt())?, term: signal(SignalKind::terminate())? })
     }
-    tracing::info!("shutting down");
+
+    #[cfg(windows)]
+    fn register() -> std::io::Result<StopSignals> {
+        use tokio::signal::windows;
+        Ok(StopSignals {
+            ctrl_c: windows::ctrl_c()?,
+            ctrl_break: windows::ctrl_break()?,
+            ctrl_close: windows::ctrl_close()?,
+            ctrl_shutdown: windows::ctrl_shutdown()?,
+        })
+    }
+
+    #[cfg(unix)]
+    async fn next(&mut self) -> &'static str {
+        tokio::select! {
+            _ = self.int.recv() => "SIGINT",
+            _ = self.term.recv() => "SIGTERM",
+        }
+    }
+
+    #[cfg(windows)]
+    async fn next(&mut self) -> &'static str {
+        tokio::select! {
+            _ = self.ctrl_c.recv() => "Ctrl+C",
+            _ = self.ctrl_break.recv() => "Ctrl+Break",
+            _ = self.ctrl_close.recv() => "console close",
+            _ = self.ctrl_shutdown.recv() => "system shutdown",
+        }
+    }
+
+    /// Count stop requests as they arrive. The handlers stay installed, so
+    /// a second Ctrl+C reaches Vyrtel instead of killing it outright.
+    async fn count(mut self, count: watch::Sender<u32>, timeout: Duration) {
+        loop {
+            let name = self.next().await;
+            count.send_modify(|n| *n += 1);
+            if *count.borrow() == 1 {
+                tracing::info!(
+                    signal = name,
+                    "stop requested; draining accepted work for up to {} (send it again to stop at once)",
+                    format_duration(timeout)
+                );
+            } else {
+                tracing::warn!(signal = name, "stop requested again; no longer waiting for accepted work");
+            }
+        }
+    }
+}
+
+/// Resolves once `n` stop requests have arrived.
+async fn stop_requests(mut count: watch::Receiver<u32>, n: u32) {
+    if count.wait_for(|c| *c >= n).await.is_err() {
+        std::future::pending::<()>().await;
+    }
 }
 
 fn main() -> ExitCode {
@@ -153,13 +217,26 @@ fn main() -> ExitCode {
         }
     };
     let result = rt.block_on(async move {
+        let signals = StopSignals::register().context("installing stop signal handlers")?;
+        let (count, stops) = watch::channel(0u32);
+        tokio::spawn(signals.count(count, config.server.shutdown_timeout));
         let bind = config.server.bind.clone();
         let app = App::build(config)?;
         let listener =
             tokio::net::TcpListener::bind(&bind).await.with_context(|| format!("cannot listen on {bind}"))?;
         println!("{}", app.banner(listener.local_addr()?));
-        app.serve(listener, shutdown_signal()).await
+        app.serve_until(listener, stop_requests(stops.clone(), 1), stop_requests(stops, 2)).await
     });
+    if let Err(e) = &result
+        && e.is::<IncompleteShutdown>()
+    {
+        // Already logged. Exit now, running no destructors: they would wait
+        // for the very work that was abandoned.
+        eprintln!("vyrtel: {e}");
+        std::process::exit(1);
+    }
+    // Do not wait for a seal or compaction that shutdown stopped waiting for.
+    rt.shutdown_background();
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

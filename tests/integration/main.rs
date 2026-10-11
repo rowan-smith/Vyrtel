@@ -10,6 +10,7 @@ mod auth;
 mod crash;
 mod ingest_limits;
 mod live;
+mod shutdown;
 mod signals;
 mod storage_flows;
 // Needs `--features fault-injection` (CI runs `--all-features`).
