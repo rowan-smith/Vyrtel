@@ -168,3 +168,51 @@ async fn readiness_recovers_without_new_traffic() {
     }
     s.stop().await;
 }
+
+// REL-05: in normal durability a batch is acknowledged before its fsync, so
+// the final WAL flush at shutdown is what puts it on disk. If that flush
+// fails, shutdown must not report success: it reports the fault (which the
+// stream keeps), so the process exits with status 1.
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_final_wal_flush_is_not_a_clean_shutdown() {
+    use server::app::{IncompleteShutdown, ShutdownPhase, StopCause};
+
+    let s = TestServer::start_with(|c| {
+        c.storage.durability = server::config::Durability::Normal;
+        // No periodic fsync before the shutdown.
+        c.storage.fsync_interval = Duration::from_secs(3600);
+    })
+    .await;
+    let host = s.data_dir().to_string_lossy().to_string();
+    s.ingest(json!({"message": "acknowledged, not yet fsynced"})).await;
+    let state = s.state().clone();
+    let guard = inject(&s.data_dir(), "wal.sync", Injected::NoSpace);
+
+    let (r, config, dir) = s.stopped().await;
+    let e = r.expect_err("a failed final flush is not a clean shutdown").downcast::<IncompleteShutdown>().unwrap();
+    assert_eq!(e.phase, ShutdownPhase::Storage);
+    let StopCause::WalFlushFailed(faults) = &e.cause else { panic!("{e:?}") };
+    assert_eq!(faults.len(), 1, "only logs had unsynced data: {faults:?}");
+    let (signal, fault) = &faults[0];
+    assert_eq!(*signal, telemetry::Signal::Logs);
+    assert_eq!((fault.op.as_str(), fault.reason.as_str()), ("walSync", "noSpace"));
+    assert!(fault.path.starts_with("wal/logs/"), "{fault:?}");
+    let text = e.to_string();
+    assert!(
+        text.starts_with("shutdown incomplete: the final WAL flush failed (logs: walSync noSpace on wal/logs/"),
+        "{text}"
+    );
+    assert!(text.contains("may not be on disk"), "{text}");
+    assert!(!text.contains(&host), "the diagnostic does not disclose the data directory: {text}");
+    // The underlying fault is kept on the stream, as for any write failure.
+    let kept = state.storage.stats().logs.faults;
+    assert_eq!(kept.iter().map(|f| f.op.as_str()).collect::<Vec<_>>(), ["walSync"], "{kept:?}");
+    drop(state);
+
+    // The process did not crash, so the acknowledged batch is in the OS and
+    // a restart replays it.
+    drop(guard);
+    let s = TestServer::launch(config, dir).await;
+    assert_eq!(s.messages("").await, ["acknowledged, not yet fsynced"]);
+    s.stop().await;
+}

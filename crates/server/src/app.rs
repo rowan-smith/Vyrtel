@@ -19,7 +19,7 @@ use anyhow::Context;
 use axum::Router;
 use metadata::Metadata;
 use query::{Engine, QueryLimits};
-use storage::{CommitHook, Storage, StorageConfig};
+use storage::{CommitHook, Storage, StorageConfig, StorageFault};
 use telemetry::{Signal, Timestamp};
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, broadcast, oneshot, watch};
@@ -252,16 +252,11 @@ impl App {
         let deadline = began.unwrap_or_else(tokio::time::Instant::now) + timeout;
         if began.is_some() {
             // In-flight requests finish and live-tail streams end.
-            let cut_short = tokio::select! {
-                r = &mut serving => {
-                    r.context("HTTP server error")?;
-                    None
+            match within(&mut serving, deadline, timeout, &mut force).await {
+                Ok(r) => r.context("HTTP server error")?,
+                Err(cause) => {
+                    return Err(IncompleteShutdown::report(&self.state, cause, ShutdownPhase::Requests).into());
                 }
-                _ = tokio::time::sleep_until(deadline) => Some(StopCause::Deadline(timeout)),
-                _ = &mut force => Some(StopCause::Forced),
-            };
-            if let Some(cause) = cut_short {
-                return Err(IncompleteShutdown::report(&self.state, cause, ShutdownPhase::Requests).into());
             }
         }
         let started = deadline - timeout;
@@ -270,82 +265,104 @@ impl App {
         Ok(())
     }
 
-    /// Stop background jobs and flush storage, waiting at most
+    /// Flush storage and stop background jobs, waiting at most
     /// `server.shutdown_timeout`.
     pub async fn shutdown(self) -> Result<(), IncompleteShutdown> {
         let deadline = tokio::time::Instant::now() + self.state.config.server.shutdown_timeout;
         self.finish(deadline, pin!(std::future::pending())).await
     }
 
+    /// Everything after the HTTP drain. Accepted work comes first: every
+    /// stream writes out its queue and flushes its WAL. Then background
+    /// jobs stop and query statistics are saved, then any seal or
+    /// compaction in progress finishes. Each phase ends early on the
+    /// deadline or a second stop request, reported the same way in every
+    /// phase; only a shutdown that finished all of them is `Ok`.
     async fn finish(
         self,
         deadline: tokio::time::Instant,
         mut force: Pin<&mut impl Future<Output = ()>>,
     ) -> Result<(), IncompleteShutdown> {
         let _ = self.shutdown.send(true);
-        // Background jobs are not accepted work: past the deadline they are
-        // abandoned, not reported.
+        let timeout = self.state.config.server.shutdown_timeout;
+        let state = self.state;
+        let fail = |cause, phase| Err(IncompleteShutdown::report(&state, cause, phase));
+
+        // Unsealed data is replayed from the WAL on the next start.
+        let storage = state.storage.clone();
+        let flush = tokio::task::spawn_blocking(move || storage.stop_writers());
+        match within(flush, deadline, timeout, &mut force).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(faults))) => return fail(StopCause::WalFlushFailed(faults), ShutdownPhase::Storage),
+            Ok(Err(panic)) => std::panic::resume_unwind(panic.into_panic()),
+            Err(cause) => return fail(cause, ShutdownPhase::Storage),
+        }
+
         let mut tasks = self.tasks;
-        let joined = tokio::time::timeout_at(deadline, async {
+        let background = async {
             for t in &mut tasks {
                 let _ = t.await;
             }
-        });
-        if joined.await.is_err() {
+            persist_query_stats(&state).await;
+        };
+        if let Err(cause) = within(background, deadline, timeout, &mut force).await {
             tasks.iter().for_each(JoinHandle::abort);
-            tracing::warn!("background jobs did not stop before the shutdown deadline; abandoned");
+            return fail(cause, ShutdownPhase::Background);
         }
-        let state = self.state;
-        if tokio::time::timeout_at(deadline, persist_query_stats(&state)).await.is_err() {
-            tracing::warn!("query statistics were not saved before the shutdown deadline");
-        }
-        // Every stream writes out its queue and flushes its WAL. Unsealed
-        // data is replayed from the WAL on the next start.
+
+        // Interrupting a seal or compaction loses nothing (its input is in
+        // the flushed WAL), but the shutdown did not finish, so it is
+        // reported like any other phase.
         let storage = state.storage.clone();
-        let flush = tokio::task::spawn_blocking(move || storage.stop_writers());
-        let cause = tokio::select! {
-            _ = flush => None,
-            _ = tokio::time::sleep_until(deadline) => Some(StopCause::Deadline(state.config.server.shutdown_timeout)),
-            _ = &mut force => Some(StopCause::Forced),
-        };
-        if let Some(cause) = cause {
-            return Err(IncompleteShutdown::report(&state, cause, ShutdownPhase::Storage));
-        }
-        // A seal or compaction in progress is not accepted work: its input
-        // is still in the WAL, so stopping it part-way loses nothing.
-        let storage = state.storage.clone();
-        let stopped = tokio::task::spawn_blocking(move || storage.shutdown());
-        let finished = tokio::select! {
-            _ = stopped => true,
-            _ = tokio::time::sleep_until(deadline) => false,
-            _ = &mut force => false,
-        };
-        if !finished {
-            tracing::warn!(
-                "sealing or compaction was still running when shutdown stopped waiting; \
-                 nothing acknowledged is affected and the next start redoes it from the WAL"
-            );
+        let maintenance = tokio::task::spawn_blocking(move || storage.shutdown());
+        if let Err(cause) = within(maintenance, deadline, timeout, &mut force).await {
+            return fail(cause, ShutdownPhase::Maintenance);
         }
         Ok(())
     }
 }
 
-/// Why shutdown stopped waiting for accepted work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Wait for `work` until `deadline` passes or `force` (a second stop
+/// request) resolves. `force` must not be polled again once it has.
+async fn within<T>(
+    work: impl Future<Output = T>,
+    deadline: tokio::time::Instant,
+    timeout: Duration,
+    force: &mut Pin<&mut impl Future<Output = ()>>,
+) -> Result<T, StopCause> {
+    tokio::select! {
+        r = work => Ok(r),
+        _ = tokio::time::sleep_until(deadline) => Err(StopCause::Deadline(timeout)),
+        _ = force.as_mut() => Err(StopCause::Forced),
+    }
+}
+
+/// Why shutdown did not finish.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StopCause {
     /// `server.shutdown_timeout` passed.
     Deadline(Duration),
     /// A second stop request arrived.
     Forced,
+    /// The final WAL flush failed for these signals, so batches
+    /// acknowledged since their last fsync may not be on disk. Each fault
+    /// is also recorded on its stream.
+    WalFlushFailed(Vec<(Signal, StorageFault)>),
 }
 
-/// What shutdown was waiting for when it gave up.
+/// What shutdown was doing when it stopped, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownPhase {
     /// HTTP requests: ingest awaiting acknowledgement, queries, live tail.
     Requests,
     /// Storage writing out queued batches and flushing its WAL.
     Storage,
+    /// Background jobs (alert evaluation) stopping and query statistics
+    /// being saved. Every accepted request is already written and flushed.
+    Background,
+    /// A seal or compaction in progress. Every accepted request is already
+    /// written and flushed; the next start redoes the seal from the WAL.
+    Maintenance,
 }
 
 /// Accepted work still in progress.
@@ -378,8 +395,9 @@ impl Unfinished {
     }
 }
 
-/// Shutdown gave up before all accepted work was done. Acknowledged events
-/// are not affected: they reach the WAL before they are acknowledged.
+/// Shutdown did not finish: it stopped waiting (deadline, second stop
+/// request) or the final WAL flush failed. `unfinished` is what was still
+/// in progress. A process that gets this must exit with a failure status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncompleteShutdown {
     pub cause: StopCause,
@@ -409,13 +427,37 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 impl std::fmt::Display for IncompleteShutdown {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("shutdown incomplete: ")?;
-        match self.cause {
-            StopCause::Deadline(d) => write!(f, "server.shutdown_timeout ({}) passed", format_duration(d))?,
+        match &self.cause {
+            StopCause::Deadline(d) => write!(f, "server.shutdown_timeout ({}) passed", format_duration(*d))?,
             StopCause::Forced => f.write_str("a second stop signal arrived")?,
+            StopCause::WalFlushFailed(faults) => {
+                let each: Vec<String> = faults
+                    .iter()
+                    .map(|(s, x)| {
+                        format!("{}: {} {} on {}: {}", s.as_str(), x.op.as_str(), x.reason.as_str(), x.path, x.message)
+                    })
+                    .collect();
+                return write!(
+                    f,
+                    "the final WAL flush failed ({}). Events acknowledged since the last successful fsync reached \
+                     the operating system but may not be on disk: the next start replays them, but an OS crash or \
+                     power loss before the OS writes them out can lose them; fix the storage problem \
+                     (docs/configuration.md#storage-failures)",
+                    each.join("; ")
+                );
+            }
         }
         f.write_str(match self.phase {
             ShutdownPhase::Requests => " while waiting for in-flight requests",
             ShutdownPhase::Storage => " while storage was writing queued batches and flushing the WAL",
+            ShutdownPhase::Background => {
+                " while background jobs were stopping and query statistics were being saved, \
+                 after every accepted request was written and the WAL flushed"
+            }
+            ShutdownPhase::Maintenance => {
+                " while a seal or compaction was finishing, after every accepted request was written \
+                 and the WAL flushed (the next start redoes it from the WAL)"
+            }
         })?;
         let u = &self.unfinished;
         let mut parts = Vec::new();
@@ -446,8 +488,8 @@ impl std::fmt::Display for IncompleteShutdown {
         }
         f.write_str(". Acknowledged events are already in the WAL and are replayed on the next start; ")?;
         f.write_str(match self.cause {
-            StopCause::Deadline(_) => "raise server.shutdown_timeout if draining regularly takes longer",
             StopCause::Forced => "send a single stop signal to let accepted work finish",
+            _ => "raise server.shutdown_timeout if draining regularly takes longer",
         })
     }
 }
@@ -649,5 +691,81 @@ mod tests {
             unfinished: Unfinished { ingest_requests: 0, queued: vec![], live_streams: 0 },
         };
         assert!(idle.to_string().contains("; no requests or queued events were left."), "{idle}");
+
+        let background = IncompleteShutdown { phase: ShutdownPhase::Background, ..idle.clone() };
+        assert!(
+            background.to_string().starts_with(
+                "shutdown incomplete: a second stop signal arrived while background jobs were stopping and query \
+                 statistics were being saved, after every accepted request was written and the WAL flushed;"
+            ),
+            "{background}"
+        );
+        let maintenance = IncompleteShutdown { phase: ShutdownPhase::Maintenance, ..idle };
+        assert!(maintenance.to_string().contains("while a seal or compaction was finishing"), "{maintenance}");
+    }
+
+    // REL-05 review: a failed final flush names each signal's fault (paths
+    // relative to the data directory) and what it means for acknowledged data.
+    #[test]
+    fn failed_final_flush_describes_the_fault() {
+        let e = std::io::Error::new(std::io::ErrorKind::StorageFull, "No space left on device");
+        let wal = std::path::Path::new("/data/wal/logs/000000000001.wal");
+        let err = storage::StorageError::Io { path: wal.to_path_buf(), source: e };
+        let fault = StorageFault::from_error(storage::FaultOp::WalSync, &err, wal, std::path::Path::new("/data"));
+        let e = IncompleteShutdown {
+            cause: StopCause::WalFlushFailed(vec![(Signal::Logs, fault)]),
+            phase: ShutdownPhase::Storage,
+            unfinished: Unfinished { ingest_requests: 0, queued: vec![], live_streams: 0 },
+        };
+        assert_eq!(
+            e.to_string(),
+            "shutdown incomplete: the final WAL flush failed (logs: walSync noSpace on wal/logs/000000000001.wal: \
+             No space left on device). Events acknowledged since the last successful fsync reached the operating \
+             system but may not be on disk: the next start replays them, but an OS crash or power loss before the \
+             OS writes them out can lose them; fix the storage problem (docs/configuration.md#storage-failures)"
+        );
+    }
+
+    /// Serve with a background job that ignores the shutdown signal, stop at
+    /// once, and send a second stop request after `force_after` (if any).
+    async fn stop_with_a_blocked_background_job(
+        timeout: Duration,
+        force_after: Option<Duration>,
+    ) -> (IncompleteShutdown, Duration) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.storage.path = dir.path().to_path_buf();
+        config.alerts.enabled = false;
+        config.server.shutdown_timeout = timeout;
+        let mut app = App::build(config).unwrap();
+        app.tasks.push(tokio::spawn(std::future::pending::<()>()));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let force = async move {
+            match force_after {
+                Some(d) => tokio::time::sleep(d).await,
+                None => std::future::pending().await,
+            }
+        };
+        let began = std::time::Instant::now();
+        let r = app.serve_until(listener, std::future::ready(()), force).await;
+        let took = began.elapsed();
+        (r.unwrap_err().downcast::<IncompleteShutdown>().unwrap(), took)
+    }
+
+    // REL-05 review: a second stop request is honoured while background jobs
+    // are being waited for, not only during the HTTP drain and WAL flush.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn second_stop_request_ends_a_blocked_background_job() {
+        let (e, took) =
+            stop_with_a_blocked_background_job(Duration::from_secs(60), Some(Duration::from_millis(200))).await;
+        assert!(took < Duration::from_secs(2), "took {took:?}");
+        assert_eq!((&e.cause, e.phase), (&StopCause::Forced, ShutdownPhase::Background));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deadline_ends_a_blocked_background_job() {
+        let (e, took) = stop_with_a_blocked_background_job(Duration::from_millis(300), None).await;
+        assert!(took < Duration::from_secs(2), "took {took:?}");
+        assert_eq!((&e.cause, e.phase), (&StopCause::Deadline(Duration::from_millis(300)), ShutdownPhase::Background));
     }
 }

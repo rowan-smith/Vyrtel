@@ -81,9 +81,14 @@ pub type Done = Box<dyn FnOnce(Result<()>) + Send>;
 pub type CommitHook = Arc<dyn Fn(Signal, &Arc<Batch>) + Send + Sync>;
 
 enum WriterMsg {
-    Append { events: Vec<TelemetryEvent>, reserved: usize, ack: Ack },
+    Append {
+        events: Vec<TelemetryEvent>,
+        reserved: usize,
+        ack: Ack,
+    },
     Rotate(Done),
-    Shutdown(SyncSender<()>),
+    /// Answered with the outcome of the final WAL flush.
+    Shutdown(SyncSender<std::result::Result<(), StorageFault>>),
 }
 
 enum MaintMsg {
@@ -245,6 +250,8 @@ pub struct Stream {
     tx: SyncSender<WriterMsg>,
     maint_tx: Sender<MaintMsg>,
     threads: Mutex<Vec<JoinHandle<()>>>,
+    /// Outcome of the final WAL flush, once the writer has stopped.
+    final_flush: Mutex<Option<std::result::Result<(), StorageFault>>>,
     pub recovery: RecoveryReport,
 }
 
@@ -318,7 +325,14 @@ impl Stream {
                 .map_err(|e| StorageError::Unavailable(format!("spawn maintenance: {e}")))?
         };
 
-        Ok(Stream { shared, tx, maint_tx, threads: Mutex::new(vec![writer, maintenance]), recovery: rec.report })
+        Ok(Stream {
+            shared,
+            tx,
+            maint_tx,
+            threads: Mutex::new(vec![writer, maintenance]),
+            final_flush: Mutex::new(None),
+            recovery: rec.report,
+        })
     }
 
     pub fn signal(&self) -> Signal {
@@ -460,20 +474,43 @@ impl Stream {
 
     /// Write out the queue, flush the WAL and stop the writer. Unsealed
     /// data stays in the WAL and is replayed on the next start, so this is
-    /// fast. Does nothing once the writer has stopped.
-    pub(crate) fn stop_writer(&self) {
+    /// fast. `Err` means the final flush did not happen, so batches
+    /// acknowledged since the last fsync may not be on disk; the fault is
+    /// also recorded on the stream. Later calls return the first outcome.
+    pub(crate) fn stop_writer(&self) -> std::result::Result<(), StorageFault> {
         self.begin_shutdown();
+        let mut outcome = self.final_flush.lock().unwrap();
+        if let Some(r) = &*outcome {
+            return r.clone();
+        }
         let (done_tx, done_rx) = mpsc::sync_channel(1);
         // A blocking send: the queue may be full of work that must finish.
-        if self.tx.send(WriterMsg::Shutdown(done_tx)).is_ok() {
-            let _ = done_rx.recv_timeout(Duration::from_secs(30));
-        }
+        let r = match self.tx.send(WriterMsg::Shutdown(done_tx)) {
+            Ok(()) => done_rx.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|e| {
+                let why = match e {
+                    RecvTimeoutError::Timeout => "the WAL writer did not finish its final flush within 30 s",
+                    RecvTimeoutError::Disconnected => "the WAL writer stopped before its final flush",
+                };
+                Err(self.shared.set_fault(
+                    FaultOp::WalSync,
+                    &StorageError::Unavailable(why.into()),
+                    &self.shared.dirs.wal,
+                ))
+            }),
+            Err(_) => Err(self.shared.set_fault(
+                FaultOp::WalSync,
+                &StorageError::Unavailable("the WAL writer stopped before its final flush".into()),
+                &self.shared.dirs.wal,
+            )),
+        };
+        *outcome = Some(r.clone());
+        r
     }
 
     /// Stop the writer, then the maintenance thread, which first finishes
     /// any seal or compaction in progress.
     pub(crate) fn shutdown(&self) {
-        self.stop_writer();
+        let _ = self.stop_writer();
         let _ = self.maint_tx.send(MaintMsg::Shutdown);
         for t in self.threads.lock().unwrap().drain(..) {
             let _ = t.join();
@@ -584,10 +621,12 @@ impl Writer {
                     }
                     WriterMsg::Shutdown(done) => {
                         self.commit(&mut pending);
-                        if let Err(e) = self.wal.discard_partial_write().and_then(|()| self.wal.sync()) {
-                            self.wal_fault(FaultOp::WalSync, &e);
-                        }
-                        let _ = done.send(());
+                        let flushed = self
+                            .wal
+                            .discard_partial_write()
+                            .and_then(|()| self.wal.sync())
+                            .map_err(|e| self.wal_fault(FaultOp::WalSync, &e));
+                        let _ = done.send(flushed);
                         return;
                     }
                 }

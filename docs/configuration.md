@@ -340,13 +340,13 @@ From the first stop signal, Vyrtel:
 3. **Drains accepted work.** Requests already admitted run to their
    response: each ingest request is written to the WAL, acknowledged and
    answered (`200`), and queries in progress complete.
-4. **Flushes storage.** Background jobs stop, query statistics are saved,
-   and each signal writes out its queue and fsyncs its WAL. Unsealed data is
-   not sealed into segments; the next start replays it from the WAL. A seal
-   or compaction already in progress is waited for until the deadline and
-   then abandoned with a `WARN`; that is not unfinished work (its input is
-   still in the WAL) and the exit status stays 0.
-5. **Exits with status 0**, after logging `shutdown complete`.
+4. **Flushes storage.** Each signal writes out its queue and fsyncs its
+   WAL. Unsealed data is not sealed into segments; the next start replays
+   it from the WAL. If this final fsync fails, the shutdown is not clean
+   (see below).
+5. **Stops background jobs** (alert evaluation) and saves query
+   statistics, then lets a seal or compaction already in progress finish.
+6. **Exits with status 0**, after logging `shutdown complete`.
 
 All of this shares one deadline, `server.shutdown_timeout` (default `8s`),
 counted from the first signal. An idle server stops in milliseconds; a
@@ -354,19 +354,25 @@ request waiting for its acknowledgement holds the drain for at most
 `ingest.ack_timeout`, and a slow upload for as long as the client takes to
 send it.
 
-### When the deadline passes, or the signal is repeated
+### When the deadline passes, the signal is repeated, or the flush fails
 
-Vyrtel stops waiting, logs an `ERROR`, prints the same text to stderr and
-exits with status **1**. A second stop signal (Ctrl+C twice, `kill -TERM`
-twice) does the same at once, without waiting for the deadline:
+Status 0 means every step above finished. Otherwise Vyrtel logs an
+`ERROR`, prints the same text to stderr and exits with status **1**, in
+every step alike: when the deadline passes, at once on a second stop
+signal (Ctrl+C twice, `kill -TERM` twice), and when the final WAL fsync
+fails:
 
 ```
 vyrtel: shutdown incomplete: server.shutdown_timeout (1s) passed while waiting for in-flight requests; unfinished: 1 ingest request not acknowledged (the client gets no response and should retry). Acknowledged events are already in the WAL and are replayed on the next start; raise server.shutdown_timeout if draining regularly takes longer
 ```
 
-The message names what Vyrtel was waiting for (`in-flight requests`, or
-`storage was writing queued batches and flushing the WAL`) and lists only
-the kinds of work that were unfinished:
+The message names the step that did not finish: `waiting for in-flight
+requests`, `storage was writing queued batches and flushing the WAL`,
+`background jobs were stopping and query statistics were being saved`, or
+`a seal or compaction was finishing`. The last two say every accepted
+request was already written and flushed; an interrupted seal is redone from
+the WAL on the next start. The message then lists only the kinds of work
+that were unfinished:
 
 | Unfinished work                   | What it means                                                                                                                                                                                                      |
 |-----------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -381,6 +387,18 @@ straight after exiting can still lose up to `fsync_interval`, exactly as
 for a running server; see [crash recovery](#crash-recovery-and-backups)).
 After an incomplete shutdown, start Vyrtel as usual; recovery may report a
 `walTail` quarantine if the process exited while writing a record.
+
+**A failed final flush** (full disk, I/O error) is reported with the fault
+for each affected signal, as `GET /api/v1/system/storage` would show it:
+
+```
+vyrtel: shutdown incomplete: the final WAL flush failed (logs: walSync noSpace on wal/logs/000000000001.wal: No space left on device). Events acknowledged since the last successful fsync reached the operating system but may not be on disk: the next start replays them, but an OS crash or power loss before the OS writes them out can lose them; fix the storage problem (docs/configuration.md#storage-failures)
+```
+
+This only matters in `normal` durability (`strict` fsyncs before every
+acknowledgement). The process stopped normally, so nothing is lost unless
+the host crashes before the OS writes its cache out; fix the volume as for
+any [storage failure](#storage-failures) before relying on the data.
 
 If drains regularly hit the deadline, raise `server.shutdown_timeout` (and
 the orchestrator's grace period with it), or look for clients holding
@@ -451,10 +469,11 @@ deadline and repeated-signal cases by holding an upload open.
   upload ended only when the orchestrator killed the process, with no
   record of what was unfinished. If your drains need longer, raise it
   together with the grace period.
-* A shutdown that does not finish in time, or is interrupted by a second
-  stop signal, exits with status **1** and an `ERROR` line starting
-  `shutdown incomplete:`. Supervisors that treat a non-zero exit as a crash
-  may restart or alert on it; that is intended.
+* A shutdown that does not finish in time, is interrupted by a second
+  stop signal, or whose final WAL fsync fails exits with status **1** and
+  an `ERROR` line starting `shutdown incomplete:`. Before, a failed final
+  fsync was only logged and the exit status was 0. Supervisors that treat
+  a non-zero exit as a crash may restart or alert on it; that is intended.
 * Ingest, query and live-tail requests that reach a stopping server get
   `503 shutting_down`, and `/ready` returns `503 {"status": "draining"}`.
 * Live-tail streams end with a `shutdown` event (`retry: 2000`) instead of

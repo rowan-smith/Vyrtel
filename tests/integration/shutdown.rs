@@ -159,7 +159,7 @@ async fn second_stop_request_stops_waiting() {
     let took = began.elapsed();
     assert!(took < Duration::from_secs(2), "second stop request took {took:?}");
     let e = incomplete(r);
-    assert_eq!((e.cause, e.phase), (StopCause::Forced, ShutdownPhase::Requests));
+    assert_eq!((&e.cause, e.phase), (&StopCause::Forced, ShutdownPhase::Requests));
     assert_eq!(e.unfinished.ingest_requests, 1);
     assert!(e.to_string().starts_with("shutdown incomplete: a second stop signal arrived"), "{e}");
     drop(release);
@@ -187,28 +187,81 @@ async fn deadline_bounds_a_stuck_storage_flush() {
     drop(release);
 }
 
-// A seal still running at the deadline is not unfinished work: its input is
-// in the flushed WAL, so shutdown succeeds on time and the next start has
-// every event.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_running_seal_neither_holds_nor_fails_shutdown() {
-    let s = TestServer::start_with(|c| c.server.shutdown_timeout = Duration::from_millis(500)).await;
-    s.ingest(batch("sealed", 3)).await;
-    // Park the maintenance thread in the seal's completion callback.
+/// Park the maintenance thread of `signal` in the completion callback of a
+/// seal of its (non-empty) active buffer, until the sender is dropped.
+fn park_maintenance(s: &TestServer, signal: Signal) -> std::sync::mpsc::Sender<()> {
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-    s.state().storage.stream(Signal::Logs).rotate(Box::new(move |_| {
+    s.state().storage.stream(signal).rotate(Box::new(move |_| {
         let _ = entered_tx.send(());
         let _ = release_rx.recv();
     }));
     entered_rx.recv_timeout(Duration::from_secs(10)).expect("maintenance thread parked");
+    release_tx
+}
+
+/// Wait until shutdown has flushed the WALs and moved on to the later
+/// phases: storage refuses writes from the moment the flush starts.
+async fn wait_for_flush_to_start(s: &TestServer) {
+    let storage = s.state().storage.clone();
+    wait_until("storage refuses writes", || {
+        let events =
+            ingest::native::parse(br#"{"message":"probe"}"#, ingest::native::Format::Json, telemetry::Timestamp::now())
+                .unwrap();
+        storage.submit(Signal::Metrics, events, Box::new(|_| {})).is_err()
+    })
+    .await;
+}
+
+// TC-03: a seal still running at the deadline holds shutdown no longer than
+// the deadline and is reported as the phase that did not finish, saying
+// every accepted request was flushed. Its input is in the WAL, so the next
+// start has every event.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_running_seal_is_bounded_by_the_deadline_and_reported() {
+    let s = TestServer::start_with(|c| c.server.shutdown_timeout = Duration::from_millis(500)).await;
+    s.ingest(batch("sealed", 3)).await;
+    let release = park_maintenance(&s, Signal::Logs);
 
     let began = Instant::now();
     let (r, config, dir) = s.stopped().await;
-    r.expect("a running seal is not unfinished work");
     let took = began.elapsed();
     assert!(took < Duration::from_secs(3), "stopped after {took:?}");
-    drop(release_tx);
+    let e = incomplete(r);
+    assert_eq!((&e.cause, e.phase), (&StopCause::Deadline(Duration::from_millis(500)), ShutdownPhase::Maintenance));
+    assert_eq!(e.unfinished, Unfinished { ingest_requests: 0, queued: vec![], live_streams: 0 });
+    let text = e.to_string();
+    assert!(
+        text.contains("while a seal or compaction was finishing, after every accepted request was written"),
+        "{text}"
+    );
+    drop(release);
+    let s = TestServer::launch(config, dir).await;
+    assert_eq!(s.messages("service = drain").await, ["sealed-0", "sealed-1", "sealed-2"]);
+    s.stop().await;
+}
+
+// TC-03: a second stop request is honoured in the last phase too, while a
+// background seal is deliberately blocked: shutdown stops at once and says
+// it was forced, instead of returning success.
+#[tokio::test(flavor = "multi_thread")]
+async fn second_stop_request_ends_a_blocked_seal() {
+    let mut s = TestServer::start_with(|c| c.server.shutdown_timeout = Duration::from_secs(60)).await;
+    s.ingest(batch("sealed", 3)).await;
+    let release = park_maintenance(&s, Signal::Logs);
+
+    s.begin_stop();
+    wait_for_flush_to_start(&s).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let began = Instant::now();
+    s.force_stop();
+    let (r, config, dir) = s.stopped().await;
+    let took = began.elapsed();
+    assert!(took < Duration::from_secs(2), "second stop request took {took:?}");
+    let e = incomplete(r);
+    assert_eq!((&e.cause, e.phase), (&StopCause::Forced, ShutdownPhase::Maintenance));
+    assert!(e.to_string().starts_with("shutdown incomplete: a second stop signal arrived while a seal"), "{e}");
+    drop(release);
     let s = TestServer::launch(config, dir).await;
     assert_eq!(s.messages("service = drain").await, ["sealed-0", "sealed-1", "sealed-2"]);
     s.stop().await;

@@ -227,9 +227,13 @@ talks HTTP to it:
   stop takes well under 2 s; when `server.shutdown_timeout` (500 ms) passes
   with a request unacknowledged, or a second stop request arrives, shutdown
   gives up on time and `IncompleteShutdown` names the request and its 5
-  queued events; the deadline also bounds a stuck final storage flush,
-  while a seal still running at the deadline neither holds nor fails the
-  shutdown and its events are back after a restart;
+  queued events; the deadline also bounds a stuck final storage flush;
+  a seal blocked at the deadline, or ended by a second stop request, is
+  reported as the unfinished phase and its events are back after a
+  restart; a second stop request or the deadline also ends a blocked
+  background job (`app.rs` unit tests); with `--features fault-injection`,
+  a failed final WAL fsync in `normal` durability is reported with its
+  fault instead of a clean shutdown (`storage_faults.rs`);
   live-tail streams, including one whose client has not read 300 events,
   end with `shutdown` and `retry: 2000` and a clean end of body, and a
   client reconnecting to the same address after a restart receives new

@@ -191,13 +191,16 @@ There is exactly one OS process. On a stop signal (SIGINT/SIGTERM; on
 Windows Ctrl+C, Ctrl+Break, console close or system shutdown) the server
 stops accepting connections, answers new ingest, query and live-tail
 requests with `503 shutting_down`, reports `/ready` as draining, ends
-live-tail streams with a `shutdown` event, drains in-flight requests to
-their acknowledgement, flushes query statistics, then each storage stream
-writes out its queue, fsyncs its WAL and stops its threads. Unsealed data
+live-tail streams with a `shutdown` event and drains in-flight requests to
+their acknowledgement. Then each storage stream writes out its queue and
+fsyncs its WAL (`Storage::stop_writers`, which returns any fsync failure),
+background jobs stop, query statistics are saved, and the maintenance
+threads finish any seal in progress and stop. Unsealed data
 is not sealed at shutdown — WAL replay restores it on the next start, which
 keeps shutdown fast. The whole drain shares one deadline,
-`server.shutdown_timeout`; past it, or on a second stop signal, the process
-logs what was unfinished and exits with status 1 without waiting further
+`server.shutdown_timeout`; past it, on a second stop signal in any of these
+steps, or if the final fsync fails, the process logs what was unfinished
+and exits with status 1 without waiting further
 (`App::serve_until` in `crates/server/src/app.rs`). See
 [stopping and upgrading](configuration.md#stopping-and-upgrading). A data-directory lock
 (`data/.lock`) prevents two processes from using the same directory.
