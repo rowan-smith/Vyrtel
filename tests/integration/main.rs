@@ -7,6 +7,7 @@ mod admin;
 mod admission;
 mod api;
 mod auth;
+mod backup;
 mod crash;
 mod ingest_limits;
 mod live;

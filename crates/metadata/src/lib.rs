@@ -24,7 +24,14 @@ pub enum MetadataError {
     NotFound,
     #[error("{0}")]
     Invalid(String),
+    /// The database was migrated by a newer Vyrtel. Opening it is refused
+    /// before anything is written.
+    #[error("metadata schema version {found} is newer than this Vyrtel supports (up to {supported})")]
+    NewerSchema { found: i64, supported: i64 },
 }
+
+/// The schema version this build migrates databases to.
+pub const SCHEMA_VERSION: i64 = migrations::MIGRATIONS[migrations::MIGRATIONS.len() - 1].0;
 
 pub type Result<T> = std::result::Result<T, MetadataError>;
 
@@ -297,6 +304,28 @@ fn alert_from_row(r: &Row) -> rusqlite::Result<Alert> {
     })
 }
 
+/// An SQLite `file:` URI for `path` (forward slashes, a leading `/` before
+/// a Windows drive letter, and `%`, `?` and `#` escaped).
+fn sqlite_uri(path: &Path, immutable: bool) -> String {
+    let p = path.to_string_lossy().replace('\\', "/");
+    let mut uri = String::from("file:");
+    if p.as_bytes().get(1) == Some(&b':') {
+        uri.push('/');
+    }
+    for c in p.chars() {
+        match c {
+            '%' => uri.push_str("%25"),
+            '?' => uri.push_str("%3f"),
+            '#' => uri.push_str("%23"),
+            c => uri.push(c),
+        }
+    }
+    if immutable {
+        uri.push_str("?immutable=1");
+    }
+    uri
+}
+
 const ALERT_SELECT: &str = "SELECT a.*, s.state, s.last_value, s.last_evaluated_at, s.last_transition_at, \
      s.last_error, s.last_notification_at, s.last_notification_error \
      FROM alerts a LEFT JOIN alert_state s ON s.alert_id = a.id";
@@ -309,6 +338,30 @@ impl Metadata {
         }
         let conn = Connection::open(path)?;
         Self::init(conn)
+    }
+
+    /// The schema version of the database at `path`, read without
+    /// changing anything: no journal or lock files are created when none
+    /// exist, and nothing is migrated. `0` for an empty database.
+    pub fn inspect(path: &Path) -> Result<i64> {
+        use rusqlite::OpenFlags;
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        // `immutable` reads the file without locking or creating `-wal` and
+        // `-shm` files; it would miss an unmerged `-wal`, so it is only used
+        // when there is none (a cleanly closed database).
+        let mut wal = path.as_os_str().to_owned();
+        wal.push("-wal");
+        let immutable = !Path::new(&wal).exists();
+        let conn = Connection::open_with_flags(sqlite_uri(path, immutable), flags)?;
+        let has_table: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_table {
+            return Ok(0);
+        }
+        Ok(conn.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |r| r.get(0))?)
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -333,6 +386,9 @@ impl Metadata {
             "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)",
         )?;
         let current: i64 = c.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |r| r.get(0))?;
+        if current > SCHEMA_VERSION {
+            return Err(MetadataError::NewerSchema { found: current, supported: SCHEMA_VERSION });
+        }
         for (version, sql) in migrations::MIGRATIONS {
             if *version <= current {
                 continue;

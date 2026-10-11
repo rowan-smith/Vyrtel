@@ -5,7 +5,7 @@ mod reader;
 mod writer;
 
 pub use format::*;
-pub use reader::{BlockData, MetaRow, Segment};
+pub use reader::{BlockData, MetaRow, Segment, check_segment_format};
 pub use writer::{SegmentWriteOptions, WrittenSegment, paths, write_segment};
 
 #[cfg(test)]

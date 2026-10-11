@@ -42,6 +42,14 @@ pub enum StorageError {
     },
     #[error("compression error: {0}")]
     Compression(io::Error),
+    /// A file is in a format version this build cannot read, typically
+    /// because a newer Vyrtel wrote it. Not evidence of damage: recovery
+    /// stops instead of quarantining it, and leaves the file as it is.
+    #[error(
+        "{} uses {what} version {found}, but this Vyrtel reads only version {supported}",
+        path.display()
+    )]
+    UnsupportedFormat { path: PathBuf, what: &'static str, found: u16, supported: u16 },
     /// The ingest queue is full. Callers should retry later (HTTP 429).
     #[error("ingest queue is full")]
     QueueFull,

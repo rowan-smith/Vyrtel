@@ -30,6 +30,57 @@ fn migrations_are_idempotent_and_persistent() {
     assert_eq!(m.list_dashboards().unwrap().len(), 1);
 }
 
+/// Every file in `dir` with its bytes.
+fn files(dir: &std::path::Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
+    let mut out: Vec<_> =
+        std::fs::read_dir(dir).unwrap().flatten().map(|e| (e.file_name(), std::fs::read(e.path()).unwrap())).collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn inspect_reads_the_schema_version_without_changing_anything() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("metadata.db");
+    {
+        let m = Metadata::open(&path).unwrap();
+        m.create_dashboard("Prod", None).unwrap();
+    }
+    let before = files(d.path());
+    assert_eq!(Metadata::inspect(&path).unwrap(), SCHEMA_VERSION);
+    assert_eq!(files(d.path()), before, "no -wal, -shm or journal file appears");
+
+    // An empty file is an empty database, version 0.
+    std::fs::write(&path, b"").unwrap();
+    assert_eq!(Metadata::inspect(&path).unwrap(), 0);
+    // Paths with URI metacharacters still name the file (`?` is not allowed
+    // in Windows file names).
+    let odd = d.path().join(if cfg!(windows) { "a #b%c.db" } else { "a #b?c%d.db" });
+    drop(Metadata::open(&odd).unwrap());
+    assert_eq!(Metadata::inspect(&odd).unwrap(), SCHEMA_VERSION);
+    assert!(Metadata::inspect(&d.path().join("absent.db")).is_err(), "a missing file is not created");
+    assert!(!d.path().join("absent.db").exists());
+}
+
+#[test]
+fn newer_schema_is_refused_before_anything_is_written() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("metadata.db");
+    drop(Metadata::open(&path).unwrap());
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?1, 0)", [SCHEMA_VERSION + 1]).unwrap();
+    }
+    assert_eq!(Metadata::inspect(&path).unwrap(), SCHEMA_VERSION + 1);
+    match Metadata::open(&path) {
+        Err(MetadataError::NewerSchema { found, supported }) => {
+            assert_eq!((found, supported), (SCHEMA_VERSION + 1, SCHEMA_VERSION))
+        }
+        Err(e) => panic!("expected NewerSchema, got {e}"),
+        Ok(_) => panic!("a newer schema must not be opened"),
+    }
+}
+
 #[test]
 fn settings_upsert() {
     let m = Metadata::open_in_memory().unwrap();

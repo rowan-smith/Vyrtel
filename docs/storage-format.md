@@ -17,6 +17,7 @@ version number. Code lives in `crates/storage`.
 
 ```
 data/
+├── vyrtel.json                   manifest: data-directory format (see below)
 ├── .lock                         exclusive process lock
 ├── metadata/metadata.db          SQLite (product metadata only)
 ├── wal/{logs,traces,metrics}/    NNNNNNNNNNNN.wal   (12-digit id)
@@ -29,6 +30,52 @@ data/
 Each signal is an independent *stream* with its own WAL, segments and
 retention. File ids are allocated from one per-stream counter, so a WAL and
 the segment sealed from it share the same id.
+
+### Manifest
+
+```json
+{
+  "format": 1,
+  "writtenBy": "0.1.2"
+}
+```
+
+`format` is the data-directory format: it names every format version
+below that the directory may contain. Format 1 is WAL file format 1, WAL
+record version 1, event codec 1, segment format 1 and metadata schema
+version 1. `writtenBy` is the Vyrtel version that last wrote the file.
+Unknown keys are ignored. The manifest is written (to `tmp/`, fsynced,
+renamed, directory fsynced) once the metadata database and every stream
+directory exist, and again when a different Vyrtel version starts the
+directory. Directories from before 0.1.2 have none and get one on their
+next start.
+
+### Startup check
+
+Before the data directory is created, locked or changed, the server checks
+it, reading only (`crates/server/src/datadir.rs`). A directory with none of
+Vyrtel's top-level entries (`vyrtel.json`, `.lock`, `metadata`, `wal`,
+`segments`, `quarantine`, `indexes`, `tmp`) is new. Otherwise startup is
+refused, with nothing changed, when:
+
+* `vyrtel.json` is unreadable, has `format` 0 or a `format` above the one
+  this build writes;
+* with a manifest: `metadata/metadata.db`, `wal/<signal>/` or
+  `segments/<signal>/` is missing for any signal;
+* without one: WAL or segment files exist but `metadata/metadata.db` does
+  not, or the database exists but a stream directory does not (a first
+  start creates the stream directories, then the database, then WAL files,
+  so an interrupted first start is never refused);
+* a `*.seg` or `*.wal` file declares a format version this build does not
+  read (`storage::check_formats`: headers and footers only, see
+  [Versioning](#versioning));
+* `metadata/metadata.db` is not an SQLite database, or its
+  `schema_migrations` holds a version above the newest migration. It is
+  opened read-only and, when there is no `-wal` file, with SQLite's
+  `immutable` flag, so no journal or lock file is created.
+
+Operator-facing messages are in
+[configuration → backup and restore](configuration.md#what-startup-checks).
 
 ## Event codec (version 1)
 
@@ -388,7 +435,10 @@ Recovery quarantines only on **proof of damage** (bad checksum, bad
 framing, truncation, undecodable content). Any other I/O error while reading
 a segment or WAL — permission denied, a failing device — stops startup with
 the error instead: moving a readable file aside would hide acknowledged
-telemetry. Fix the cause and start again.
+telemetry. Fix the cause and start again. A file in a format version this
+build cannot read is not damage either: startup stops with
+`StorageError::UnsupportedFormat` naming the file and leaves it as it is
+(see [Versioning](#versioning)).
 
 Every recovery is idempotent: crashing during recovery (for example after
 sealing an old WAL but before deleting it) and recovering again gives the
@@ -442,3 +492,21 @@ much space they use.
 * A future format change adds a new version number and keeps the old
   decoder, so existing data directories stay readable. Rust struct layout is
   never written to disk.
+* Any change to these versions, the metadata schema or the directory layout
+  also raises the manifest `format`, so an older build refuses a whole
+  directory from a newer one before reading any data file.
+* An unknown version is a reason to stop, never to quarantine. Where a
+  version is not covered by a checksum, it is believed only when nothing
+  checksummed contradicts it:
+
+  | Where                          | Unknown version means                                                                                         |
+  |--------------------------------|----------------------------------------------------------------------------------------------------------------|
+  | Segment footer or summary      | newer format (both are checked before their version is read)                                                  |
+  | Segment header                 | newer format, unless the footer's checksum holds and says version 1: then the header is damaged (quarantined) |
+  | WAL header (has the WAL magic) | newer format                                                                                                    |
+  | WAL record version byte        | newer format if the record's CRC holds; otherwise a corrupt tail, as before                                  |
+  | Batch codec version            | newer format (the record's CRC held)                                                                           |
+
+  Headers are checked before startup changes anything; record and codec
+  versions are found while that WAL is replayed, before it is truncated or
+  sealed.

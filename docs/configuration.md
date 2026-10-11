@@ -521,14 +521,206 @@ altered the files. See [Quarantine](storage-format.md#quarantine) for what
 each kind lost. Copy the files somewhere for diagnosis if needed, then
 delete them; the directory's size is reported as `quarantineBytes`.
 
-**Backups.** Back up the whole data directory, either with the server
-stopped or from an atomic filesystem snapshot (LVM, ZFS, btrfs, cloud
-volume snapshots). A snapshot taken while running restores like a power
-loss: recovery applies and the contract above holds. Do not copy the
-directory file by file while Vyrtel runs — sealing can move events from a
-WAL into a segment between the two copies. To restore, stop Vyrtel, replace
-the data directory with the backup and start it. The on-disk format is
-unchanged in this release; no migration is needed.
+**Backups.** See [Backup and restore](#backup-and-restore).
+
+## Backup and restore
+
+A backup is a copy of the whole data directory taken while Vyrtel is
+stopped. Restored on any host, it brings back every log, trace and metric,
+and every dashboard, alert, saved query, API key, user and session. Vyrtel
+has no export or import step.
+
+### What the data directory holds
+
+| Entry                  | Contents                                                                                       | In a backup  |
+|------------------------|------------------------------------------------------------------------------------------------|--------------|
+| `vyrtel.json`          | Manifest: the data-directory `format` and the Vyrtel version that last wrote it                | required     |
+| `metadata/metadata.db` | Dashboards, alerts and their state, saved queries, API keys (hashed), users (Argon2id), sessions (hashed), query statistics | required |
+| `metadata/metadata.db-wal`, `-shm` | SQLite journal; present only while running or after a crash                        | if present   |
+| `wal/<signal>/`        | Write-ahead logs: the newest telemetry, not yet sealed                                         | required     |
+| `segments/<signal>/`   | Sealed telemetry                                                                               | required     |
+| `quarantine/`          | Damaged files recovery set aside ([quarantine](#crash-recovery-and-backups))                   | optional     |
+| `tmp/`, `indexes/`, `.lock` | Scratch space and the process lock; recreated at start                                    | not needed   |
+
+The configuration file and `VYRTEL_*` environment variables are not in the
+data directory. Back them up separately; in particular keep `auth.enabled`
+the same on the restored host.
+
+**Protect backups like credentials.** They hold the password and key
+hashes, session tokens (hashed) and alert webhook URLs in plain text. A
+session or API key in a restored backup works again until it expires or is
+revoked, so after restoring a backup that may have leaked, revoke the API
+keys and change the admin password.
+
+### Back up a stopped server
+
+1. **Stop Vyrtel** (`docker stop vyrtel`, `systemctl stop vyrtel`, Ctrl+C)
+   and check that it logged `shutdown complete` and exited with status 0.
+   After an [incomplete shutdown](#when-the-deadline-passes-the-signal-is-repeated-or-the-flush-fails)
+   (status 1), the backup is still consistent and restores like one taken
+   after a crash.
+2. **Copy the whole data directory**, for example:
+
+   ```bash
+   tar -C /var/lib/vyrtel/data -czf vyrtel-backup-$(date +%F).tar.gz .
+   ```
+
+   For a Docker named volume:
+   `docker run --rm -v vyrtel-data:/data -v "$PWD":/backup busybox tar -C /data -czf /backup/vyrtel-backup.tar.gz .`
+3. Start Vyrtel again. Producers that buffer and retry (the OpenTelemetry
+   SDKs and Collector do) resend what they could not deliver meanwhile.
+
+**Without stopping**, back up from an atomic filesystem snapshot (LVM, ZFS,
+btrfs, cloud volume snapshots). It restores like a power loss: recovery
+applies and the [contract](#crash-recovery-and-backups) holds. Do not copy
+the directory file by file while Vyrtel runs: sealing can move events from
+a WAL into a segment between two copies, so the copy can miss or duplicate
+them. Scheduling backups and online snapshots taken by Vyrtel itself are not
+provided.
+
+### Restore
+
+1. Install the same Vyrtel version, or a newer one. An older version
+   refuses a directory written by a newer one (see below).
+2. Stop Vyrtel if it is running on the target directory, and move any
+   existing data directory aside.
+3. Unpack the backup as the data directory (`storage.path`), and make it
+   writable by the user Vyrtel runs as (uid 65532 in the Docker image, see
+   [bind mounts](#docker-and-bind-mounts)):
+
+   ```bash
+   mkdir -p /var/lib/vyrtel/data
+   tar -C /var/lib/vyrtel/data -xzf vyrtel-backup-2026-10-11.tar.gz
+   ```
+
+4. Start Vyrtel with the same `[auth]` settings. `auth.admin_password` may
+   be left out: the restored admin user keeps its password, and no new one
+   is generated. If it is set, it replaces the stored password, exactly as
+   on any start.
+5. Check the startup log: one `recovered stream` line per signal, and no
+   `recovery found damaged files` warning for a backup of a stopped server.
+6. Run the verification queries below.
+
+### Verification queries
+
+Run these before taking the backup and after restoring it; the answers
+must match. With authentication enabled, log in first and pass the
+session cookie (`-b cookies` below), or replace it with an admin API key
+(`-H "Authorization: Bearer $ADMIN_KEY"`).
+
+```bash
+curl -s -c cookies -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"…"}' localhost:8080/api/v1/auth/login
+for s in logs traces metrics; do                          # event counts per signal
+  curl -s -b cookies -H 'Content-Type: application/json' \
+    -d '{"query":""}' localhost:8080/api/v1/query/$s/count
+done
+curl -s -b cookies localhost:8080/api/v1/traces/<trace id>   # a known trace, span by span
+curl -s -b cookies localhost:8080/api/v1/metrics             # metric names
+curl -s -b cookies localhost:8080/api/v1/dashboards          # dashboards and panels
+curl -s -b cookies localhost:8080/api/v1/alerts              # alert definitions
+curl -s -b cookies localhost:8080/api/v1/saved-queries
+curl -s -b cookies localhost:8080/api/v1/api-keys            # names, prefixes, scopes
+curl -s -b cookies localhost:8080/api/v1/system/storage      # recovery.quarantined is [] per signal
+```
+
+Then check authentication: an ingest request with a restored API key
+returns `200`, one without a key returns `401`, and the admin login works
+with the password the backed-up instance had.
+
+Counts cover every stored event whatever its age, but retention keeps
+running after the restore: segments older than `[retention]` are deleted as
+on any start, so restore with the same retention, and compare counts soon
+after starting. An alert's evaluation state (`OK`, `FIRING`) is restored and
+then updated by its next evaluation.
+
+### What startup checks
+
+Before Vyrtel creates, locks or changes anything in the data directory, it
+checks that the directory is complete and that this version can read it.
+If not, it exits with status 1, prints why and changes nothing, so you can
+fix the restore and start again:
+
+| Found                                                                            | Message starts with (after `vyrtel: data directory <path>`)            | What to do |
+|----------------------------------------------------------------------------------|-------------------------------------------------------------------------|------------|
+| A required entry is missing (`vyrtel.json` present)                             | `is incomplete: wal/metrics is missing`                                 | Restore the whole directory again |
+| WAL or segment files but no `metadata/metadata.db` (with or without `vyrtel.json`) | `is incomplete: metadata/metadata.db is missing`                      | Restore the whole directory again |
+| `metadata/metadata.db` but a signal's `wal/` or `segments/` directory is missing (no `vyrtel.json`) | `is incomplete: wal/logs, … are missing`                 | Restore the whole directory again |
+| `vyrtel.json` is not valid JSON or has no usable `format`                        | `has an unusable vyrtel.json: …`                                        | Restore `vyrtel.json` from the same backup |
+| `vyrtel.json` has a newer `format`                                               | `has format 2 (written by Vyrtel 0.3.0), but Vyrtel 0.1.2 reads only format 1` | Start it with that version or newer |
+| A segment or WAL file in a newer format                                          | `cannot be read by Vyrtel 0.1.2: segments/logs/000000000004.seg uses segment format version 2, …` | Start it with the version that wrote it, or newer |
+| `metadata/metadata.db` migrated by a newer version                              | `cannot be read by Vyrtel 0.1.2: metadata/metadata.db has schema version 2, …` | Start it with the version that wrote it, or newer |
+| `metadata/metadata.db` is not an SQLite database                                 | `has an unreadable metadata/metadata.db: …`                             | Restore it from the same backup |
+
+For example, a backup without its metadata database:
+
+```
+vyrtel: data directory /var/lib/vyrtel/data is incomplete: metadata/metadata.db is missing. Vyrtel did not start and changed nothing in it. If it is a restored backup, restore the whole data directory again; to start without the missing parts on purpose, create them empty (directories, or an empty metadata.db file) (see docs/configuration.md#backup-and-restore)
+```
+
+To start without a missing part on purpose (for example telemetry without
+its dashboards), create it empty: `mkdir -p wal/metrics`, or an empty
+`metadata/metadata.db` (`touch`), which starts with no dashboards, alerts,
+keys or users. A directory without any of Vyrtel's entries (empty, or a new
+volume with only `lost+found`) is a new data directory, and one from
+before 0.1.2 (no `vyrtel.json`) is accepted and gets one.
+
+Damaged files are not refused: recovery
+[quarantines](#crash-recovery-and-backups) them as after a crash, and the
+rest starts. A newer format is never mistaken for damage, so a file from a
+newer Vyrtel is never quarantined.
+
+**Limitations.**
+
+* The check knows which directories a complete data directory has, not
+  which files belong in them. A backup missing individual `.wal` or `.seg`
+  files starts without their events. Always copy the whole directory, and
+  compare the verification queries.
+* Segment and WAL headers and the metadata schema are checked before
+  anything changes. A newer version of an individual WAL record or event
+  encoding is found while recovering that signal's WAL: startup stops there
+  and that WAL is left as it was, but signals recovered before it may
+  already have had their ordinary crash recovery (sealing old WALs). A
+  newer Vyrtel always raises the `vyrtel.json` format when it changes any of
+  these, so a whole backup from it is refused before that.
+* `vyrtel.json`'s `writtenBy` is updated by every version that starts the
+  directory, so it names the newest version that has used it.
+
+### Restore drill
+
+[`scripts/backup/restore-drill.sh`](../scripts/backup/restore-drill.sh)
+runs this procedure end to end against a built binary on Linux or macOS:
+it populates an instance with the [shared fixtures](../tests/fixtures/README.md)
+(all three signals, a dashboard with a panel, an alert, a saved query, an
+API key), stops it, takes a `tar` backup, deletes the original, restores
+the backup into a new directory, starts it without an admin password
+configured and compares every verification query. It then checks the API
+key, anonymous refusal and login, and that a copy without
+`metadata/metadata.db` is refused with exit status 1 and left unchanged.
+CI runs it on every change:
+
+```bash
+cargo build --release -p server
+scripts/backup/restore-drill.sh target/release/vyrtel
+```
+
+#### Backup and restore changes in 0.1.2
+
+* New data directories get a manifest, `vyrtel.json`. Directories from
+  earlier versions get one on their first start with 0.1.2; nothing else
+  changes on disk. Include it in backups.
+* A data directory with WAL or segment files but no
+  `metadata/metadata.db` now refuses to start. Before, Vyrtel created an
+  empty metadata database: dashboards, alerts, saved queries and API keys
+  were lost without a message, and with authentication enabled and no
+  `auth.admin_password`, a new admin password was generated.
+* A segment or WAL file in a format version this release cannot read now
+  stops startup and is left in place. Before, it was moved to
+  `quarantine/` as if damaged, and its events were not visible.
+* A metadata database migrated by a newer version now stops startup.
+  Before, it was opened as is.
+* Once started by 0.1.2, a data directory still starts with 0.1.1, which
+  ignores `vyrtel.json`.
 
 ## Storage failures
 

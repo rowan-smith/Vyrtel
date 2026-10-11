@@ -36,6 +36,8 @@ jobs:
         run: cargo build --release --locked -p server
       - name: Binary size
         run: ls -l target/release/vyrtel
+      - name: Restore drill (docs/configuration.md#backup-and-restore)
+        run: bash scripts/backup/restore-drill.sh target/release/vyrtel
 
   dotnet:
     name: .NET (benchmark + profiler)

@@ -677,3 +677,163 @@ fn unreadable_segment_stops_startup_and_keeps_the_segment() {
     assert_eq!(messages(&s), ["sealed"]);
     assert_eq!(s.recovery_report(Signal::Logs).segments_quarantined, 0);
 }
+
+// ---- REL-06: a newer format is not damage --------------------------------
+
+/// Every file under `dir` (except the lock file) with its bytes.
+fn snapshot(dir: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    fn walk(root: &Path, d: &Path, out: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>) {
+        for e in std::fs::read_dir(d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(root, &p, out);
+            } else if p.file_name().is_some_and(|n| n != ".lock") {
+                out.insert(p.strip_prefix(root).unwrap().to_path_buf(), std::fs::read(&p).unwrap());
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    walk(dir, dir, &mut out);
+    out
+}
+
+/// Startup must fail with `UnsupportedFormat` naming `path` before any file
+/// in the data directory changes: same files, same bytes, nothing
+/// quarantined, no WAL truncated or sealed.
+fn assert_newer_format_stops_startup(dir: &Path, path: &Path, what: &str, found: u16) {
+    let before = snapshot(dir);
+    match Storage::open(config(dir), None) {
+        Err(StorageError::UnsupportedFormat { path: p, what: w, found: f, supported }) => {
+            assert_eq!((p.as_path(), w, f, supported), (path, what, found, 1));
+            let text = StorageError::UnsupportedFormat { path: p, what: w, found: f, supported }.to_string();
+            assert!(text.ends_with(&format!("uses {what} version {found}, but this Vyrtel reads only version 1")));
+        }
+        Err(e) => panic!("expected UnsupportedFormat, got {e}"),
+        Ok(_) => panic!("startup must not continue past a file in a newer format"),
+    }
+    assert_eq!(snapshot(dir), before, "nothing in the data directory changed");
+}
+
+/// Rewrite a segment's format version as a newer writer would: in the
+/// header and, with `footer_too`, in the footer with its checksum redone.
+fn set_segment_format(path: &Path, v: u16, footer_too: bool) {
+    let mut b = std::fs::read(path).unwrap();
+    b[8..10].copy_from_slice(&v.to_le_bytes());
+    if footer_too {
+        let f = b.len() - storage::segment::FOOTER_LEN;
+        b[f + 40..f + 42].copy_from_slice(&v.to_le_bytes());
+        let crc = crc32fast::hash(&b[f..f + 44]);
+        b[f + 44..f + 48].copy_from_slice(&crc.to_le_bytes());
+    }
+    std::fs::write(path, b).unwrap();
+}
+
+fn sealed_segment(dir: &Path) -> std::path::PathBuf {
+    {
+        let s = Storage::open(config(dir), None).unwrap();
+        submit(&s, vec![log(1, "sealed")]);
+        s.rotate_blocking(Signal::Logs).unwrap();
+    }
+    std::fs::read_dir(seg_dir(dir)).unwrap().flatten().map(|e| e.path()).next().unwrap()
+}
+
+#[test]
+fn segment_in_a_newer_format_stops_startup_and_is_kept() {
+    let d = tempfile::tempdir().unwrap();
+    let seg = sealed_segment(d.path());
+    let original = std::fs::read(&seg).unwrap();
+    set_segment_format(&seg, 2, true);
+
+    // The read-only pre-start check finds it as well.
+    assert!(matches!(check_formats(d.path()), Err(StorageError::UnsupportedFormat { found: 2, .. })));
+    assert_newer_format_stops_startup(d.path(), &seg, "segment format", 2);
+
+    // Given a build that reads it (here: the original bytes), nothing was lost.
+    std::fs::write(&seg, original).unwrap();
+    check_formats(d.path()).unwrap();
+    let s = Storage::open(config(d.path()), None).unwrap();
+    assert_eq!(messages(&s), ["sealed"]);
+    assert!(s.recovery_report(Signal::Logs).quarantined.is_empty());
+}
+
+#[test]
+fn segment_header_version_contradicting_its_footer_is_damage() {
+    let d = tempfile::tempdir().unwrap();
+    let seg = sealed_segment(d.path());
+    // Only the unchecksummed header changed; the footer proves version 1.
+    set_segment_format(&seg, 2, false);
+    check_formats(d.path()).unwrap();
+    let s = Storage::open(config(d.path()), None).unwrap();
+    let q = &s.recovery_report(Signal::Logs).quarantined[0];
+    assert_eq!(q.kind, QuarantineKind::Segment);
+    assert!(q.reason.contains("header version disagrees with footer"), "{}", q.reason);
+}
+
+#[test]
+fn wal_in_a_newer_format_stops_startup_and_is_kept() {
+    let d = tempfile::tempdir().unwrap();
+    {
+        let s = Storage::open(config(d.path()), None).unwrap();
+        submit(&s, vec![log(1, "acknowledged")]);
+    }
+    let wal = only_wal(d.path());
+    let mut b = std::fs::read(&wal).unwrap();
+    b[8..10].copy_from_slice(&3u16.to_le_bytes());
+    std::fs::write(&wal, &b).unwrap();
+
+    assert!(matches!(check_formats(d.path()), Err(StorageError::UnsupportedFormat { found: 3, .. })));
+    assert_newer_format_stops_startup(d.path(), &wal, "WAL file format", 3);
+}
+
+/// Append a record with a valid checksum and the given version byte.
+fn append_record(wal: &Path, record_version: u8, payload: &[u8]) {
+    use std::io::Write;
+    let mut rec = vec![record_version];
+    rec.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    rec.extend_from_slice(payload);
+    let crc = crc32fast::hash(&rec);
+    rec.extend_from_slice(&crc.to_le_bytes());
+    std::fs::OpenOptions::new().append(true).open(wal).unwrap().write_all(&rec).unwrap();
+}
+
+#[test]
+fn checksummed_wal_record_in_a_newer_format_stops_startup() {
+    // An unknown record version, then a known record whose batch uses an
+    // unknown codec version (the batch's first byte).
+    for (record_version, payload, what, found) in
+        [(2u8, &b"\x01\x00"[..], "WAL record format", 2u16), (1, &b"\x07\x00"[..], "event codec", 7)]
+    {
+        let d = tempfile::tempdir().unwrap();
+        {
+            let s = Storage::open(config(d.path()), None).unwrap();
+            submit(&s, vec![log(1, "acknowledged")]);
+        }
+        let wal = only_wal(d.path());
+        append_record(&wal, record_version, payload);
+        // File headers are fine; recovery finds the record and stops before
+        // truncating the WAL or quarantining anything.
+        check_formats(d.path()).unwrap();
+        assert_newer_format_stops_startup(d.path(), &wal, what, found);
+    }
+}
+
+#[test]
+fn unknown_record_version_with_a_bad_checksum_is_still_a_corrupt_tail() {
+    let d = tempfile::tempdir().unwrap();
+    {
+        let s = Storage::open(config(d.path()), None).unwrap();
+        submit(&s, vec![log(1, "acknowledged")]);
+    }
+    let wal = only_wal(d.path());
+    {
+        use std::io::Write;
+        // Torn bytes after a crash can start with any value.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&wal).unwrap();
+        f.write_all(&[9, 3, 0, 0, 0, 1, 2, 3, 0, 0, 0, 0]).unwrap();
+    }
+    let s = Storage::open(config(d.path()), None).unwrap();
+    assert_eq!(messages(&s), ["acknowledged"]);
+    let q = &s.recovery_report(Signal::Logs).quarantined[0];
+    assert_eq!(q.kind, QuarantineKind::WalTail);
+    assert!(q.reason.contains("unknown record version"), "{}", q.reason);
+}

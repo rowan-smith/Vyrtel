@@ -28,7 +28,8 @@ Next to the code (`#[cfg(test)]` modules). Highlights:
 | Bloom filters, bitmaps, HyperLogLog, canonical index keys            | `crates/storage/src/index/`          |
 | Configuration parsing, env overrides, memory budgets                 | `crates/server/src/config.rs`        |
 | OTLP mapping (protobuf + JSON), native/CLEF parsing, templates       | `crates/ingest/src/`                 |
-| Metadata store (migrations, CRUD, alert transitions)                 | `crates/metadata/tests/store.rs`     |
+| Metadata store (migrations, CRUD, alert transitions, read-only schema inspection, newer schema refused) | `crates/metadata/tests/store.rs`     |
+| Data-directory check: new, pre-manifest and interrupted directories accepted; missing parts, bad or newer manifests, newer and unreadable metadata refused | `crates/server/src/datadir.rs` |
 
 ## Property tests (proptest)
 
@@ -69,7 +70,15 @@ states an interrupted process would:
   share lock on Windows) stops startup with an I/O error naming the file,
   leaves it byte-for-byte in place and quarantines nothing; once readable,
   the acknowledged events come back (skipped when running as root, which
-  bypasses permissions).
+  bypasses permissions);
+* a file in a newer format is not damage (REL-06): a segment whose header
+  and checksummed footer say version 2, a WAL whose header says version 3,
+  and a checksummed WAL record with an unknown record version or batch
+  codec each stop startup with `UnsupportedFormat` naming the file, with
+  every file in the data directory unchanged; `check_formats` finds the
+  header cases without opening storage; a segment whose header alone
+  disagrees with its footer, and an unknown record version without a valid
+  checksum, are still quarantined as damage.
 
 ### Process-kill tests
 
@@ -244,9 +253,40 @@ talks HTTP to it:
   each refused route and the diagnostic text, and `web/tests/unit/live-tail.test.ts`
   the UI's reconnection and backoff;
 * dashboards, saved queries, alerts firing/resolving with webhook delivery,
-  the background evaluator.
+  the background evaluator;
+* backup and restore (`backup.rs`, REL-06): a stopped instance with all
+  three signals (in segments and in the WAL), a dashboard with a panel, an
+  alert, a saved query, an active and a revoked API key and an admin
+  session is copied, the original deleted, and the copy started elsewhere
+  without `auth.admin_password`; every
+  [verification query](configuration.md#verification-queries) answers as
+  before, the restored key ingests, the revoked key and anonymous requests
+  get 401, the old session is valid, and nothing is quarantined. Backups
+  without `metadata/metadata.db` (with and without a manifest) or a
+  signal's WAL directory, with a newer or unreadable manifest, a newer
+  segment or WAL format, or a newer metadata schema are refused by
+  `App::build` with the documented message, and every file and directory
+  is unchanged (no lock file, no `tmp/`). The real binary exits with status
+  1 and prints the reason. A directory without a manifest (0.1.1) starts
+  and gets one; a new volume holding only `lost+found` starts as new.
 
 Fixtures shared with E2E live in `tests/fixtures/`.
+
+### Restore drill
+
+`scripts/backup/restore-drill.sh` runs the published
+[backup and restore procedure](configuration.md#backup-and-restore) against
+a built binary (Linux, macOS): it populates an instance from
+`tests/fixtures`, stops it with SIGTERM, takes a `tar` backup, deletes the
+original, restores into a new directory, starts without an admin password,
+diffs every verification query against its answers before the backup,
+checks the restored API key, anonymous refusal and login, and checks that
+a copy without `metadata/metadata.db` exits with status 1 and is left
+unchanged. CI runs it against the release build in the backend job.
+
+```bash
+cargo build --release -p server && scripts/backup/restore-drill.sh target/release/vyrtel
+```
 
 ### Overload memory test
 

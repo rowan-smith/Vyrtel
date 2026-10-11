@@ -49,6 +49,29 @@ fn encode_header(h: WalHeader) -> [u8; HEADER_LEN as usize] {
     b
 }
 
+/// The format version a WAL header declares, if `b` starts with the WAL
+/// magic. Lets callers tell a WAL from a newer Vyrtel from a damaged one.
+pub fn header_version(b: &[u8]) -> Option<u16> {
+    (b.len() >= 10 && &b[..8] == WAL_MAGIC).then(|| u16::from_le_bytes([b[8], b[9]]))
+}
+
+/// Fail with [`StorageError::UnsupportedFormat`](crate::StorageError) if
+/// the WAL at `path` declares a file format this build cannot read. Reads
+/// only the header; a missing or damaged header passes (replay judges it).
+pub fn check_wal_format(path: &Path) -> Result<()> {
+    let mut hb = Vec::with_capacity(HEADER_LEN as usize);
+    File::open(path).and_then(|f| f.take(HEADER_LEN).read_to_end(&mut hb)).ctx(path)?;
+    match header_version(&hb) {
+        Some(found) if found != WAL_FORMAT_VERSION => Err(crate::StorageError::UnsupportedFormat {
+            path: path.to_path_buf(),
+            what: "WAL file format",
+            found,
+            supported: WAL_FORMAT_VERSION,
+        }),
+        _ => Ok(()),
+    }
+}
+
 fn decode_header(b: &[u8]) -> Option<WalHeader> {
     if b.len() < HEADER_LEN as usize || &b[..8] != WAL_MAGIC {
         return None;
@@ -281,6 +304,13 @@ pub struct WalReplay {
 pub enum ReplayError {
     Io(io::Error),
     BadHeader,
+    /// The header or a checksummed record declares a version this build
+    /// cannot read (`what` names which). Not damage: nothing is replayed.
+    Unsupported {
+        what: &'static str,
+        found: u16,
+        supported: u16,
+    },
 }
 
 /// Read every valid record, calling `on_record` with each payload in order.
@@ -297,6 +327,11 @@ pub fn replay(
     if read_full(&mut r, &mut hb).map_err(ReplayError::Io)? < hb.len() {
         return Err(ReplayError::BadHeader);
     }
+    if let Some(found) = header_version(&hb)
+        && found != WAL_FORMAT_VERSION
+    {
+        return Err(ReplayError::Unsupported { what: "WAL file format", found, supported: WAL_FORMAT_VERSION });
+    }
     let header = decode_header(&hb).ok_or(ReplayError::BadHeader)?;
 
     let mut offset = HEADER_LEN;
@@ -311,30 +346,38 @@ pub fn replay(
         if n < prefix.len() {
             break TailState::Incomplete { offset };
         }
-        if prefix[0] != RECORD_VERSION {
-            break TailState::Corrupt { offset, reason: "unknown record version" };
-        }
+        // An unknown version is only believed if the record's checksum
+        // holds; otherwise it is a torn or corrupt record like any other.
+        let known = prefix[0] == RECORD_VERSION;
+        let unknown = TailState::Corrupt { offset, reason: "unknown record version" };
         let len = u32::from_le_bytes([prefix[1], prefix[2], prefix[3], prefix[4]]);
         if len > MAX_RECORD_LEN {
-            break TailState::Corrupt { offset, reason: "record length out of range" };
+            break if known { TailState::Corrupt { offset, reason: "record length out of range" } } else { unknown };
         }
         // A length pointing past EOF is an incomplete record, not a reason
         // to allocate: check before reading.
         if offset + RECORD_OVERHEAD as u64 + len as u64 > file_len {
-            break TailState::Incomplete { offset };
+            break if known { TailState::Incomplete { offset } } else { unknown };
         }
         payload.resize(len as usize, 0);
         let got = read_full(&mut r, &mut payload).map_err(ReplayError::Io)?;
         let mut crc_bytes = [0u8; 4];
         let got_crc = read_full(&mut r, &mut crc_bytes).map_err(ReplayError::Io)?;
         if got < payload.len() || got_crc < 4 {
-            break TailState::Incomplete { offset };
+            break if known { TailState::Incomplete { offset } } else { unknown };
         }
         let mut h = crc32fast::Hasher::new();
         h.update(&prefix);
         h.update(&payload);
         if h.finalize() != u32::from_le_bytes(crc_bytes) {
-            break TailState::Corrupt { offset, reason: "checksum mismatch" };
+            break if known { TailState::Corrupt { offset, reason: "checksum mismatch" } } else { unknown };
+        }
+        if !known {
+            return Err(ReplayError::Unsupported {
+                what: "WAL record format",
+                found: prefix[0].into(),
+                supported: RECORD_VERSION.into(),
+            });
         }
         if let Err(reason) = on_record(&payload) {
             // Checksum was fine but the payload does not decode: treat as
@@ -475,6 +518,25 @@ mod tests {
         assert!(matches!(replay(&path, |_| Ok(())), Err(ReplayError::BadHeader)));
         std::fs::write(&path, b"short").unwrap();
         assert!(matches!(replay(&path, |_| Ok(())), Err(ReplayError::BadHeader)));
+        check_wal_format(&path).unwrap();
+    }
+
+    #[test]
+    fn newer_header_version_is_unsupported_not_bad() {
+        let (_d, wal, tmp) = setup();
+        let path = WalWriter::create(&wal, &tmp, header(1)).unwrap().path().to_path_buf();
+        check_wal_format(&path).unwrap();
+        let mut b = std::fs::read(&path).unwrap();
+        b[8..10].copy_from_slice(&2u16.to_le_bytes());
+        std::fs::write(&path, &b).unwrap();
+        assert!(matches!(
+            replay(&path, |_| Ok(())),
+            Err(ReplayError::Unsupported { what: "WAL file format", found: 2, supported: 1 })
+        ));
+        assert!(matches!(
+            check_wal_format(&path),
+            Err(crate::StorageError::UnsupportedFormat { found: 2, supported: 1, .. })
+        ));
     }
 
     #[test]

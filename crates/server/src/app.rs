@@ -76,13 +76,14 @@ impl App {
     pub fn build(config: Config) -> anyhow::Result<App> {
         config.validate().map_err(anyhow::Error::msg)?;
         let budgets = config.budgets();
-        std::fs::create_dir_all(&config.storage.path)
-            .with_context(|| format!("creating data directory {}", config.storage.path.display()))?;
+        let dir = &config.storage.path;
+        // Read-only: on error nothing in the data directory has changed.
+        let layout = crate::datadir::check(dir)?;
+        std::fs::create_dir_all(dir).with_context(|| format!("creating data directory {}", dir.display()))?;
+        crate::datadir::prepare(dir).context("creating data directory")?;
 
-        let metadata = Arc::new(
-            Metadata::open(&config.storage.path.join("metadata").join("metadata.db"))
-                .context("opening metadata store")?,
-        );
+        let metadata =
+            Arc::new(Metadata::open(&dir.join(crate::datadir::METADATA_DB)).context("opening metadata store")?);
 
         let (live_tx, _) = broadcast::channel::<LiveBatch>(LIVE_CHANNEL_CAPACITY);
         let hook_tx = live_tx.clone();
@@ -93,6 +94,7 @@ impl App {
             }
         });
         let storage = Arc::new(Storage::open(storage_config(&config), Some(hook)).context("opening storage")?);
+        crate::datadir::record(dir, &layout).context("writing the data directory manifest")?;
         let engine = Arc::new(Engine::new(
             storage.clone(),
             QueryLimits {
