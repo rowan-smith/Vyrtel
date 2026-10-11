@@ -196,9 +196,11 @@ inventory of the last clean shutdown is there with its size, the segment
 and WAL format versions and the metadata schema version. A directory that
 fails is refused with exit status 1 and left untouched, so a partial or
 newer backup is never started half-empty (`--accept-incomplete-restore`
-starts a partial one on purpose). Then it removes the inventory, creates
-the stream directories, opens the metadata store (migrations), opens
-storage (takes the lock, runs recovery) and records the manifest. See
+starts a partial one on purpose). Then it takes the data-directory lock,
+checks again under it, removes the inventory, creates the stream
+directories, opens the metadata store (migrations), opens storage with that
+lock (recovery) and records the manifest. Nothing in the directory changes
+before the lock is held. See
 [backup and restore](configuration.md#backup-and-restore).
 
 On a stop signal (SIGINT/SIGTERM; on
@@ -215,9 +217,10 @@ keeps shutdown fast. The whole drain shares one deadline,
 `server.shutdown_timeout`; past it, on a second stop signal in any of these
 steps, or if the final fsync fails, the process logs what was unfinished
 and exits with status 1 without waiting further
-(`App::serve_until` in `crates/server/src/app.rs`). A shutdown that
-finished every step then records the WAL and segment files and their sizes
-in `vyrtel.json`, for the next start to check. See
+(`App::serve_until` in `crates/server/src/app.rs`). The last step records
+the WAL and segment files and their sizes in `vyrtel.json`, for the next
+start to check; it shares the deadline, and a failure is an incomplete
+shutdown too. See
 [stopping and upgrading](configuration.md#stopping-and-upgrading). A data-directory lock
 (`data/.lock`) prevents two processes from using the same directory.
 

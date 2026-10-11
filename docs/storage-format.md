@@ -57,10 +57,14 @@ shutdown. It lists every `wal/<signal>/*.wal` and
 `segments/<signal>/*.seg` file, relative to the data directory, with its
 size in bytes. It is written after the WAL flush, the background jobs and
 any seal or compaction have finished, so nothing changes those files until
-the next start; an incomplete shutdown or a crash writes none. The next
-start checks it (see below), then removes it before anything else in the
+the next start; an incomplete shutdown or a crash writes none. Writing it
+is the last shutdown step and shares `server.shutdown_timeout` with the
+others: if it fails or does not finish in time, the shutdown is reported
+as incomplete (exit status 1). The next start checks it (see below), then,
+holding the data-directory lock, removes it before anything else in the
 directory changes, so a later crash cannot make it describe files that
-have since been sealed, compacted or deleted. The metadata database is not
+have since been sealed, compacted or deleted, and a start refused because
+another process holds the lock leaves it in place. The metadata database is not
 listed: SQLite may still change its files as the connection closes.
 
 The manifest is replaced atomically (`vyrtel.json.tmp` written and
@@ -72,7 +76,10 @@ before 0.1.2 have none and get one on their next start.
 ### Startup check
 
 Before the data directory is created, locked or changed, the server checks
-it, reading only (`crates/server/src/datadir.rs`). A directory with none of
+it, reading only (`crates/server/src/datadir.rs`). If that passes, it takes
+the data-directory lock (`storage::DataDirLock`, then handed to
+`Storage::open_locked`) and checks again under it, since another process
+may have changed the directory in between; only then does anything change. A directory with none of
 Vyrtel's top-level entries (`vyrtel.json`, `.lock`, `metadata`, `wal`,
 `segments`, `quarantine`, `indexes`, `tmp`) is new. Otherwise startup is
 refused, with nothing changed, when:

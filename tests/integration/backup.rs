@@ -37,6 +37,9 @@ fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
             if p.is_dir() {
                 out.insert(rel, None);
                 walk(root, &p, out);
+            } else if rel == Path::new(".lock") {
+                // Empty, and unreadable on Windows while someone holds it.
+                out.insert(rel, Some(Vec::new()));
             } else {
                 out.insert(rel, Some(std::fs::read(&p).unwrap()));
             }
@@ -446,4 +449,27 @@ async fn refused_backup_exits_with_status_1_and_the_reason() {
     assert!(stderr.starts_with("vyrtel: data directory "), "{stderr}");
     assert!(stderr.contains("is incomplete: metadata/metadata.db is missing"), "{stderr}");
     assert_eq!(snapshot(backup.path()), before);
+}
+
+/// The inventory is removed only by a start that holds the data directory
+/// lock: a start refused because another process has the directory must not
+/// cost the next start its check for missing files.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_refused_by_the_lock_keeps_the_inventory() {
+    let backup = stopped_backup().await;
+    let dir = backup.path();
+    let before = snapshot(dir);
+    {
+        let _held = storage::DataDirLock::acquire(dir).unwrap();
+        let err = match App::build(secure(dir)) {
+            Ok(_) => panic!("the directory is locked"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(err.contains("in use by another Vyrtel process"), "{err}");
+        assert_eq!(snapshot(dir), before, "the locked directory is unchanged, its inventory included");
+    }
+    // The inventory still protects the next start.
+    let wal = first_file(dir, "wal/logs", ".wal");
+    std::fs::remove_file(dir.join(&wal)).unwrap();
+    assert_refused_unchanged(dir, &format!("is incomplete: {wal} is missing"));
 }

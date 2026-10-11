@@ -28,5 +28,5 @@ pub use config::{CompactionConfig, Durability, StorageConfig, StreamConfig};
 pub use error::{DecodeError, Result, StorageError};
 pub use fault::{FaultArea, FaultOp, FaultReason, StorageFault};
 pub use recovery::{QuarantineKind, QuarantinedFile, RecoveryReport, check_formats};
-pub use store::{Storage, StorageStats};
+pub use store::{DataDirLock, Storage, StorageStats};
 pub use stream::{Ack, Batch, CommitHook, Committed, Done, StreamSnapshot, StreamStats};

@@ -23,7 +23,31 @@ pub struct Storage {
     cache: Arc<IndexCache>,
     /// Last write-probe result, reused for [`PROBE_TTL`].
     probe: Mutex<Option<(Instant, Option<StorageFault>)>>,
-    _lock: File,
+    _lock: DataDirLock,
+}
+
+/// The exclusive lock on a data directory (`.lock`), so two processes never
+/// write the same WAL. Held until dropped; [`Storage`] keeps it while open.
+pub struct DataDirLock {
+    _file: File,
+    dir: PathBuf,
+}
+
+impl DataDirLock {
+    /// Lock the existing directory `dir`, creating `.lock` if needed. Fails
+    /// with [`StorageError::Unavailable`] if another process holds it.
+    pub fn acquire(dir: &Path) -> Result<DataDirLock> {
+        let path = dir.join(".lock");
+        let f =
+            std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&path).ctx(&path)?;
+        match f.try_lock() {
+            Ok(()) => Ok(DataDirLock { _file: f, dir: dir.to_path_buf() }),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                Err(StorageError::Unavailable("data directory is in use by another Vyrtel process".into()))
+            }
+            Err(std::fs::TryLockError::Error(e)) => Err(e).ctx(&path),
+        }
+    }
 }
 
 /// How long a write-probe result is reused, so frequent readiness checks
@@ -54,9 +78,19 @@ impl Storage {
     /// Open the data directory, run crash recovery for every stream and
     /// start the writer/maintenance threads.
     pub fn open(config: StorageConfig, hook: Option<CommitHook>) -> Result<Storage> {
+        fsutil::create_dir_all_durable(&config.data_dir)?;
+        let lock = DataDirLock::acquire(&config.data_dir)?;
+        Self::open_locked(config, hook, lock)
+    }
+
+    /// [`Storage::open`] with a lock the caller already holds on
+    /// `config.data_dir`, so it can check and prepare the directory first
+    /// without another process starting in between.
+    pub fn open_locked(config: StorageConfig, hook: Option<CommitHook>, lock: DataDirLock) -> Result<Storage> {
         let dir = &config.data_dir;
-        fsutil::create_dir_all_durable(dir)?;
-        let lock = lock_data_dir(dir)?;
+        if lock.dir != *dir {
+            return Err(StorageError::Unavailable("the lock held is for another data directory".into()));
+        }
         {
             let sub = "indexes";
             let p = dir.join(sub);
@@ -248,18 +282,4 @@ pub(crate) fn write_probe(path: &Path, point: &str, data_dir: &Path) -> std::res
     })();
     let _ = std::fs::remove_file(path);
     written.map_err(|e| StorageFault::from_error(FaultOp::Probe, &e, path, data_dir))
-}
-
-/// Take an exclusive lock on the data directory so two processes never
-/// write the same WAL.
-fn lock_data_dir(dir: &Path) -> Result<File> {
-    let path: PathBuf = dir.join(".lock");
-    let f = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&path).ctx(&path)?;
-    match f.try_lock() {
-        Ok(()) => Ok(f),
-        Err(std::fs::TryLockError::WouldBlock) => {
-            Err(StorageError::Unavailable("data directory is in use by another Vyrtel process".into()))
-        }
-        Err(std::fs::TryLockError::Error(e)) => Err(e).ctx(&path),
-    }
 }

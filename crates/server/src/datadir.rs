@@ -413,6 +413,7 @@ pub fn record_stopped(dir: &Path) -> std::io::Result<()> {
 /// fsync it, rename it over the manifest, fsync the directory.
 fn write_manifest(dir: &Path, m: &Manifest) -> std::io::Result<()> {
     let tmp = dir.join(format!("{MANIFEST}.tmp"));
+    storage::fault::check("manifest.write", &tmp)?;
     {
         let mut f = std::fs::File::create(&tmp)?;
         let mut text = serde_json::to_string_pretty(m).map_err(std::io::Error::other)?;

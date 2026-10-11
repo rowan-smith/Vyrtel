@@ -349,7 +349,9 @@ From the first stop signal, Vyrtel:
    (see below).
 5. **Stops background jobs** (alert evaluation) and saves query
    statistics, then lets a seal or compaction already in progress finish.
-6. **Exits with status 0**, after logging `shutdown complete`.
+6. **Records the inventory** of WAL and segment files in `vyrtel.json`,
+   which a [restored backup](#backup-and-restore) is checked against.
+7. **Exits with status 0**, after logging `shutdown complete`.
 
 All of this shares one deadline, `server.shutdown_timeout` (default `8s`),
 counted from the first signal. An idle server stops in milliseconds; a
@@ -362,8 +364,8 @@ send it.
 Status 0 means every step above finished. Otherwise Vyrtel logs an
 `ERROR`, prints the same text to stderr and exits with status **1**, in
 every step alike: when the deadline passes, at once on a second stop
-signal (Ctrl+C twice, `kill -TERM` twice), and when the final WAL fsync
-fails:
+signal (Ctrl+C twice, `kill -TERM` twice), when the final WAL fsync
+fails, and when the inventory cannot be written:
 
 ```
 vyrtel: shutdown incomplete: server.shutdown_timeout (1s) passed while waiting for in-flight requests; unfinished: 1 ingest request not acknowledged (the client gets no response and should retry). Acknowledged events are already in the WAL and are replayed on the next start; raise server.shutdown_timeout if draining regularly takes longer
@@ -371,10 +373,18 @@ vyrtel: shutdown incomplete: server.shutdown_timeout (1s) passed while waiting f
 
 The message names the step that did not finish: `waiting for in-flight
 requests`, `storage was writing queued batches and flushing the WAL`,
-`background jobs were stopping and query statistics were being saved`, or
-`a seal or compaction was finishing`. The last two say every accepted
-request was already written and flushed; an interrupted seal is redone from
-the WAL on the next start. The message then lists only the kinds of work
+`background jobs were stopping and query statistics were being saved`,
+`a seal or compaction was finishing`, or `the data directory inventory was
+being recorded`. The last three say every accepted request was already
+written and flushed; an interrupted seal is redone from the WAL on the next
+start, and without an inventory a backup of the directory cannot be checked
+for missing files (start and stop Vyrtel again before backing it up).
+A failed inventory write is reported the same way, with the error:
+
+```
+vyrtel: shutdown incomplete: every accepted request was written and the WAL flushed, but the data directory inventory could not be recorded (No space left on device (os error 28)). The directory starts normally, but a backup of it cannot be checked for missing or truncated files when it is restored; fix the storage problem, then start and stop Vyrtel again before backing it up (docs/configuration.md#backup-and-restore)
+```
+ The message then lists only the kinds of work
 that were unfinished:
 
 | Unfinished work                   | What it means                                                                                                                                                                                                      |
@@ -563,10 +573,11 @@ keys and change the admin password.
    `vyrtel.json` (`inventory`), so the restored copy is checked for missing
    or truncated files when it starts. After an
    [incomplete shutdown](#when-the-deadline-passes-the-signal-is-repeated-or-the-flush-fails)
-   (status 1) or a crash there is no inventory: the backup is still
-   consistent and restores like one taken after a crash, but a file left out
-   of it cannot be detected. Start and stop Vyrtel cleanly once before
-   backing up if you can.
+   (status 1, including an inventory that could not be written or did not
+   finish before `server.shutdown_timeout`) or a crash there is no
+   inventory: the backup is still consistent and restores like one taken
+   after a crash, but a file left out of it cannot be detected. Start and
+   stop Vyrtel cleanly once before backing up if you can.
 2. **Copy the whole data directory**, for example:
 
    ```bash

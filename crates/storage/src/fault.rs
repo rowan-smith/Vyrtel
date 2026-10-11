@@ -186,13 +186,19 @@ fn relative(path: &Path, data_dir: &Path) -> String {
     }
 }
 
-/// Fail with an injected error if a rule matches `point` and `path`.
+/// Fail with an injected error if a rule matches `point` and `path` (or
+/// wait, for [`inject::Injected::Stall`]). Public so other crates can put
+/// their own writes in the data directory behind named points.
 #[inline(always)]
-pub(crate) fn check(point: &str, path: &Path) -> io::Result<()> {
+pub fn check(point: &str, path: &Path) -> io::Result<()> {
     #[cfg(feature = "fault-injection")]
     inject::note(point, path);
     #[cfg(feature = "fault-injection")]
     if let Some(f) = inject::take(point, path) {
+        if let inject::Injected::Stall(d) = f {
+            std::thread::sleep(d);
+            return Ok(());
+        }
         return Err(f.error());
     }
     let _ = (point, path);
@@ -207,6 +213,10 @@ pub(crate) fn check_write(point: &str, path: &Path, len: usize) -> Option<(usize
     inject::note(point, path);
     #[cfg(feature = "fault-injection")]
     if let Some(f) = inject::take(point, path) {
+        if let inject::Injected::Stall(d) = f {
+            std::thread::sleep(d);
+            return None;
+        }
         let written = if f == inject::Injected::ShortWrite { len / 2 } else { 0 };
         return Some((written, f.error()));
     }
@@ -234,6 +244,8 @@ pub mod inject {
         ReadOnly,
         /// Half of the bytes are written, then the write fails.
         ShortWrite,
+        /// The operation hangs for this long, then succeeds (a stuck disk).
+        Stall(std::time::Duration),
     }
 
     impl Injected {
@@ -247,6 +259,7 @@ pub mod inject {
                     io::Error::new(io::ErrorKind::ReadOnlyFilesystem, "Read-only file system (injected)")
                 }
                 Injected::ShortWrite => io::Error::new(io::ErrorKind::WriteZero, "short write (injected)"),
+                Injected::Stall(_) => unreachable!("a stall succeeds after waiting"),
             }
         }
     }

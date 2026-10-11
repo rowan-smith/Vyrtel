@@ -216,3 +216,68 @@ async fn failed_final_wal_flush_is_not_a_clean_shutdown() {
     assert_eq!(s.messages("").await, ["acknowledged, not yet fsynced"]);
     s.stop().await;
 }
+
+// REL-06: a clean shutdown records the data directory's inventory, which a
+// restored backup is checked against. Without it the shutdown is not clean.
+fn manifest(dir: &std::path::Path) -> Value {
+    serde_json::from_slice(&std::fs::read(dir.join("vyrtel.json")).unwrap()).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_inventory_write_is_not_a_clean_shutdown() {
+    use server::app::{IncompleteShutdown, ShutdownPhase, StopCause};
+
+    let s = TestServer::start().await;
+    s.ingest(json!({"message": "kept"})).await;
+    let host = s.data_dir().to_string_lossy().to_string();
+    let guard = inject(&s.data_dir(), "manifest.write", Injected::NoSpace);
+
+    let (r, config, dir) = s.stopped().await;
+    let e = r.expect_err("no inventory, no clean shutdown").downcast::<IncompleteShutdown>().unwrap();
+    assert_eq!(e.phase, ShutdownPhase::Inventory);
+    let StopCause::InventoryFailed(reason) = &e.cause else { panic!("{e:?}") };
+    assert!(reason.contains("No space left on device"), "{reason}");
+    let text = e.to_string();
+    assert!(
+        text.starts_with(
+            "shutdown incomplete: every accepted request was written and the WAL flushed, but the data directory \
+             inventory could not be recorded (No space left on device"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("start and stop Vyrtel again before backing it up"), "{text}");
+    assert!(!text.contains(&host), "{text}");
+    assert_eq!(manifest(&config.storage.path).get("inventory"), None, "no partial inventory was written");
+
+    // Nothing was lost; the next clean shutdown records it.
+    drop(guard);
+    let s = TestServer::launch(config, dir).await;
+    assert_eq!(s.messages("").await, ["kept"]);
+    let (config, _dir) = s.stop().await;
+    assert!(manifest(&config.storage.path)["inventory"]["files"].as_object().is_some_and(|f| !f.is_empty()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn inventory_stalled_past_the_deadline_is_reported() {
+    use server::app::{IncompleteShutdown, ShutdownPhase, StopCause};
+
+    let s = TestServer::start_with(|c| c.server.shutdown_timeout = Duration::from_millis(500)).await;
+    s.ingest(json!({"message": "kept"})).await;
+    // A disk that hangs on the manifest write; the stall outlives the test.
+    let _guard = inject(&s.data_dir(), "manifest.write", Injected::Stall(Duration::from_secs(5)));
+
+    let began = std::time::Instant::now();
+    let (r, _config, _dir) = s.stopped().await;
+    let took = began.elapsed();
+    let e = r.expect_err("the deadline bounds the inventory").downcast::<IncompleteShutdown>().unwrap();
+    assert_eq!((e.phase, &e.cause), (ShutdownPhase::Inventory, &StopCause::Deadline(Duration::from_millis(500))));
+    assert!(took < Duration::from_secs(3), "shutdown waited {took:?} for the stalled inventory");
+    let text = e.to_string();
+    assert!(
+        text.starts_with(
+            "shutdown incomplete: server.shutdown_timeout (500ms) passed while the data directory inventory was \
+             being recorded"
+        ),
+        "{text}"
+    );
+}

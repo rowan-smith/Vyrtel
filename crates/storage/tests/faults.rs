@@ -115,6 +115,7 @@ fn expected_reason(f: Injected) -> FaultReason {
         Injected::PermissionDenied => FaultReason::PermissionDenied,
         Injected::ReadOnly => FaultReason::ReadOnly,
         Injected::ShortWrite => FaultReason::ShortWrite,
+        Injected::Stall(_) => unreachable!("a stall does not fail"),
     }
 }
 

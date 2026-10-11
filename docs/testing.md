@@ -276,7 +276,14 @@ talks HTTP to it:
   without a WAL file, with the segment events and the configuration kept,
   and the next start needs no flag; a running directory has no inventory.
   A directory without a manifest (0.1.1) starts and gets one; a new volume
-  holding only `lost+found` starts as new.
+  holding only `lost+found` starts as new. A start refused because another
+  process holds the lock changes nothing, so the inventory still refuses a
+  later start that is missing a WAL file. With `--features
+  fault-injection` (`storage_faults.rs`): a failed manifest write at
+  shutdown is `IncompleteShutdown` (phase `Inventory`, the I/O error, no
+  host path, no partial inventory) and the next clean shutdown records it;
+  a manifest write stalled past a 500 ms `shutdown_timeout` ends the
+  shutdown within 3 s, reported as the deadline in phase `Inventory`.
 
 Fixtures shared with E2E live in `tests/fixtures/`.
 
