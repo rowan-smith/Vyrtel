@@ -198,11 +198,18 @@ pub enum LogFormat {
 #[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     pub bind: String,
+    /// After a stop signal, how long accepted work (in-flight requests,
+    /// queued writes, the final WAL flush) may take to drain before the
+    /// process gives up, reports what is unfinished and exits with status 1.
+    #[serde(with = "duration_serde")]
+    pub shutdown_timeout: Duration,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        Self { bind: "0.0.0.0:8080".into() }
+        // Inside Docker's default 10 s stop grace period, so the diagnostic
+        // is printed before the container is killed.
+        Self { bind: "0.0.0.0:8080".into(), shutdown_timeout: Duration::from_secs(8) }
     }
 }
 
@@ -381,6 +388,7 @@ pub struct Config {
 /// Every supported environment variable, for docs and `--help`.
 pub const ENV_VARS: &[&str] = &[
     "VYRTEL_SERVER_BIND",
+    "VYRTEL_SERVER_SHUTDOWN_TIMEOUT",
     "VYRTEL_STORAGE_PATH",
     "VYRTEL_STORAGE_MAX_MEMORY",
     "VYRTEL_STORAGE_SEGMENT_TARGET_SIZE",
@@ -430,6 +438,7 @@ impl Config {
             let r: Result<(), String> = (|| {
                 match *key {
                     "VYRTEL_SERVER_BIND" => self.server.bind = v.clone(),
+                    "VYRTEL_SERVER_SHUTDOWN_TIMEOUT" => self.server.shutdown_timeout = parse_duration(&v)?,
                     "VYRTEL_STORAGE_PATH" => self.storage.path = PathBuf::from(&v),
                     "VYRTEL_STORAGE_MAX_MEMORY" => self.storage.max_memory = ByteSize::parse(&v)?,
                     "VYRTEL_STORAGE_SEGMENT_TARGET_SIZE" => self.storage.segment_target_size = ByteSize::parse(&v)?,
@@ -506,6 +515,9 @@ impl Config {
         }
         if self.storage.block_events == 0 {
             return Err("storage.block_events must be positive".into());
+        }
+        if self.server.shutdown_timeout.is_zero() {
+            return Err("server.shutdown_timeout must be positive (e.g. 8s)".into());
         }
         if self.auth.admin_username.trim().is_empty() {
             return Err("auth.admin_username must not be empty".into());
@@ -761,6 +773,7 @@ mod tests {
         let mut c = Config::default();
         let env = |k: &str| match k {
             "VYRTEL_SERVER_BIND" => Some("127.0.0.1:9999".to_string()),
+            "VYRTEL_SERVER_SHUTDOWN_TIMEOUT" => Some("1m30s".to_string()),
             "VYRTEL_STORAGE_PATH" => Some("/tmp/x".to_string()),
             "VYRTEL_STORAGE_DURABILITY" => Some("strict".to_string()),
             "VYRTEL_RETENTION_LOGS" => Some("forever".to_string()),
@@ -769,6 +782,7 @@ mod tests {
         };
         c.apply_env(env).unwrap();
         assert_eq!(c.server.bind, "127.0.0.1:9999");
+        assert_eq!(c.server.shutdown_timeout, Duration::from_secs(90));
         assert_eq!(c.storage.path, PathBuf::from("/tmp/x"));
         assert_eq!(c.storage.durability, Durability::Strict);
         assert_eq!(c.retention.logs, None);
@@ -786,6 +800,28 @@ mod tests {
         let mut c = Config::default();
         c.storage.max_memory = ByteSize(1 << 20);
         assert!(c.validate().is_err());
+    }
+
+    // REL-05: the drain deadline is configurable and must leave time to drain.
+    #[test]
+    fn shutdown_timeout() {
+        assert_eq!(Config::default().server.shutdown_timeout, Duration::from_secs(8));
+        let c = Config::from_toml(
+            "[server]
+shutdown_timeout = \"25s\"",
+        )
+        .unwrap();
+        assert_eq!(c.server.shutdown_timeout, Duration::from_secs(25));
+        c.validate().unwrap();
+        let c = Config::from_toml(
+            "[server]
+shutdown_timeout = 0",
+        )
+        .unwrap();
+        assert_eq!(c.validate().unwrap_err(), "server.shutdown_timeout must be positive (e.g. 8s)");
+        let mut c = Config::default();
+        let err = c.apply_env(|k| (k == "VYRTEL_SERVER_SHUTDOWN_TIMEOUT").then(|| "soon".to_string())).unwrap_err();
+        assert!(err.contains("VYRTEL_SERVER_SHUTDOWN_TIMEOUT"), "{err}");
     }
 
     #[test]

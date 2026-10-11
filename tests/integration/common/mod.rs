@@ -17,7 +17,8 @@ pub struct TestServer {
     pub client: reqwest::Client,
     dir: Option<tempfile::TempDir>,
     stop: Option<oneshot::Sender<()>>,
-    handle: Option<JoinHandle<()>>,
+    force: Option<oneshot::Sender<()>>,
+    handle: Option<JoinHandle<anyhow::Result<()>>>,
     state: Option<server::state::SharedState>,
 }
 
@@ -26,6 +27,9 @@ pub fn base_config(dir: &Path) -> Config {
     c.storage.path = dir.to_path_buf();
     c.server.bind = "127.0.0.1:0".into();
     c.log.level = "warn".into();
+    // As long as `stop` waits, so a loaded machine does not fail unrelated
+    // tests; the shutdown tests set their own.
+    c.server.shutdown_timeout = Duration::from_secs(30);
     c
 }
 
@@ -42,6 +46,11 @@ impl TestServer {
     }
 
     pub async fn launch(config: Config, dir: Option<tempfile::TempDir>) -> TestServer {
+        Self::launch_at(config, dir, "127.0.0.1:0").await
+    }
+
+    /// Like [`TestServer::launch`], listening on `addr`.
+    pub async fn launch_at(config: Config, dir: Option<tempfile::TempDir>, addr: &str) -> TestServer {
         // On Unix a process spawned by a parallel test (crash.rs starts the
         // real binary) inherits our data-directory lock until it execs, so a
         // restart can briefly see the lock as held. Retry only that error,
@@ -58,25 +67,51 @@ impl TestServer {
             }
         };
         let state = app.state.clone();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (tx, rx) = oneshot::channel::<()>();
-        let handle = tokio::spawn(async move {
-            app.serve(listener, async move {
-                let _ = rx.await;
-            })
-            .await
-            .unwrap();
-        });
+        let (force_tx, force_rx) = oneshot::channel::<()>();
+        // A dropped sender must not count as a request.
+        let requested = |rx: oneshot::Receiver<()>| async move {
+            if rx.await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        };
+        let handle = tokio::spawn(app.serve_until(listener, requested(rx), requested(force_rx)));
         TestServer {
             url,
             config,
             client: reqwest::Client::new(),
             dir,
             stop: Some(tx),
+            force: Some(force_tx),
             handle: Some(handle),
             state: Some(state),
         }
+    }
+
+    /// Send the stop request (as SIGTERM does) without waiting.
+    pub fn begin_stop(&mut self) {
+        if let Some(tx) = self.stop.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    /// Send a second stop request.
+    pub fn force_stop(&mut self) {
+        if let Some(tx) = self.force.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    /// Wait for the server to finish serving; returns how it ended, and
+    /// what [`TestServer::launch`] needs to start it again.
+    pub async fn stopped(mut self) -> (anyhow::Result<()>, Config, Option<tempfile::TempDir>) {
+        self.state.take();
+        self.begin_stop();
+        let h = self.handle.take().unwrap();
+        let r = tokio::time::timeout(Duration::from_secs(30), h).await.expect("server stops in time").unwrap();
+        (r, self.config.clone(), self.dir.take())
     }
 
     pub fn state(&self) -> &server::state::SharedState {
@@ -90,11 +125,9 @@ impl TestServer {
     /// Graceful shutdown (flush, release the data directory lock).
     pub async fn stop(mut self) -> (Config, Option<tempfile::TempDir>) {
         self.state.take();
-        if let Some(tx) = self.stop.take() {
-            let _ = tx.send(());
-        }
+        self.begin_stop();
         if let Some(h) = self.handle.take() {
-            tokio::time::timeout(Duration::from_secs(30), h).await.expect("server stops in time").unwrap();
+            tokio::time::timeout(Duration::from_secs(30), h).await.expect("server stops in time").unwrap().unwrap();
         }
         (self.config.clone(), self.dir.take())
     }
@@ -301,4 +334,154 @@ pub fn stall_writer(s: &TestServer, signal: telemetry::Signal) -> std::sync::mps
 
 pub fn queue_depth(s: &TestServer, signal: telemetry::Signal) -> usize {
     s.state().storage.stats().get(signal).queue_depth
+}
+
+/// The real `vyrtel` binary on its own port and data directory, for tests of
+/// what only a process can show: kills, signals, exit codes.
+pub struct Process {
+    pub child: std::process::Child,
+    pub url: String,
+    pub client: reqwest::Client,
+    stderr: tempfile::NamedTempFile,
+}
+
+impl Process {
+    /// Start with auth disabled plus `env`, and wait until it is healthy.
+    pub async fn start(dir: &Path, env: &[(&str, &str)]) -> Process {
+        use std::process::{Command, Stdio};
+        // Reserve a free port, then hand it to the server.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let stderr = tempfile::NamedTempFile::new().unwrap();
+        let child = Command::new(env!("CARGO_BIN_EXE_vyrtel"))
+            .args(["--data-dir", dir.to_str().unwrap(), "--bind", &format!("127.0.0.1:{port}"), "--log-level", "warn"])
+            .env("VYRTEL_AUTH_ENABLED", "false")
+            .envs(env.iter().copied())
+            .stdout(Stdio::null())
+            .stderr(stderr.reopen().unwrap())
+            .spawn()
+            .unwrap();
+        let p = Process { child, url: format!("http://127.0.0.1:{port}"), client: reqwest::Client::new(), stderr };
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(r) = p.client.get(format!("{}/health", p.url)).send().await
+                && r.status().is_success()
+            {
+                return p;
+            }
+            assert!(std::time::Instant::now() < deadline, "vyrtel did not become healthy: {}", p.stderr());
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    pub async fn get(&self, path: &str) -> Value {
+        self.client.get(format!("{}{path}", self.url)).send().await.unwrap().json().await.unwrap()
+    }
+
+    /// Everything the process wrote to stderr so far.
+    pub fn stderr(&self) -> String {
+        std::fs::read_to_string(self.stderr.path()).unwrap_or_default()
+    }
+
+    /// `kill -9` (TerminateProcess on Windows): no shutdown, no final fsync.
+    pub fn kill(mut self) {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
+    }
+
+    /// Send SIGTERM, as `docker stop`, systemd and Kubernetes do.
+    #[cfg(unix)]
+    pub fn terminate(&self) {
+        let ok = std::process::Command::new("kill")
+            .args(["-TERM", &self.child.id().to_string()])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "kill -TERM failed");
+    }
+
+    /// The exit status, once the process has exited; `None` while it runs.
+    pub fn exited(&mut self) -> Option<std::process::ExitStatus> {
+        self.child.try_wait().unwrap()
+    }
+
+    /// Wait up to `limit` for the process to exit.
+    pub async fn wait_exit(&mut self, limit: Duration) -> std::process::ExitStatus {
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            if let Some(status) = self.exited() {
+                return status;
+            }
+            assert!(std::time::Instant::now() < deadline, "vyrtel did not exit within {limit:?}: {}", self.stderr());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Minimal SSE reader over reqwest's chunked body.
+pub struct Sse {
+    resp: reqwest::Response,
+    buf: String,
+    /// The last `retry:` field received, in milliseconds.
+    pub retry: Option<u64>,
+}
+
+impl Sse {
+    /// Subscribe to the logs live tail and wait for `ready`.
+    pub async fn open(s: &TestServer, query: &str) -> Sse {
+        let resp = s.client.get(s.u("/api/v1/live/logs")).query(&[("query", query)]).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert!(resp.headers()["content-type"].to_str().unwrap().starts_with("text/event-stream"));
+        let mut sse = Sse { resp, buf: String::new(), retry: None };
+        let (kind, _) = sse.next().await;
+        assert_eq!(kind, "ready");
+        sse
+    }
+
+    /// Next (event, data), skipping keep-alive comments.
+    pub async fn next(&mut self) -> (String, String) {
+        self.next_or_end().await.expect("stream still open")
+    }
+
+    /// Next (event, data), or `None` once the server ended the response
+    /// cleanly (a reset or truncated body fails the test).
+    pub async fn next_or_end(&mut self) -> Option<(String, String)> {
+        loop {
+            if let Some(end) = self.buf.find("\n\n") {
+                let frame: String = self.buf.drain(..end + 2).collect();
+                let mut kind = String::from("message");
+                let mut data = String::new();
+                for line in frame.lines() {
+                    if let Some(k) = line.strip_prefix("event:") {
+                        kind = k.trim().to_string();
+                    } else if let Some(d) = line.strip_prefix("data:") {
+                        data.push_str(d.trim_start());
+                    } else if let Some(r) = line.strip_prefix("retry:") {
+                        self.retry = r.trim().parse().ok();
+                    }
+                }
+                if data.is_empty() && kind == "message" {
+                    continue;
+                }
+                return Some((kind, data));
+            }
+            let chunk = tokio::time::timeout(Duration::from_secs(10), self.resp.chunk())
+                .await
+                .expect("SSE data within timeout")
+                .expect("SSE body ends cleanly");
+            match chunk {
+                Some(chunk) => self.buf.push_str(&String::from_utf8_lossy(&chunk)),
+                None => {
+                    assert!(self.buf.trim().is_empty(), "partial frame at end of stream: {:?}", self.buf);
+                    return None;
+                }
+            }
+        }
+    }
 }

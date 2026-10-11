@@ -13,3 +13,6 @@ services:
       # VYRTEL_AUTH_ENABLED: "true"
       # VYRTEL_AUTH_ADMIN_PASSWORD: change-me
     restart: unless-stopped
+    # Longer than server.shutdown_timeout (8s), so in-flight requests drain
+    # before Docker force-kills the container.
+    stop_grace_period: 15s

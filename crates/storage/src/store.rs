@@ -185,11 +185,25 @@ impl Storage {
             .map_err(|_| StorageError::Unavailable("maintenance timed out".into()))?
     }
 
-    /// Stop accepting writes, flush WALs and stop background threads.
-    pub fn shutdown(&self) {
+    /// Stop accepting writes, write out every queued batch and flush the
+    /// WALs. `Ok` means every batch ever acknowledged is in a flushed WAL;
+    /// `Err` lists the signals whose final flush failed (each fault is also
+    /// recorded in that stream's stats). Sealing or compaction may still be
+    /// running either way (see [`Storage::shutdown`]).
+    pub fn stop_writers(&self) -> std::result::Result<(), Vec<(Signal, StorageFault)>> {
         for s in &self.streams {
             s.begin_shutdown();
         }
+        let failed: Vec<(Signal, StorageFault)> =
+            self.streams.iter().filter_map(|s| s.stop_writer().err().map(|f| (s.signal(), f))).collect();
+        if failed.is_empty() { Ok(()) } else { Err(failed) }
+    }
+
+    /// [`Storage::stop_writers`], then wait for any seal or compaction in
+    /// progress and stop the background threads. Interrupting that wait
+    /// (process exit) is safe: recovery redoes the seal from the WAL.
+    pub fn shutdown(&self) {
+        let _ = self.stop_writers();
         for s in &self.streams {
             s.shutdown();
         }
