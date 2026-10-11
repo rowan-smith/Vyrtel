@@ -158,10 +158,12 @@ build error instead.
 Releases are produced by `.github/workflows/release.yml` when a `v*` tag is
 pushed: Linux x86_64/ARM64, macOS ARM64 and Windows x86_64 binaries with
 SHA-256 checksums, plus a multi-architecture image on GHCR. Nothing is published unless the
-tag matches the workspace version, the full CI suite passes and every artifact's version,
-embedded UI and checksum are verified; prereleases never become `latest`. See
-[releasing.md](releasing.md) for the gates, how to cut or rehearse a release, and what to do
-when one fails.
+tag matches the workspace version, the version's performance gates signed off that exact
+commit before it was tagged, the full CI suite passes and every artifact's version, embedded
+UI and checksum are verified; prereleases never become `latest`. Create release tags with
+`node scripts/release/release.mjs pretag --tag vX.Y.Z --create`, not `git tag`. See
+[releasing.md](releasing.md) for the gates, the pre-tag sign-off, how to cut or rehearse a
+release, and what to do when one fails.
 
 ## Website and docs site
 

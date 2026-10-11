@@ -254,9 +254,9 @@ describe('AC2: nothing is published unless every gate passed', () => {
   const workflow = repoFile('.github/workflows/release.yml');
   const needs = jobNeeds(workflow);
 
-  test('the release and image jobs depend on preflight, CI, binaries and verify', () => {
+  test('the release and image jobs depend on preflight, performance, CI, binaries and verify', () => {
     for (const job of ['image', 'release']) {
-      for (const gate of ['preflight', 'ci', 'binaries', 'verify']) {
+      for (const gate of ['preflight', 'performance', 'ci', 'binaries', 'verify']) {
         assert.ok(upstream(needs, job).has(gate), `${job} must (transitively) need ${gate}`);
       }
     }

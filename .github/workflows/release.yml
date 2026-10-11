@@ -2,14 +2,20 @@ name: Release
 
 # Publishes a release only after it has been validated (docs/releasing.md):
 #
-#   preflight ─┬─ ci (the full CI suite) ─┐
+#   preflight ─┬─ performance ────────────┐
+#              ├─ ci (the full CI suite) ─┤
 #              └──────────────────────────┴─ binaries ─ verify ─ image ─ release
 #
 # - preflight: the tag must be v<semver> and match the workspace version, or nothing runs.
+# - performance: every performance gate for the version has a reviewer PASS for this exact
+#   commit on the release-evidence branch, signed off before the tag was created. The
+#   sign-off itself happens before tagging (scripts/release/release.mjs pretag); this job
+#   refuses to publish a tag that bypassed it.
 # - ci: every required CI check, run against the tagged commit.
 # - binaries: built with the UI that CI tested; each one's --version and embedded UI are
 #   checked on its own runner before it is uploaded.
-# - verify: the full artifact set and SHA256SUMS, plus the Linux binary as shipped.
+# - verify: the full artifact set and SHA256SUMS, plus the Linux binary as shipped, and the
+#   built artifacts match the hashes the performance gates approved (or documented equivalence).
 # - image: smoke-tested locally before it is pushed; prereleases do not move `latest`.
 # - release: the GitHub release, last, from the verified artifacts. Prereleases are
 #   marked as such and never become the "latest" release.
@@ -55,6 +61,35 @@ jobs:
       - id: plan
         run: node scripts/release/release.mjs plan --tag "$TAG" --image "ghcr.io/${{ github.repository }}"
 
+  performance:
+    name: Pre-tag performance sign-off
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch approval records
+        # A missing branch leaves evidence/ empty, which fails the check below as missing evidence.
+        run: |
+          mkdir -p evidence
+          if git fetch --depth=1 origin release-evidence; then git archive FETCH_HEAD | tar -x -C evidence; fi
+      - name: Check sign-off for this commit
+        run: |
+          args=()
+          if [ "$PUBLISH" = "true" ]; then
+            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+            # Empty for a lightweight tag, which the check rejects when gates are required.
+            args=(--tag-date "$(git for-each-ref "refs/tags/$TAG" --format='%(taggerdate:iso-strict)')")
+          fi
+          node scripts/release/release.mjs check-performance --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: performance-evidence
+          path: evidence/performance
+          if-no-files-found: ignore
+
   ci:
     name: Required checks
     needs: preflight
@@ -65,7 +100,7 @@ jobs:
 
   binaries:
     name: Build and check ${{ matrix.name }}
-    needs: [preflight, ci]
+    needs: [preflight, performance, ci]
     strategy:
       fail-fast: true
       matrix:
@@ -119,7 +154,7 @@ jobs:
 
   verify:
     name: Verify release artifacts
-    needs: [preflight, binaries]
+    needs: [preflight, performance, binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -131,6 +166,11 @@ jobs:
           path: artifacts
           pattern: vyrtel-*
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: performance-evidence
+          path: evidence/performance
+        continue-on-error: true
       - name: Combined checksums
         run: |
           cd artifacts
@@ -143,6 +183,10 @@ jobs:
         run: |
           chmod +x artifacts/vyrtel-linux-x86_64
           node scripts/release/release.mjs verify-binary artifacts/vyrtel-linux-x86_64 --version "${{ needs.preflight.outputs.version }}"
+      - name: Check artifacts match the approved candidate
+        run: |
+          mkdir -p evidence
+          node scripts/release/release.mjs check-performance --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence --artifacts artifacts
       - uses: actions/upload-artifact@v4
         with:
           name: release-artifacts

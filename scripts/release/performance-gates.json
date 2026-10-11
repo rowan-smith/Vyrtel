@@ -1,0 +1,24 @@
+{
+  "$comment": "Performance gates each release version needs before it can be tagged (docs/releasing.md#pre-tag-performance-sign-off). Every gate for a version must sign off the same candidate commit. A stable version with no entry cannot be released; give it an empty list and a reason to release without a gate. Future/discovery scope gets an entry only once it is assigned to a delivery milestone.",
+  "prereleases": "not-required",
+  "versions": {
+    "0.1.2": { "gates": [{ "id": "PERF-GATE-1", "issue": 170, "milestone": "0.1.2 — Reliability and release confidence" }] },
+    "0.1.3": { "gates": [{ "id": "PERF-GATE-2", "issue": 171, "milestone": "0.1.3 — Complete everyday workflows" }] },
+    "0.2.0": {
+      "gates": [
+        { "id": "PERF-GATE-3", "issue": 172, "milestone": "0.2.0 — Faster log investigations" },
+        { "id": "PERF-GATE-4", "issue": 173, "milestone": "0.2.0 — Metrics correctness and interoperability" }
+      ]
+    },
+    "0.2.1": {
+      "gates": [
+        { "id": "PERF-GATE-5", "issue": 174, "milestone": "0.2.1 — Retention and alert operations" },
+        { "id": "PERF-GATE-10", "issue": 178, "milestone": "0.2.1 — Privacy and user audit trails" }
+      ]
+    },
+    "0.2.2": { "gates": [{ "id": "PERF-GATE-6", "issue": 175, "milestone": "0.2.2 — Dashboard investigation workflows" }] },
+    "0.2.3": { "gates": [{ "id": "PERF-GATE-11", "issue": 179, "milestone": "0.2.3 — Security investigation workflows" }] },
+    "0.3.0": { "gates": [{ "id": "PERF-GATE-8", "issue": 176, "milestone": "0.3.0 — Ingest and Core node foundation" }] },
+    "0.3.1": { "gates": [{ "id": "PERF-GATE-9", "issue": 177, "milestone": "0.3.1 — Multi-node operational hardening" }] }
+  }
+}

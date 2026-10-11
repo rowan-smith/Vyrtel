@@ -98,7 +98,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node --test scripts/release/release.test.mjs
+      - run: node --test scripts/release/*.test.mjs
 
   e2e:
     name: End-to-end (Playwright)

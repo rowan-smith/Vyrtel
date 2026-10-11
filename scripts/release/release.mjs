@@ -5,6 +5,9 @@
 //   node scripts/release/release.mjs verify-artifacts <dir> [--version 0.1.2]
 //   node scripts/release/release.mjs verify-binary <path> [--version 0.1.2]
 //   node scripts/release/release.mjs verify-server <url> [--version 0.1.2]
+//   node scripts/release/release.mjs pretag --tag v0.1.2 [--evidence <dir>] [--create]
+//   node scripts/release/release.mjs check-performance --tag v0.1.2 --sha <commit> --evidence <dir>
+//                                    [--tag-date <iso>] [--artifacts <dir>]
 //
 // Every command exits non-zero with a "release gate:" message when a check fails, so the
 // workflow stops before anything is published. --version defaults to the workspace version.
@@ -274,8 +277,10 @@ function parseArgs(argv) {
   const positional = [];
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith('--')) flags[argv[i].slice(2)] = argv[++i];
-    else positional.push(argv[i]);
+    if (!argv[i].startsWith('--')) positional.push(argv[i]);
+    // A flag with no value (--create) is true.
+    else if (i + 1 >= argv.length || argv[i + 1].startsWith('--')) flags[argv[i].slice(2)] = true;
+    else flags[argv[i].slice(2)] = argv[++i];
   }
   return { positional, flags };
 }
@@ -312,8 +317,28 @@ export async function main(argv) {
       console.log(`${positional[0]}: version ${r.version}, embedded UI ok (${r.entry})`);
       return;
     }
+    case 'pretag': {
+      const perf = await import('./performance.mjs');
+      const r = perf.pretag({ tag: flags.tag, evidence: flags.evidence ? { dir: flags.evidence } : undefined, create: flags.create === true });
+      console.log(perf.tagMessage(r.version, r).trimEnd());
+      if (r.created) console.log(`
+created annotated tag ${flags.tag} on ${r.sha}; publish it with:
+  git push origin ${flags.tag}`);
+      else console.log(`
+${flags.tag} may be tagged on ${r.sha}; rerun with --create to create the tag`);
+      return;
+    }
+    case 'check-performance': {
+      const perf = await import('./performance.mjs');
+      if (!flags.sha || !flags.evidence) fail('check-performance needs --sha and --evidence');
+      const tagDate = 'tag-date' in flags ? (flags['tag-date'] === true ? '' : flags['tag-date']) : undefined;
+      const r = perf.checkPerformance({ tag: flags.tag, sha: flags.sha, evidence: { dir: flags.evidence }, tagDate });
+      console.log(perf.tagMessage(r.version, r).trimEnd());
+      if (flags.artifacts) perf.checkArtifactsMatchApproval(r.records, flags.artifacts).forEach((l) => console.log(l));
+      return;
+    }
     default:
-      fail(`unknown command "${command}"; use plan, verify-artifacts, verify-binary or verify-server`);
+      fail(`unknown command "${command}"; use plan, verify-artifacts, verify-binary, verify-server, pretag or check-performance`);
   }
 }
 
