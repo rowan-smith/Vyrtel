@@ -25,7 +25,7 @@ COPY tests ./tests
 COPY --from=web /src/web/dist ./web/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p server \
+    VYRTEL_REQUIRE_WEB_UI=1 cargo build --release --locked -p server \
     && cp target/release/vyrtel /vyrtel \
     && mkdir -p /data
 

@@ -94,7 +94,11 @@ cargo run --release -p server
 
 ### Docker
 
-Prebuilt multi-arch images (amd64, arm64) are published with every release:
+Prebuilt multi-arch images (amd64, arm64) are published with every release.
+`latest` is the newest stable release; prereleases are only tagged with their exact version
+(e.g. `0.1.2-rc.1`). Binaries and `SHA256SUMS` are on the
+[releases page](https://github.com/rowan-smith/Vyrtel/releases); see
+[docs/releasing.md](docs/releasing.md) for how releases are validated.
 
 ```bash
 docker pull ghcr.io/rowan-smith/vyrtel:latest

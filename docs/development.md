@@ -146,13 +146,22 @@ tag, writing a `versions/<tag>.json` snapshot) and commits the rollup to the
 
 ```bash
 cd web && npm ci && npm run build && cd ..
-cargo build --release --locked -p server     # target/release/vyrtel
+VYRTEL_REQUIRE_WEB_UI=1 cargo build --release --locked -p server     # target/release/vyrtel
+node scripts/release/release.mjs verify-binary target/release/vyrtel # version + embedded UI
 docker build -t vyrtel .
 ```
 
+Without `web/dist`, the server embeds a placeholder page telling you to build the UI.
+`VYRTEL_REQUIRE_WEB_UI=1` (set by the release workflow and the Dockerfile) turns that into a
+build error instead.
+
 Releases are produced by `.github/workflows/release.yml` when a `v*` tag is
 pushed: Linux x86_64/ARM64, macOS ARM64 and Windows x86_64 binaries with
-SHA-256 checksums, plus a multi-architecture image on GHCR.
+SHA-256 checksums, plus a multi-architecture image on GHCR. Nothing is published unless the
+tag matches the workspace version, the full CI suite passes and every artifact's version,
+embedded UI and checksum are verified; prereleases never become `latest`. See
+[releasing.md](releasing.md) for the gates, how to cut or rehearse a release, and what to do
+when one fails.
 
 ## Website and docs site
 

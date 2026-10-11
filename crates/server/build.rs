@@ -3,7 +3,9 @@
 //!
 //! If the UI has not been built (e.g. a backend-only `cargo test`), a tiny
 //! placeholder page is embedded instead so the server still compiles and
-//! tells the user how to build the UI.
+//! tells the user how to build the UI. Release builds set
+//! `VYRTEL_REQUIRE_WEB_UI=1`, which turns a missing UI into a build error
+//! (docs/releasing.md).
 
 use std::path::PathBuf;
 
@@ -12,11 +14,18 @@ fn main() {
     let dist = manifest.join("../../web/dist");
     println!("cargo:rerun-if-changed=../../web/dist");
     println!("cargo:rerun-if-env-changed=VYRTEL_WEB_DIST");
+    println!("cargo:rerun-if-env-changed=VYRTEL_REQUIRE_WEB_UI");
+    let require_ui = std::env::var("VYRTEL_REQUIRE_WEB_UI").is_ok_and(|v| !v.is_empty() && v != "0");
 
     let dir = if let Ok(custom) = std::env::var("VYRTEL_WEB_DIST") {
         PathBuf::from(custom)
     } else if dist.join("index.html").exists() {
         dist.canonicalize().unwrap()
+    } else if require_ui {
+        panic!(
+            "VYRTEL_REQUIRE_WEB_UI is set but {} has no index.html; build the UI first (cd web && npm ci && npm run build)",
+            dist.display()
+        );
     } else {
         let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("web-placeholder");
         std::fs::create_dir_all(&out).unwrap();

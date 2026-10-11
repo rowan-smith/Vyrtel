@@ -8,6 +8,7 @@ cargo test --workspace --all-features    # all Rust tests (~220, many property-b
 cd web && npm test                       # frontend unit tests
 cd web && npm run e2e                    # Playwright (needs a built server, see below)
 cargo bench -p storage -p query          # Criterion benchmarks
+node --test scripts/release/release.test.mjs   # release gate (see docs/releasing.md)
 ```
 
 ## Unit tests
@@ -314,6 +315,28 @@ cd web && npx playwright install chromium && npm run e2e
 ```
 
 Set `VYRTEL_BIN` to test a different binary (e.g. a release build).
+
+## Release gate tests
+
+`scripts/release/release.test.mjs` (`node --test`, CI job **Release gate tests**) covers the
+checks in [`scripts/release/release.mjs`](../scripts/release/release.mjs) that
+[`release.yml`](../.github/workflows/release.yml) runs before publishing (see
+[releasing.md](releasing.md)):
+
+| Acceptance criterion | Tests |
+|---|---|
+| A tag whose version differs from the workspace fails | stable and prerelease tags against temporary workspaces; stale `Cargo.toml`, `Cargo.lock` or `web/package.json`; malformed tags; the repository's own version is consistent |
+| Failed checks publish nothing | the workflow's job graph: `image` and `release` transitively need `preflight`, `ci` (the whole callable CI workflow), `binaries` and `verify`; only a tag push publishes (a manual run is a rehearsal); release builds set `VYRTEL_REQUIRE_WEB_UI` |
+| Embedded UI, version output and checksums are verified | artifact sets that are complete, missing a binary, tampered, missing `SHA256SUMS` or an entry, holding unexpected or empty files; the artifact list matches the build matrix; a fake binary (`testdata/fake-vyrtel.mjs`) that is correct, prints or serves the wrong version, serves the placeholder UI, misses its UI assets or exits on startup |
+| A prerelease does not replace the stable latest channel | stable plans are Latest and tag `X.Y.Z`, `X.Y`, `latest`; prereleases (`-rc.1`, `-beta`, `-alpha.3`) are not Latest and tag only `X.Y.Z-pre`; image names are lowercased |
+
+```bash
+node --test scripts/release/release.test.mjs
+VYRTEL_BIN=target/debug/vyrtel node --test scripts/release/release.test.mjs   # also checks a real binary
+```
+
+The CI **End-to-end** job also builds the server with `VYRTEL_REQUIRE_WEB_UI=1` and runs
+`verify-binary` against it, so the gate is exercised against a real binary on every pull request.
 
 ## Benchmarks
 
