@@ -20,7 +20,9 @@
 //!
 //! Write failures never produce an acknowledgement: a batch whose WAL write
 //! or required fsync failed is answered with [`StorageError::WriteFailed`]
-//! and cut from the WAL again. Each failure is recorded as a
+//! and cut from the WAL again, durably; if that cut cannot be fsynced the
+//! answer is [`StorageError::WriteUncertain`] and the cut is retried before
+//! anything else becomes durable. Each failure is recorded as a
 //! [`StorageFault`] until the same part of the write path succeeds again;
 //! while a WAL fault is present every acknowledgement waits for an fsync,
 //! in `normal` durability too. If sealing keeps failing and the writer has
@@ -486,12 +488,50 @@ struct Writer {
     /// A batch reached the WAL since the last WAL fault; if its fsync also
     /// succeeds, the fault is over.
     recovering: bool,
+    /// Last idle check of a failing WAL (see [`Writer::check_wal_recovered`]).
+    last_wal_check: Instant,
 }
+
+/// How often an idle writer checks whether a failing WAL works again.
+const WAL_RECHECK: Duration = Duration::from_secs(1);
 
 impl Writer {
     fn new(shared: Arc<Shared>, wal: WalWriter, next_event: u64, maint: Sender<MaintMsg>) -> Self {
         let committed_len = wal.len();
-        Self { shared, wal, next_event, maint, last_sync: Instant::now(), committed_len, recovering: false }
+        Self {
+            shared,
+            wal,
+            next_event,
+            maint,
+            last_sync: Instant::now(),
+            committed_len,
+            recovering: false,
+            last_wal_check: Instant::now(),
+        }
+    }
+
+    /// With a WAL fault and no requests arriving, nothing would ever clear
+    /// it, and readiness would stay degraded, so an orchestrator would keep
+    /// sending no traffic. While idle, retry any pending rollback with an
+    /// fsync of the WAL and write a probe file in the WAL directory (which
+    /// recovery ignores); if both work, the fault is over. A request that
+    /// still fails sets it again.
+    fn check_wal_recovered(&mut self) {
+        if !self.shared.has_fault(FaultArea::Wal) || self.last_wal_check.elapsed() < WAL_RECHECK {
+            return;
+        }
+        self.last_wal_check = Instant::now();
+        let probe = self.shared.dirs.wal.join(".write-probe");
+        let healthy = match self.wal.sync_now() {
+            Ok(()) => crate::store::write_probe(&probe, "wal.append", &self.shared.dirs.root).is_ok(),
+            Err(e) => {
+                self.wal_fault(FaultOp::WalSync, &e);
+                false
+            }
+        };
+        if healthy {
+            self.shared.clear_fault(FaultArea::Wal, None);
+        }
     }
 
     fn wal_fault(&mut self, op: FaultOp, e: &StorageError) -> StorageFault {
@@ -507,6 +547,7 @@ impl Writer {
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => break,
             };
+            let idle = first.is_none();
             let mut msgs = Vec::new();
             if let Some(m) = first {
                 msgs.push(m);
@@ -552,6 +593,9 @@ impl Writer {
             if self.should_rotate() {
                 self.rotate(None);
             }
+            if idle {
+                self.check_wal_recovered();
+            }
         }
     }
 
@@ -594,21 +638,35 @@ impl Writer {
         // After a WAL fault `normal` mode also syncs before acknowledging,
         // until a write gets through: the OS may have failed to keep data
         // it accepted, so "in the page cache" no longer means "survives".
-        if self.shared.durability == Durability::Strict || self.shared.has_fault(FaultArea::Wal) {
+        if self.shared.durability == Durability::Strict
+            || self.shared.has_fault(FaultArea::Wal)
+            || self.wal.rollback_pending()
+        {
             if let Err(e) = self.wal.sync() {
                 let fault = self.wal_fault(FaultOp::WalSync, &e);
                 // These batches are not acknowledged, so they must not
-                // reappear after a restart either.
-                if let Err(e) = self.wal.truncate_to(self.committed_len) {
-                    tracing::warn!(
-                        signal = self.shared.signal.as_str(),
-                        error = %e,
-                        "could not cut unacknowledged records from the WAL; retrying before the next write"
-                    );
-                }
+                // reappear after a restart, or a power loss, either. Only a
+                // durable cut lets us tell the client that nothing was stored.
+                let durable_cut = match self.wal.truncate_to(self.committed_len) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        tracing::warn!(
+                            signal = self.shared.signal.as_str(),
+                            error = %e,
+                            "could not durably cut unacknowledged records from the WAL; they may reappear after a \
+                             power loss. Retrying before anything else is made durable"
+                        );
+                        false
+                    }
+                };
                 for p in pending.drain(..) {
                     self.shared.queued.fetch_sub(p.reserved, Ordering::AcqRel);
-                    (p.ack)(Err(StorageError::WriteFailed(fault.clone())));
+                    let f = fault.clone();
+                    (p.ack)(Err(if durable_cut {
+                        StorageError::WriteFailed(f)
+                    } else {
+                        StorageError::WriteUncertain(f)
+                    }));
                 }
                 return;
             }

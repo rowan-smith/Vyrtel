@@ -121,7 +121,17 @@ impl From<storage::StorageError> for ApiError {
                     f.reason.describe()
                 ),
             )
-            .with_details(json!({ "reason": f.reason.as_str() })),
+                .with_details(json!({ "reason": f.reason.as_str(), "outcome": "notStored" })),
+            S::WriteUncertain(f) => ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_write_failed",
+                format!(
+                    "the request was not acknowledged: {}. It may still be stored after a power loss, so a retry \
+                     can store it twice",
+                    f.reason.describe()
+                ),
+            )
+                .with_details(json!({ "reason": f.reason.as_str(), "outcome": "unknown" })),
             S::Corrupt { .. } => {
                 tracing::error!(error = %e, "storage corruption detected during query");
                 ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", "stored data could not be read")

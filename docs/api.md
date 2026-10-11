@@ -13,20 +13,20 @@ Every error has the same shape:
 { "error": { "code": "invalid_query", "message": "Expected expression after 'and'", "position": 19 } }
 ```
 
-| Status | `code` | When |
-|-------:|--------|------|
-| 400 | `invalid_request`, `invalid_json`, `invalid_payload`, `invalid_event`, `invalid_encoding`, `invalid_query` | malformed input (`position` for queries, `index` for batch events); `invalid_encoding` for a gzip body that cannot be decoded |
-| 401 | `unauthorized` | missing/invalid API key or session |
-| 403 | `forbidden` | an ingest-only key used on a read/admin endpoint |
-| 404 | `not_found` | unknown resource or endpoint |
-| 413 | `payload_too_large` | ingest body over `ingest.max_request_size` after gzip decoding (`limitBytes` gives the limit), or a batch larger than the queue ([details](#request-size-and-encoding)) |
-| 415 | `unsupported_media_type` | content type or `Content-Encoding` not accepted |
-| 422 | `query_too_expensive` | the query would read more than `query.max_scan_bytes` |
-| 429 | `rate_limited` | every ingest slot busy (`ingest.max_concurrent`) or the ingest queue full — retry after `Retry-After` seconds ([details](#ingest-limits-and-retries)) |
-| 503 | `unavailable` | storage unavailable / too many concurrent queries |
-| 503 | `storage_write_failed` | storage could not write the request (`reason`: `noSpace`, `permissionDenied`, `readOnly`, `shortWrite`, `ioError` or `other`); nothing in it was stored ([details](#status-codes-and-retries)) |
-| 504 | `query_timeout` | the query exceeded `query.timeout` |
-| 500 | `internal`, `storage_error` | details are logged server-side, never returned |
+| Status | `code`                                                                                                     | When                                                                                                                                                                                                                                               |
+|-------:|------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    400 | `invalid_request`, `invalid_json`, `invalid_payload`, `invalid_event`, `invalid_encoding`, `invalid_query` | malformed input (`position` for queries, `index` for batch events); `invalid_encoding` for a gzip body that cannot be decoded                                                                                                                      |
+|    401 | `unauthorized`                                                                                             | missing/invalid API key or session                                                                                                                                                                                                                 |
+|    403 | `forbidden`                                                                                                | an ingest-only key used on a read/admin endpoint                                                                                                                                                                                                   |
+|    404 | `not_found`                                                                                                | unknown resource or endpoint                                                                                                                                                                                                                       |
+|    413 | `payload_too_large`                                                                                        | ingest body over `ingest.max_request_size` after gzip decoding (`limitBytes` gives the limit), or a batch larger than the queue ([details](#request-size-and-encoding))                                                                            |
+|    415 | `unsupported_media_type`                                                                                   | content type or `Content-Encoding` not accepted                                                                                                                                                                                                    |
+|    422 | `query_too_expensive`                                                                                      | the query would read more than `query.max_scan_bytes`                                                                                                                                                                                              |
+|    429 | `rate_limited`                                                                                             | every ingest slot busy (`ingest.max_concurrent`) or the ingest queue full — retry after `Retry-After` seconds ([details](#ingest-limits-and-retries))                                                                                              |
+|    503 | `unavailable`                                                                                              | storage unavailable / too many concurrent queries                                                                                                                                                                                                  |
+|    503 | `storage_write_failed`                                                                                     | storage could not write the request (`reason`: `noSpace`, `permissionDenied`, `readOnly`, `shortWrite`, `ioError` or `other`). `outcome` is `notStored`, or `unknown` if it may reappear after a power loss ([details](#status-codes-and-retries)) |
+|    504 | `query_timeout`                                                                                            | the query exceeded `query.timeout`                                                                                                                                                                                                                 |
+|    500 | `internal`, `storage_error`                                                                                | details are logged server-side, never returned                                                                                                                                                                                                     |
 
 ### Time inputs
 
@@ -237,17 +237,17 @@ done
 
 ### Status codes and retries
 
-| Status | `code` | Stage | Retry? |
-|-------:|--------|-------|--------|
-| 415 | `unsupported_media_type` | content type or `Content-Encoding`, checked before admission | no |
-| 429 | `rate_limited` | admission: all `max_concurrent` slots busy | yes, after `Retry-After` |
-| 413 | `payload_too_large` | body over `max_request_size`, decoded or on the wire | no — split the batch |
-| 400 | `invalid_encoding` | gzip body truncated, corrupt or followed by other data | no — resend a complete gzip body |
-| 400 | `invalid_request` / `invalid_payload` / `invalid_event` | body unreadable (client went away) or malformed | no — fix the payload |
-| 413 | `payload_too_large` | batch has more events than `queue_capacity` | no — split the batch |
-| 429 | `rate_limited` | submission: the signal's queue is full | yes, after `Retry-After` |
-| 503 | `unavailable` | no acknowledgement within `ack_timeout`, or storage stopping | yes, after `Retry-After`; the batch may already be stored |
-| 503 | `storage_write_failed` | the WAL write or its fsync failed, or sealing is failing (full disk, read-only or inaccessible data directory) | yes, with backoff; nothing in the request was stored. Fix storage ([what to do](configuration.md#storage-failures)) |
+| Status | `code`                                                  | Stage                                                                                                          | Retry?                                                                                                                                                                                                              |
+|-------:|---------------------------------------------------------|----------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    415 | `unsupported_media_type`                                | content type or `Content-Encoding`, checked before admission                                                   | no                                                                                                                                                                                                                  |
+|    429 | `rate_limited`                                          | admission: all `max_concurrent` slots busy                                                                     | yes, after `Retry-After`                                                                                                                                                                                            |
+|    413 | `payload_too_large`                                     | body over `max_request_size`, decoded or on the wire                                                           | no — split the batch                                                                                                                                                                                                |
+|    400 | `invalid_encoding`                                      | gzip body truncated, corrupt or followed by other data                                                         | no — resend a complete gzip body                                                                                                                                                                                    |
+|    400 | `invalid_request` / `invalid_payload` / `invalid_event` | body unreadable (client went away) or malformed                                                                | no — fix the payload                                                                                                                                                                                                |
+|    413 | `payload_too_large`                                     | batch has more events than `queue_capacity`                                                                    | no — split the batch                                                                                                                                                                                                |
+|    429 | `rate_limited`                                          | submission: the signal's queue is full                                                                         | yes, after `Retry-After`                                                                                                                                                                                            |
+|    503 | `unavailable`                                           | no acknowledgement within `ack_timeout`, or storage stopping                                                   | yes, after `Retry-After`; the batch may already be stored                                                                                                                                                           |
+|    503 | `storage_write_failed`                                  | the WAL write or its fsync failed, or sealing is failing (full disk, read-only or inaccessible data directory) | yes, with backoff. `outcome: "notStored"`: nothing was stored. `outcome: "unknown"`: it may reappear after a power loss, so a retry can duplicate it. Fix storage ([what to do](configuration.md#storage-failures)) |
 
 Batches are all-or-nothing, so retrying a request rejected with 429 cannot
 duplicate events. The OpenTelemetry SDKs and Collector already retry 429
@@ -460,9 +460,9 @@ GET /api/v1/system/config        effective configuration (secrets omitted)
 ```
 
 `/ready` is unauthenticated, so it says which signals are affected but
-never why. It is 503 when a 4 KiB write-and-fsync probe in the data
-directory's `tmp/` fails (`storageWritable: false`, every signal listed), or
-while a signal's WAL or sealing is failing:
+never why. It is 503 when a 4 KiB write-and-fsync probe in the data directory's `tmp/` fails (`storageWritable: false`,
+every signal listed), or while a signal's WAL or sealing is failing. The probe runs at most once per second; other
+requests reuse its result:
 
 ```json
 { "status": "degraded", "storageWritable": true, "signals": ["logs"] }

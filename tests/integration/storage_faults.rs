@@ -28,6 +28,13 @@ async fn assert_write_failed(r: reqwest::Response, reason: &str, host: &str) -> 
     body
 }
 
+/// A rejected append never reached the WAL whole: nothing was stored.
+async fn assert_not_stored(r: reqwest::Response, reason: &str, host: &str) -> Value {
+    let body = assert_write_failed(r, reason, host).await;
+    assert_eq!(body["error"]["outcome"], "notStored", "{body}");
+    body
+}
+
 #[tokio::test]
 async fn ingest_is_rejected_while_the_wal_cannot_write() {
     let s = TestServer::start().await;
@@ -36,12 +43,12 @@ async fn ingest_is_rejected_while_the_wal_cannot_write() {
 
     let guard = inject(&s.data_dir(), "wal.append", Injected::NoSpace);
     let r = s.client.post(s.u("/api/v1/events")).json(&json!({"message": "rejected"})).send().await.unwrap();
-    let body = assert_write_failed(r, "noSpace", &host).await;
+    let body = assert_not_stored(r, "noSpace", &host).await;
     assert!(body["error"]["message"].as_str().unwrap().contains("no space left"), "{body}");
-    assert_write_failed(s.ingest_ndjson(fixture("logs.ndjson")).await, "noSpace", &host).await;
-    assert_write_failed(s.otlp_json("/v1/logs", fixture("otlp-logs.json")).await, "noSpace", &host).await;
-    assert_write_failed(s.otlp_json("/v1/traces", fixture("otlp-traces.json")).await, "noSpace", &host).await;
-    assert_write_failed(s.otlp_json("/v1/metrics", fixture("otlp-metrics.json")).await, "noSpace", &host).await;
+    assert_not_stored(s.ingest_ndjson(fixture("logs.ndjson")).await, "noSpace", &host).await;
+    assert_not_stored(s.otlp_json("/v1/logs", fixture("otlp-logs.json")).await, "noSpace", &host).await;
+    assert_not_stored(s.otlp_json("/v1/traces", fixture("otlp-traces.json")).await, "noSpace", &host).await;
+    assert_not_stored(s.otlp_json("/v1/metrics", fixture("otlp-metrics.json")).await, "noSpace", &host).await;
     assert_eq!(s.messages("").await, ["before"], "nothing rejected was stored");
 
     // Readiness names the affected signals; the probe itself still writes.
@@ -121,12 +128,16 @@ async fn committed_data_is_queryable_after_a_failed_write_and_restart() {
     {
         let _short = inject(&s.data_dir(), "wal.append", Injected::ShortWrite);
         let r = s.client.post(s.u("/api/v1/events")).json(&json!({"message": "short write"})).send().await.unwrap();
-        assert_write_failed(r, "shortWrite", &host).await;
+        assert_not_stored(r, "shortWrite", &host).await;
     }
     {
         let _denied = inject(&s.data_dir(), "wal.sync", Injected::PermissionDenied);
         let r = s.client.post(s.u("/api/v1/events")).json(&json!({"message": "fsync denied"})).send().await.unwrap();
-        assert_write_failed(r, "permissionDenied", &host).await;
+        // The rollback's own fsync is denied too, so it cannot be confirmed
+        // durable: the client is told the outcome is unknown.
+        let body = assert_write_failed(r, "permissionDenied", &host).await;
+        assert_eq!(body["error"]["outcome"], "unknown", "{body}");
+        assert!(body["error"]["message"].as_str().unwrap().contains("may still be stored"), "{body}");
     }
 
     let s = s.restart().await;
@@ -135,5 +146,25 @@ async fn committed_data_is_queryable_after_a_failed_write_and_restart() {
     assert_eq!(recovery["quarantined"], json!([]), "{recovery}");
     assert_eq!(recovery["walBytesDiscarded"], 0, "{recovery}");
     assert_eq!(ready(&s).await.0, 200);
+    s.stop().await;
+}
+
+#[tokio::test]
+async fn readiness_recovers_without_new_traffic() {
+    let s = TestServer::start().await;
+    let host = s.data_dir().to_string_lossy().to_string();
+    {
+        let _full = inject(&s.data_dir(), "wal.append", Injected::NoSpace);
+        let r = s.client.post(s.u("/api/v1/events")).json(&json!({"message": "rejected"})).send().await.unwrap();
+        assert_not_stored(r, "noSpace", &host).await;
+        assert_eq!(ready(&s).await.0, 503);
+    }
+    // An orchestrator sends no traffic to an unready instance, so readiness
+    // must come back on its own once storage works.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while ready(&s).await.0 != 200 {
+        assert!(std::time::Instant::now() < deadline, "readiness never recovered");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     s.stop().await;
 }

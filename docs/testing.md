@@ -125,7 +125,13 @@ compile to nothing. The tests check that:
 * a failed WAL append (each fault, both durability modes) gets
   `WriteFailed`, is not visible, and leaves no torn record: after a restart
   exactly the acknowledged events are back and nothing is quarantined;
-* a failed `strict` fsync rejects the batch and cuts it from the WAL;
+* a failed `strict` fsync rejects the batch, cuts it from the WAL and fsyncs that cut before replying (`notStored`). The
+  order is checked with
+  `storage::fault::inject::record(dir)`, which lists the fault points reached, because a process restart cannot show
+  lost filesystem metadata the way a power loss would;
+* if the cut's fsync fails too, the reply is `WriteUncertain` (`unknown`), the idle writer fsyncs the cut on its own
+  once storage works (no request needed), and any later acknowledgement waits for that fsync;
+* a WAL fault clears without new requests once storage works, but not while writes in the WAL directory still fail;
 * after a failed background fsync, `normal` mode waits for an fsync before
   acknowledging, and rejects requests while it keeps failing;
 * a failing seal (segment write or fsync) makes new batches fail fast once
@@ -198,9 +204,10 @@ talks HTTP to it:
   with `stall_writer` to hold a request there);
 * storage write failures (`storage_faults.rs`, needs `--features
   fault-injection`): native, NDJSON and OTLP logs, traces and metrics get
-  `503 storage_write_failed` with a reason and store nothing while the WAL
-  cannot write; `/ready` is 503, names the signals and recovers without a
-  restart; a failing write probe (full or read-only) makes `/ready` report
+  `503 storage_write_failed` with a reason and store nothing while the WAL cannot write; `/ready` is 503, names the
+  signals and recovers without a restart, and also with no new traffic at all;
+  `outcome` is `notStored`, or `unknown` when the rollback's fsync is denied too; a failing write probe (full or
+  read-only) makes `/ready` report
   `storageWritable: false`; `/api/v1/system/storage` shows the fault without
   the host path; after a short write and a denied fsync, a restart brings
   back exactly the pre-fault dataset (`logs.ndjson` plus one event) with

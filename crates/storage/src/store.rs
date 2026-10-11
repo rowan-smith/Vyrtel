@@ -149,7 +149,8 @@ impl Storage {
         {
             return result.clone().map_or(Ok(()), Err);
         }
-        let result = write_probe(&self.config.data_dir).err();
+        let dir = &self.config.data_dir;
+        let result = write_probe(&dir.join("tmp").join(".write-probe"), "probe", dir).err();
         let was_failing = cache.as_ref().is_some_and(|(_, r)| r.is_some());
         match &result {
             Some(f) if !was_failing => tracing::error!(
@@ -221,16 +222,18 @@ fn log_recovery(signal: Signal, r: &RecoveryReport) {
     }
 }
 
-fn write_probe(data_dir: &Path) -> std::result::Result<(), StorageFault> {
-    let path = data_dir.join("tmp").join(".write-probe");
+/// Create, write 4 KiB to, fsync and delete the file at `path`; `point` is
+/// its fault-injection point. Each caller uses its own file, so concurrent
+/// probes do not trip over each other.
+pub(crate) fn write_probe(path: &Path, point: &str, data_dir: &Path) -> std::result::Result<(), StorageFault> {
     let written = (|| {
-        fault::check("probe", &path).ctx(&path)?;
-        let mut f = File::create(&path).ctx(&path)?;
-        f.write_all(&[0u8; 4096]).ctx(&path)?;
-        f.sync_all().ctx(&path)
+        fault::check(point, path).ctx(path)?;
+        let mut f = File::create(path).ctx(path)?;
+        f.write_all(&[0u8; 4096]).ctx(path)?;
+        f.sync_all().ctx(path)
     })();
-    let _ = std::fs::remove_file(&path);
-    written.map_err(|e| StorageFault::from_error(FaultOp::Probe, &e, &path, data_dir))
+    let _ = std::fs::remove_file(path);
+    written.map_err(|e| StorageFault::from_error(FaultOp::Probe, &e, path, data_dir))
 }
 
 /// Take an exclusive lock on the data directory so two processes never

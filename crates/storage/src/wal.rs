@@ -94,6 +94,10 @@ pub struct WalWriter {
     /// Set if a write failed half-way; further appends are refused until
     /// the file has been truncated back to `len`.
     poisoned: bool,
+    /// Complete records were cut off by [`WalWriter::truncate_to`] and the
+    /// new length is not yet known to be on disk: after a power loss they
+    /// could come back. The next [`WalWriter::sync`] persists it.
+    rollback_unsynced: bool,
 }
 
 impl WalWriter {
@@ -129,7 +133,15 @@ impl WalWriter {
             file.sync_all().ctx(path)?;
         }
         file.seek(SeekFrom::Start(valid_len)).ctx(path)?;
-        Ok(Self { file, path: path.to_path_buf(), id, len: valid_len, unsynced: 0, poisoned: false })
+        Ok(Self {
+            file,
+            path: path.to_path_buf(),
+            id,
+            len: valid_len,
+            unsynced: 0,
+            poisoned: false,
+            rollback_unsynced: false,
+        })
     }
 
     pub fn id(&self) -> u64 {
@@ -186,15 +198,25 @@ impl WalWriter {
         Ok(())
     }
 
-    /// Cut the file back to `len`, dropping records appended after it
-    /// (records whose fsync failed, so they were never acknowledged). If
-    /// the truncation itself fails, the next append retries it.
+    /// Cut the file back to `len`, dropping complete records appended
+    /// after it (records whose fsync failed, so they were never
+    /// acknowledged), and fsync the new length. `Ok` means the rollback is
+    /// durable: the records cannot come back, even after a power loss. On
+    /// `Err` the rollback is still pending: the next append or
+    /// [`WalWriter::sync`] retries it, and nothing written after it can
+    /// become durable before it does.
     pub fn truncate_to(&mut self, len: u64) -> Result<()> {
         debug_assert!((HEADER_LEN..=self.len).contains(&len));
         self.unsynced = self.unsynced.saturating_sub(self.len - len);
         self.len = len;
         self.poisoned = true;
-        self.recover_from_partial_write()
+        self.rollback_unsynced = true;
+        self.sync()
+    }
+
+    /// A rollback by [`WalWriter::truncate_to`] is not yet durable.
+    pub fn rollback_pending(&self) -> bool {
+        self.rollback_unsynced
     }
 
     /// Finish a pending truncation (see [`WalWriter::truncate_to`]) so a
@@ -204,14 +226,32 @@ impl WalWriter {
     }
 
     /// fsync file data. In `strict` durability this runs before every
-    /// acknowledgement; in `normal` mode it runs on a timer.
+    /// acknowledgement; in `normal` mode it runs on a timer. A pending
+    /// truncation is finished first, so cut-off records are never made
+    /// durable, and is persisted with a full `sync_all` (the file size is
+    /// metadata).
     pub fn sync(&mut self) -> Result<()> {
-        if self.unsynced > 0 {
+        if self.poisoned {
+            self.recover_from_partial_write()?;
+        }
+        if self.unsynced > 0 || self.rollback_unsynced {
             fault::check("wal.sync", &self.path).ctx(&self.path)?;
-            self.file.sync_data().ctx(&self.path)?;
+            if self.rollback_unsynced {
+                self.file.sync_all().ctx(&self.path)?;
+            } else {
+                self.file.sync_data().ctx(&self.path)?;
+            }
             self.unsynced = 0;
+            self.rollback_unsynced = false;
         }
         Ok(())
+    }
+
+    /// fsync unconditionally, even with nothing new written. Used to check
+    /// whether a failing WAL works again while no requests arrive.
+    pub fn sync_now(&mut self) -> Result<()> {
+        self.rollback_unsynced = true;
+        self.sync()
     }
 }
 
@@ -467,6 +507,8 @@ mod tests {
         w.truncate_to(acked).unwrap();
         assert_eq!(w.len(), acked);
         assert_eq!(w.unsynced_bytes(), 0);
+        assert!(!w.rollback_pending(), "truncate_to syncs the new length");
+        assert_eq!(std::fs::metadata(w.path()).unwrap().len(), acked);
         w.append(b"next").unwrap();
         let path = w.path().to_path_buf();
         drop(w);

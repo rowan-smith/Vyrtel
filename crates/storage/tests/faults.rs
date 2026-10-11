@@ -5,12 +5,16 @@
 //! checks the acknowledgement contract (a failed write is never reported
 //! as stored), the fault diagnostics, and that a restart afterwards brings
 //! back exactly the acknowledged data.
+//!
+//! A process restart does not lose unsynced filesystem metadata the way a
+//! power loss can, so the rollback tests also check *that* the WAL was
+//! fsynced after a rollback, using a recorder of the fault points reached.
 
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use storage::fault::inject::{Injected, inject};
+use storage::fault::inject::{Injected, inject, inject_times, record};
 use storage::*;
 use telemetry::*;
 
@@ -65,6 +69,24 @@ fn write_failed(r: Result<Committed>) -> StorageFault {
         Err(StorageError::WriteFailed(f)) => f,
         other => panic!("expected WriteFailed, got {other:?}"),
     }
+}
+
+fn write_uncertain(r: Result<Committed>) -> StorageFault {
+    match r {
+        Err(StorageError::WriteUncertain(f)) => f,
+        other => panic!("expected WriteUncertain, got {other:?}"),
+    }
+}
+
+fn only_wal_len(dir: &Path) -> u64 {
+    let wals: Vec<_> = std::fs::read_dir(dir.join("wal").join("logs"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "wal"))
+        .collect();
+    assert_eq!(wals.len(), 1, "{wals:?}");
+    std::fs::metadata(&wals[0]).unwrap().len()
 }
 
 fn messages(s: &Storage) -> Vec<String> {
@@ -141,25 +163,98 @@ fn failed_wal_appends_are_never_acknowledged() {
 }
 
 #[test]
-fn failed_strict_fsync_rejects_and_removes_the_batch() {
+fn failed_strict_fsync_is_rolled_back_durably_before_the_error() {
     for fault in [Injected::NoSpace, Injected::PermissionDenied] {
         let d = tempfile::tempdir().unwrap();
         let s = Storage::open(config(d.path(), Durability::Strict), None).unwrap();
         submit_ok(&s, "before");
+        let acked_len = only_wal_len(d.path());
 
-        let guard = inject(d.path(), "wal.sync", fault);
+        // The commit fsync fails once; the rollback's own fsync works.
+        let _fault = inject_times(d.path(), "wal.sync", fault, 1);
+        let rec = record(d.path());
         let f = write_failed(try_submit(&s, "not synced"));
         assert_eq!((f.op, f.reason), (FaultOp::WalSync, expected_reason(fault)));
+        // Append, failed fsync, then the fsync that makes the cut durable,
+        // all before the client hears "not stored".
+        assert_eq!(rec.points(), ["wal.append", "wal.sync", "wal.sync"]);
+        assert_eq!(only_wal_len(d.path()), acked_len, "records cut from the WAL");
         assert_eq!(messages(&s), ["before"]);
-        drop(guard);
 
         submit_ok(&s, "after");
         assert!(faults(&s).is_empty());
         drop(s);
-        // The batch whose fsync failed was cut from the WAL, so a client
-        // that retried it does not end up with two copies.
+        // A client that retried the rejected batch does not get two copies.
         restart_and_check(d.path(), Durability::Strict, &["before", "after"]);
     }
+}
+
+#[test]
+fn rollback_that_cannot_be_synced_reports_unknown_and_is_synced_later() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Storage::open(config(d.path(), Durability::Strict), None).unwrap();
+    submit_ok(&s, "before");
+    let acked_len = only_wal_len(d.path());
+
+    let guard = inject(d.path(), "wal.sync", Injected::NoSpace);
+    let rec = record(d.path());
+    // The commit fsync and the rollback's fsync both fail: the cut is made
+    // but may not survive a power loss, so the outcome is unknown.
+    let f = write_uncertain(try_submit(&s, "outcome unknown"));
+    assert_eq!((f.op, f.reason), (FaultOp::WalSync, FaultReason::NoSpace));
+    assert_eq!(rec.points(), ["wal.append", "wal.sync", "wal.sync"]);
+    assert_eq!(only_wal_len(d.path()), acked_len);
+    assert_eq!(messages(&s), ["before"]);
+    drop(rec);
+
+    // Storage works again. Without any further request, the idle writer
+    // fsyncs the WAL, which persists the pending cut, and the fault clears.
+    let rec = record(d.path());
+    drop(guard);
+    wait_for("idle recovery", || faults(&s).is_empty());
+    // The first thing reached is the fsync; no record was written (the WAL
+    // length is unchanged; the idle probe file lives beside the WAL).
+    let points = rec.points();
+    assert_eq!(points.first().map(String::as_str), Some("wal.sync"), "{points:?}");
+    assert_eq!(only_wal_len(d.path()), acked_len);
+    drop(s);
+    restart_and_check(d.path(), Durability::Strict, &["before"]);
+}
+
+#[test]
+fn rollback_is_made_durable_before_any_later_acknowledgement() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Storage::open(config(d.path(), Durability::Strict), None).unwrap();
+    submit_ok(&s, "before");
+
+    // Commit fsync and rollback fsync fail, then storage recovers before the
+    // idle check runs. The next acknowledgement must include the fsync that
+    // persists the cut, so the cut records can never outlive a later ack.
+    let fault = inject_times(d.path(), "wal.sync", Injected::NoSpace, 2);
+    write_uncertain(try_submit(&s, "outcome unknown"));
+    drop(fault);
+    let rec = record(d.path());
+    submit_ok(&s, "after");
+    let points = rec.points();
+    let append = points.iter().position(|p| p == "wal.append").expect("append recorded");
+    assert!(points[append..].iter().any(|p| p == "wal.sync"), "ack waited for an fsync: {points:?}");
+    drop(s);
+    restart_and_check(d.path(), Durability::Strict, &["before", "after"]);
+}
+
+#[test]
+fn wal_fault_clears_without_new_requests_once_storage_works() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Storage::open(config(d.path(), Durability::Normal), None).unwrap();
+    let guard = inject(d.path(), "wal.append", Injected::NoSpace);
+    write_failed(try_submit(&s, "rejected"));
+    // Still failing: the idle check writes into the WAL directory too.
+    std::thread::sleep(Duration::from_millis(1600));
+    assert!(s.stats().logs.ingest_fault().is_some(), "fault stays while writes fail");
+    drop(guard);
+    // No request arrives, but readiness must not stay degraded forever.
+    wait_for("idle recovery", || faults(&s).is_empty());
+    assert!(!d.path().join("wal").join("logs").join(".write-probe").exists());
 }
 
 #[test]
@@ -174,8 +269,9 @@ fn normal_mode_waits_for_fsync_after_a_failed_background_sync() {
     submit_ok(&s, "acknowledged before the fault");
     wait_for("background fsync fault", || faults(&s).iter().any(|f| f.op == FaultOp::WalSync));
 
-    // From now on acknowledgements wait for an fsync, which fails.
-    let f = write_failed(try_submit(&s, "rejected"));
+    // From now on acknowledgements wait for an fsync, which fails (and so
+    // does the fsync of the rollback, hence "unknown").
+    let f = write_uncertain(try_submit(&s, "rejected"));
     assert_eq!(f.op, FaultOp::WalSync);
     drop(guard);
 

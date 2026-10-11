@@ -157,7 +157,7 @@ impl StorageFault {
     pub fn from_error(op: FaultOp, e: &StorageError, fallback: &Path, data_dir: &Path) -> Self {
         let (reason, path, message) = match e {
             StorageError::Io { path, source } => (FaultReason::from_io(source), path.as_path(), source.to_string()),
-            StorageError::WriteFailed(f) => return Self { op, ..f.clone() },
+            StorageError::WriteFailed(f) | StorageError::WriteUncertain(f) => return Self { op, ..f.clone() },
             StorageError::Compression(source) => (FaultReason::from_io(source), fallback, source.to_string()),
             StorageError::Corrupt { source, .. } => (FaultReason::Other, fallback, format!("corrupt data: {source}")),
             other => (FaultReason::Other, fallback, other.to_string()),
@@ -190,6 +190,8 @@ fn relative(path: &Path, data_dir: &Path) -> String {
 #[inline(always)]
 pub(crate) fn check(point: &str, path: &Path) -> io::Result<()> {
     #[cfg(feature = "fault-injection")]
+    inject::note(point, path);
+    #[cfg(feature = "fault-injection")]
     if let Some(f) = inject::take(point, path) {
         return Err(f.error());
     }
@@ -201,6 +203,8 @@ pub(crate) fn check(point: &str, path: &Path) -> io::Result<()> {
 /// write before failing (a short write writes half) and the error.
 #[inline(always)]
 pub(crate) fn check_write(point: &str, path: &Path, len: usize) -> Option<(usize, io::Error)> {
+    #[cfg(feature = "fault-injection")]
+    inject::note(point, path);
     #[cfg(feature = "fault-injection")]
     if let Some(f) = inject::take(point, path) {
         let written = if f == inject::Injected::ShortWrite { len / 2 } else { 0 };
@@ -290,6 +294,50 @@ pub mod inject {
             remaining,
         });
         FaultGuard(id)
+    }
+
+    struct Recording {
+        id: u64,
+        scope: PathBuf,
+        points: Vec<String>,
+    }
+
+    static RECORDINGS: Mutex<Vec<Recording>> = Mutex::new(Vec::new());
+
+    /// Records, in order, every fault point reached below a directory (an
+    /// attempt is recorded whether or not it then fails).
+    #[must_use = "recording stops when the recorder is dropped"]
+    pub struct Recorder(u64);
+
+    impl Recorder {
+        /// Points reached since the recorder was created.
+        pub fn points(&self) -> Vec<String> {
+            let recs = RECORDINGS.lock().unwrap_or_else(|e| e.into_inner());
+            recs.iter().find(|r| r.id == self.0).map(|r| r.points.clone()).unwrap_or_default()
+        }
+    }
+
+    impl Drop for Recorder {
+        fn drop(&mut self) {
+            RECORDINGS.lock().unwrap_or_else(|e| e.into_inner()).retain(|r| r.id != self.0);
+        }
+    }
+
+    pub fn record(scope: &Path) -> Recorder {
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        RECORDINGS.lock().unwrap_or_else(|e| e.into_inner()).push(Recording {
+            id,
+            scope: scope.to_path_buf(),
+            points: Vec::new(),
+        });
+        Recorder(id)
+    }
+
+    pub(crate) fn note(point: &str, path: &Path) {
+        let mut recs = RECORDINGS.lock().unwrap_or_else(|e| e.into_inner());
+        for r in recs.iter_mut().filter(|r| path.starts_with(&r.scope)) {
+            r.points.push(point.to_string());
+        }
     }
 
     pub(crate) fn take(point: &str, path: &Path) -> Option<Injected> {

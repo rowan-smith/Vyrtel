@@ -239,12 +239,18 @@ Details are in [Storage write failures](storage-format.md#storage-write-failures
 **What clients see.** Ingest requests get `503` with `Retry-After: 1`:
 
 ```json
-{"error": {"code": "storage_write_failed", "reason": "noSpace",
+{
+  "error": {
+    "code": "storage_write_failed",
+    "reason": "noSpace",
+    "outcome": "notStored",
   "message": "the request was not stored: no space left on the storage device. Nothing in it was acknowledged; retry once storage is writable"}}
 ```
 
-Nothing in a request that got 503 is stored, so retrying it is safe.
-Requests that got a 2xx before the failure stay stored.
+With `"outcome": "notStored"` nothing in the request is stored, so retrying it is safe. `"outcome": "unknown"` is rare:
+the fsync failed, then so did the fsync that would have made removing the request durable. The request is not
+acknowledged and not visible, but after a power loss it may come back, and a retry can store it twice. Requests that got
+a 2xx before the failure stay stored.
 
 **How to notice.**
 
@@ -263,10 +269,9 @@ Requests that got a 2xx before the failure stay stored.
   path recovered` line when it clears.
 
 **What to do.** Free space (shorten `[retention]`, remove files that are
-not Vyrtel's, grow the volume), or fix the mount and permissions so the
-user Vyrtel runs as can write the whole data directory. Vyrtel retries by
-itself: the next successful write clears the fault and readiness returns,
-usually within a few seconds. A restart is not needed but is safe, and
+not Vyrtel's, grow the volume), or fix the mount and permissions so the user Vyrtel runs as can write the whole data
+directory. Vyrtel retries by itself: within about a second of storage working again the fault clears and readiness
+returns, even if no requests arrive. A restart is not needed but is safe, and
 recovery brings back every acknowledged event. Do not delete files under
 `wal/` or `segments/` to make room; they hold acknowledged telemetry. If
 the disk fills up during a backup or restore, start that backup or restore
