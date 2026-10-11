@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use server::App;
-use server::app::IncompleteShutdown;
+use server::app::{IncompleteShutdown, StartOptions};
 use server::config::{ByteSize, Config, LogFormat, format_duration};
 use tokio::sync::watch;
 
@@ -35,6 +35,12 @@ struct Cli {
     /// Log output format.
     #[arg(long, global = true, value_parser = ["text", "json"])]
     log_format: Option<String>,
+    /// Start even if the data directory is missing files recorded at its last
+    /// clean shutdown, or its metadata database is missing or empty, and
+    /// continue without them. For one start after deciding a partial restore
+    /// is acceptable; see docs/configuration.md#backup-and-restore.
+    #[arg(long, global = true)]
+    accept_incomplete_restore: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -200,6 +206,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let options = StartOptions { accept_incomplete_restore: cli.accept_incomplete_restore };
     match cli.command {
         Some(Command::Healthcheck) => return healthcheck(&config),
         Some(Command::Config) => {
@@ -221,7 +228,7 @@ fn main() -> ExitCode {
         let (count, stops) = watch::channel(0u32);
         tokio::spawn(signals.count(count, config.server.shutdown_timeout));
         let bind = config.server.bind.clone();
-        let app = App::build(config)?;
+        let app = App::build_with(config, options)?;
         let listener =
             tokio::net::TcpListener::bind(&bind).await.with_context(|| format!("cannot listen on {bind}"))?;
         println!("{}", app.banner(listener.local_addr()?));

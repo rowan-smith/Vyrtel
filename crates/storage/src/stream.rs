@@ -29,6 +29,7 @@
 //! to wait for it, new batches fail fast with the seal's fault instead of
 //! queueing until they time out.
 
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
@@ -540,6 +541,9 @@ struct Writer {
     recovering: bool,
     /// Last idle check of a failing WAL (see [`Writer::check_wal_recovered`]).
     last_wal_check: Instant,
+    /// Messages other than appends taken off the queue while a failing seal
+    /// blocked rotation (see [`Writer::fail_queued`]); handled first next.
+    held: VecDeque<WriterMsg>,
 }
 
 /// How often an idle writer checks whether a failing WAL works again.
@@ -557,6 +561,7 @@ impl Writer {
             committed_len,
             recovering: false,
             last_wal_check: Instant::now(),
+            held: VecDeque::new(),
         }
     }
 
@@ -592,10 +597,13 @@ impl Writer {
     fn run(mut self, rx: Receiver<WriterMsg>) {
         let tick = self.shared.fsync_interval.min(Duration::from_millis(500));
         loop {
-            let first = match rx.recv_timeout(tick) {
-                Ok(m) => Some(m),
-                Err(RecvTimeoutError::Timeout) => None,
-                Err(RecvTimeoutError::Disconnected) => break,
+            let first = match self.held.pop_front() {
+                Some(m) => Some(m),
+                None => match rx.recv_timeout(tick) {
+                    Ok(m) => Some(m),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                },
             };
             let idle = first.is_none();
             let mut msgs = Vec::new();
@@ -604,7 +612,7 @@ impl Writer {
                 // Group commit: drain whatever else is already queued so
                 // one fsync covers many requests.
                 while msgs.len() < 1024 {
-                    match rx.try_recv() {
+                    match self.held.pop_front().map_or_else(|| rx.try_recv(), Ok) {
                         Ok(m) => msgs.push(m),
                         Err(_) => break,
                     }
@@ -617,7 +625,7 @@ impl Writer {
                     WriterMsg::Append { events, reserved, ack } => self.append(events, reserved, ack, &mut pending),
                     WriterMsg::Rotate(done) => {
                         self.commit(&mut pending);
-                        self.rotate(Some(done));
+                        self.rotate(Some(done), &rx);
                     }
                     WriterMsg::Shutdown(done) => {
                         self.commit(&mut pending);
@@ -643,7 +651,7 @@ impl Writer {
             }
 
             if self.should_rotate() {
-                self.rotate(None);
+                self.rotate(None, &rx);
             }
             if idle {
                 self.check_wal_recovered();
@@ -751,6 +759,24 @@ impl Writer {
         crash::point("wal.after_ack");
     }
 
+    /// While a failing seal blocks rotation, fail the batches already
+    /// queued with its fault, as [`Stream::submit`] does for new ones. A
+    /// batch that was queued before rotation was marked stalled would
+    /// otherwise wait for its acknowledgement timeout, which never ends
+    /// sooner while the seal keeps failing. Other messages are kept.
+    fn fail_queued(&mut self, rx: &Receiver<WriterMsg>) {
+        let Some(fault) = self.shared.fault(FaultArea::Segment) else { return };
+        while let Ok(m) = rx.try_recv() {
+            match m {
+                WriterMsg::Append { reserved, ack, .. } => {
+                    self.shared.queued.fetch_sub(reserved, Ordering::AcqRel);
+                    ack(Err(StorageError::WriteFailed(fault.clone())));
+                }
+                other => self.held.push_back(other),
+            }
+        }
+    }
+
     fn should_rotate(&self) -> bool {
         let st = self.shared.state.read().unwrap();
         if st.active.is_empty() {
@@ -764,19 +790,20 @@ impl Writer {
 
     /// Freeze the active buffer, start a new WAL and ask the maintenance
     /// thread to seal the frozen one. Marks rotation stalled if it fails.
-    fn rotate(&mut self, done: Option<Done>) {
-        let ok = self.try_rotate(done);
+    fn rotate(&mut self, done: Option<Done>, rx: &Receiver<WriterMsg>) {
+        let ok = self.try_rotate(done, rx);
         // A failed on-demand rotation of a small buffer stalls nothing.
         let stalled = !ok && self.should_rotate();
         self.shared.rotation_stalled.store(stalled, Ordering::Release);
     }
 
-    fn try_rotate(&mut self, done: Option<Done>) -> bool {
+    fn try_rotate(&mut self, done: Option<Done>, rx: &Receiver<WriterMsg>) -> bool {
         // Only one frozen buffer may exist: wait for the previous seal.
         // While we wait, the queue fills and producers see backpressure,
         // or fail fast if the seal itself is failing.
         {
-            let (lock, cv) = &self.shared.sealed;
+            let shared = self.shared.clone();
+            let (lock, cv) = &shared.sealed;
             let mut guard = lock.lock().unwrap();
             loop {
                 if self.shared.state.read().unwrap().frozen.is_none() {
@@ -789,6 +816,7 @@ impl Writer {
                     }
                     return true;
                 }
+                self.fail_queued(rx);
                 guard = cv.wait_timeout(guard, Duration::from_millis(200)).unwrap().0;
             }
         }

@@ -26,6 +26,7 @@ use tokio::sync::{Semaphore, broadcast, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::config::{Config, Durability, format_duration, human_bytes};
+use crate::datadir::{Layout, Manifest};
 use crate::state::{AppState, LiveBatch, SharedState};
 
 /// Batches retained for live-tail subscribers that fall behind.
@@ -38,6 +39,16 @@ pub struct App {
     pub generated_password: Option<String>,
     shutdown: Arc<watch::Sender<bool>>,
     tasks: Vec<JoinHandle<()>>,
+}
+
+/// Options for one start, given on the command line rather than in the
+/// configuration, so they do not stay in effect by accident.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StartOptions {
+    /// Start even though the data directory is missing parts recorded at
+    /// its last clean shutdown, or its metadata database is empty
+    /// (`--accept-incomplete-restore`). Format problems are never accepted.
+    pub accept_incomplete_restore: bool,
 }
 
 fn storage_config(config: &Config) -> StorageConfig {
@@ -74,15 +85,39 @@ impl App {
     /// Open everything and start background tasks. Must run inside a Tokio
     /// runtime.
     pub fn build(config: Config) -> anyhow::Result<App> {
+        Self::build_with(config, StartOptions::default())
+    }
+
+    /// [`App::build`] with one-off start options.
+    pub fn build_with(config: Config, options: StartOptions) -> anyhow::Result<App> {
         config.validate().map_err(anyhow::Error::msg)?;
         let budgets = config.budgets();
-        std::fs::create_dir_all(&config.storage.path)
-            .with_context(|| format!("creating data directory {}", config.storage.path.display()))?;
+        let dir = &config.storage.path;
+        let accept = options.accept_incomplete_restore;
+        // Read-only: a directory that fails is left exactly as it was, not
+        // even locked.
+        crate::datadir::check(dir, accept)?;
+        storage::fsutil::create_dir_all_durable(dir)
+            .with_context(|| format!("creating data directory {}", dir.display()))?;
+        // Nothing below changes the directory unless this process holds the
+        // lock, which storage then keeps. Check again under it: another
+        // process may have started, stopped or changed it in the meantime.
+        let lock = storage::DataDirLock::acquire(dir).context("locking the data directory")?;
+        let checked = crate::datadir::check(dir, accept)?;
+        for problem in &checked.accepted {
+            tracing::warn!(problem = %problem, "starting without part of the data directory (--accept-incomplete-restore)");
+        }
+        let layout = checked.layout.clone();
+        if matches!(&layout, Layout::Unversioned | Layout::Versioned(Manifest { inventory: None, .. })) {
+            tracing::info!(
+                "data directory has no inventory from a clean shutdown; missing WAL or segment files cannot be detected"
+            );
+        }
+        crate::datadir::begin(dir, &checked).context("updating the data directory manifest")?;
+        crate::datadir::prepare(dir).context("creating data directory")?;
 
-        let metadata = Arc::new(
-            Metadata::open(&config.storage.path.join("metadata").join("metadata.db"))
-                .context("opening metadata store")?,
-        );
+        let metadata =
+            Arc::new(Metadata::open(&dir.join(crate::datadir::METADATA_DB)).context("opening metadata store")?);
 
         let (live_tx, _) = broadcast::channel::<LiveBatch>(LIVE_CHANNEL_CAPACITY);
         let hook_tx = live_tx.clone();
@@ -92,7 +127,9 @@ impl App {
                 let _ = hook_tx.send(LiveBatch { signal, batch: batch.clone() });
             }
         });
-        let storage = Arc::new(Storage::open(storage_config(&config), Some(hook)).context("opening storage")?);
+        let storage =
+            Arc::new(Storage::open_locked(storage_config(&config), Some(hook), lock).context("opening storage")?);
+        crate::datadir::record(dir, &layout).context("writing the data directory manifest")?;
         let engine = Arc::new(Engine::new(
             storage.clone(),
             QueryLimits {
@@ -318,6 +355,18 @@ impl App {
         if let Err(cause) = within(maintenance, deadline, timeout, &mut force).await {
             return fail(cause, ShutdownPhase::Maintenance);
         }
+
+        // Nothing writes telemetry files any more: record them, so a backup
+        // of the stopped directory can be checked for completeness. Without
+        // that, a backup loses the check, so the shutdown is not clean.
+        let dir = state.config.storage.path.clone();
+        let inventory = tokio::task::spawn_blocking(move || crate::datadir::record_stopped(&dir));
+        match within(inventory, deadline, timeout, &mut force).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(e))) => return fail(StopCause::InventoryFailed(e.to_string()), ShutdownPhase::Inventory),
+            Ok(Err(panic)) => std::panic::resume_unwind(panic.into_panic()),
+            Err(cause) => return fail(cause, ShutdownPhase::Inventory),
+        }
         Ok(())
     }
 }
@@ -348,6 +397,9 @@ pub enum StopCause {
     /// acknowledged since their last fsync may not be on disk. Each fault
     /// is also recorded on its stream.
     WalFlushFailed(Vec<(Signal, StorageFault)>),
+    /// Everything was written and flushed, but the inventory of the stopped
+    /// data directory could not be recorded (the I/O error).
+    InventoryFailed(String),
 }
 
 /// What shutdown was doing when it stopped, in order.
@@ -363,6 +415,9 @@ pub enum ShutdownPhase {
     /// A seal or compaction in progress. Every accepted request is already
     /// written and flushed; the next start redoes the seal from the WAL.
     Maintenance,
+    /// Recording the WAL and segment files of the stopped directory in its
+    /// manifest. Everything is already written, flushed and sealed.
+    Inventory,
 }
 
 /// Accepted work still in progress.
@@ -446,6 +501,15 @@ impl std::fmt::Display for IncompleteShutdown {
                     each.join("; ")
                 );
             }
+            StopCause::InventoryFailed(e) => {
+                return write!(
+                    f,
+                    "every accepted request was written and the WAL flushed, but the data directory inventory could \
+                     not be recorded ({e}). The directory starts normally, but a backup of it cannot be checked for \
+                     missing or truncated files when it is restored; fix the storage problem, then start and stop \
+                     Vyrtel again before backing it up (docs/configuration.md#backup-and-restore)"
+                );
+            }
         }
         f.write_str(match self.phase {
             ShutdownPhase::Requests => " while waiting for in-flight requests",
@@ -457,6 +521,11 @@ impl std::fmt::Display for IncompleteShutdown {
             ShutdownPhase::Maintenance => {
                 " while a seal or compaction was finishing, after every accepted request was written \
                  and the WAL flushed (the next start redoes it from the WAL)"
+            }
+            ShutdownPhase::Inventory => {
+                " while the data directory inventory was being recorded, after every accepted request was \
+                 written and the WAL flushed; a backup taken now cannot be checked for missing files, so start \
+                 and stop Vyrtel again before backing it up"
             }
         })?;
         let u = &self.unfinished;

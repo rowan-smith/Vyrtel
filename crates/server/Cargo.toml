@@ -51,8 +51,11 @@ tracing-subscriber.workspace = true
 winresource = "0.1"
 
 [dev-dependencies]
+crc32fast.workspace = true
 flate2.workspace = true
 prost.workspace = true
+# Edits metadata databases directly in data-directory tests.
+rusqlite.workspace = true
 tempfile.workspace = true
 tower.workspace = true
 ingest.workspace = true

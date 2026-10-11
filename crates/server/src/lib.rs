@@ -5,6 +5,7 @@ pub mod alerts;
 pub mod app;
 pub mod auth;
 pub mod config;
+pub mod datadir;
 pub mod error;
 pub mod routes;
 pub mod state;

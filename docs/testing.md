@@ -28,7 +28,8 @@ Next to the code (`#[cfg(test)]` modules). Highlights:
 | Bloom filters, bitmaps, HyperLogLog, canonical index keys            | `crates/storage/src/index/`          |
 | Configuration parsing, env overrides, memory budgets                 | `crates/server/src/config.rs`        |
 | OTLP mapping (protobuf + JSON), native/CLEF parsing, templates       | `crates/ingest/src/`                 |
-| Metadata store (migrations, CRUD, alert transitions)                 | `crates/metadata/tests/store.rs`     |
+| Metadata store (migrations, CRUD, alert transitions, read-only schema inspection, newer schema refused) | `crates/metadata/tests/store.rs`     |
+| Data-directory check: new, pre-manifest and interrupted directories accepted; missing parts, inventory files missing or truncated, an empty metadata database, bad or newer manifests, newer and unreadable metadata refused; `accept_incomplete` returns the problems instead (never format problems); the inventory is dropped on start | `crates/server/src/datadir.rs` |
 
 ## Property tests (proptest)
 
@@ -69,7 +70,15 @@ states an interrupted process would:
   share lock on Windows) stops startup with an I/O error naming the file,
   leaves it byte-for-byte in place and quarantines nothing; once readable,
   the acknowledged events come back (skipped when running as root, which
-  bypasses permissions).
+  bypasses permissions);
+* a file in a newer format is not damage (REL-06): a segment whose header
+  and checksummed footer say version 2, a WAL whose header says version 3,
+  and a checksummed WAL record with an unknown record version or batch
+  codec each stop startup with `UnsupportedFormat` naming the file, with
+  every file in the data directory unchanged; `check_formats` finds the
+  header cases without opening storage; a segment whose header alone
+  disagrees with its footer, and an unknown record version without a valid
+  checksum, are still quarantined as damage.
 
 ### Process-kill tests
 
@@ -137,7 +146,10 @@ compile to nothing. The tests check that:
   acknowledging, and rejects requests while it keeps failing;
 * a failing seal (segment write or fsync) makes new batches fail fast once
   the writer has to wait, and every acknowledged batch is sealed after a
-  restart;
+  restart; batches already queued when the writer starts waiting (a burst
+  of 200 without pauses) are answered within 2 s, stored or `WriteFailed`
+  with the seal's fault, instead of waiting for their acknowledgement
+  timeout, and release their queue reservation;
 * a failed WAL creation stalls rotation, and ingest resumes by itself once
   storage works;
 * faults name the operation, the reason and a data-directory-relative path,
@@ -244,9 +256,54 @@ talks HTTP to it:
   each refused route and the diagnostic text, and `web/tests/unit/live-tail.test.ts`
   the UI's reconnection and backoff;
 * dashboards, saved queries, alerts firing/resolving with webhook delivery,
-  the background evaluator.
+  the background evaluator;
+* backup and restore (`backup.rs`, REL-06): a stopped instance with all
+  three signals (in segments and in the WAL), a dashboard with a panel, an
+  alert, a saved query, an active and a revoked API key and an admin
+  session is copied, the original deleted, and the copy started elsewhere
+  without `auth.admin_password`; every
+  [verification query](configuration.md#verification-queries) answers as
+  before, the restored key ingests, the revoked key and anonymous requests
+  get 401, the old session is valid, and nothing is quarantined. Backups
+  without `metadata/metadata.db` (with and without a manifest), with an
+  empty one, without a signal's WAL directory, without one populated
+  `.wal` and one `.seg` file listed in the clean-shutdown inventory, with a
+  truncated `.seg`, with a newer or unreadable manifest, a newer segment or
+  WAL format, or a newer metadata schema are refused by `App::build` with
+  the documented message, and every file and directory is unchanged (no
+  lock file, no `tmp/`). The real binary exits with status 1 and prints
+  the reason. `--accept-incomplete-restore` (`StartOptions`) starts a copy
+  without a WAL file, with the segment events and the configuration kept,
+  and the next start needs no flag; a running directory has no inventory.
+  A directory without a manifest (0.1.1) starts and gets one; a new volume
+  holding only `lost+found` starts as new. A start refused because another
+  process holds the lock changes nothing, so the inventory still refuses a
+  later start that is missing a WAL file. With `--features
+  fault-injection` (`storage_faults.rs`): a failed manifest write at
+  shutdown is `IncompleteShutdown` (phase `Inventory`, the I/O error, no
+  host path, no partial inventory) and the next clean shutdown records it;
+  a manifest write stalled past a 500 ms `shutdown_timeout` ends the
+  shutdown within 3 s, reported as the deadline in phase `Inventory`.
 
 Fixtures shared with E2E live in `tests/fixtures/`.
+
+### Restore drill
+
+`scripts/backup/restore-drill.sh` runs the published
+[backup and restore procedure](configuration.md#backup-and-restore) against
+a built binary (Linux, macOS): it populates an instance from
+`tests/fixtures`, stops it with SIGTERM, takes a `tar` backup, deletes the
+original, restores into a new directory, starts without an admin password,
+diffs every verification query against its answers before the backup,
+checks the restored API key, anonymous refusal and login, and checks that
+copies without `metadata/metadata.db`, with an empty one, without one WAL
+file and without one segment file each exit with status 1 and are left
+unchanged, and that `--accept-incomplete-restore` starts the copy without
+the WAL file. CI runs it against the release build in the backend job.
+
+```bash
+cargo build --release -p server && scripts/backup/restore-drill.sh target/release/vyrtel
+```
 
 ### Overload memory test
 

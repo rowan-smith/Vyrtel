@@ -36,16 +36,27 @@ impl Segment {
         if file_len < (HEADER_LEN + FOOTER_LEN) as u64 {
             return Err(corrupt(what(), DecodeError::UnexpectedEof));
         }
+        check_format(&file, path, file_len)?;
         let mut hb = [0u8; HEADER_LEN];
         read_exact_at(&file, &mut hb, 0).ctx(path)?;
-        let header = Header::decode(&hb).map_err(|e| corrupt(what(), e))?;
+        let header = Header::decode(&hb).map_err(|e| match e {
+            // `check_format` passed, so the checksummed footer says version 1.
+            DecodeError::UnsupportedVersion(_) => {
+                corrupt(what(), DecodeError::Invalid("header version disagrees with footer"))
+            }
+            e => corrupt(what(), e),
+        })?;
 
         let mut fb = [0u8; FOOTER_LEN];
         read_exact_at(&file, &mut fb, file_len - FOOTER_LEN as u64).ctx(path)?;
         let footer = Footer::decode(&fb).map_err(|e| corrupt(what(), e))?;
 
         let raw = read_chunk(&file, path, &footer.summary, file_len)?;
-        let mut summary = SegmentSummary::decode(&mut Reader::new(&raw)).map_err(|e| corrupt(what(), e))?;
+        // The summary passed its checksum, so a version it declares is real.
+        let mut summary = SegmentSummary::decode(&mut Reader::new(&raw)).map_err(|e| match e {
+            DecodeError::UnsupportedVersion(found) => unsupported(path, found),
+            e => corrupt(what(), e),
+        })?;
         if summary.id != header.segment_id || summary.signal != header.signal {
             return Err(corrupt(what(), DecodeError::Invalid("header/summary mismatch")));
         }
@@ -148,6 +159,48 @@ impl Segment {
             }
         }
         Ok(out)
+    }
+}
+
+fn unsupported(path: &Path, found: u16) -> StorageError {
+    StorageError::UnsupportedFormat {
+        path: path.to_path_buf(),
+        what: "segment format",
+        found,
+        supported: FORMAT_VERSION,
+    }
+}
+
+/// Fail with [`StorageError::UnsupportedFormat`] if the segment at `path`
+/// was written in a format version this build cannot read. Reads only the
+/// header and footer and never reports damage: a file too short or
+/// without the segment magic passes, and [`Segment::open`] judges it.
+///
+/// The header carries no checksum, so an unknown header version counts
+/// as a newer format unless the checksummed footer proves the file is
+/// version 1: then the header is damaged, which `Segment::open` reports.
+pub fn check_segment_format(path: &Path) -> Result<()> {
+    let file = File::open(path).ctx(path)?;
+    let file_len = file.metadata().ctx(path)?.len();
+    check_format(&file, path, file_len)
+}
+
+fn check_format(file: &File, path: &Path, file_len: u64) -> Result<()> {
+    if file_len < (HEADER_LEN + FOOTER_LEN) as u64 {
+        return Ok(());
+    }
+    let mut hb = [0u8; HEADER_LEN];
+    read_exact_at(file, &mut hb, 0).ctx(path)?;
+    let mut fb = [0u8; FOOTER_LEN];
+    read_exact_at(file, &mut fb, file_len - FOOTER_LEN as u64).ctx(path)?;
+    // The footer is checked before its version, so this one is genuine.
+    let footer = Footer::decode(&fb);
+    if let Err(DecodeError::UnsupportedVersion(found)) = footer {
+        return Err(unsupported(path, found));
+    }
+    match Header::decode(&hb) {
+        Err(DecodeError::UnsupportedVersion(found)) if footer.is_err() => Err(unsupported(path, found)),
+        _ => Ok(()),
     }
 }
 

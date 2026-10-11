@@ -14,7 +14,10 @@
 //! before the original is removed or truncated, logged loudly and listed in
 //! [`RecoveryReport::quarantined`]. An I/O error that is not evidence of
 //! damage (permissions, a failing disk) aborts startup instead: moving a
-//! readable-but-unread WAL aside would hide acknowledged telemetry.
+//! readable-but-unread WAL aside would hide acknowledged telemetry. A file
+//! in a format version this build cannot read (a newer Vyrtel wrote it) is
+//! not damage either: recovery stops with
+//! [`StorageError::UnsupportedFormat`] and leaves it untouched.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -25,9 +28,9 @@ use telemetry::{Signal, TelemetryEvent};
 
 use crate::codec;
 use crate::crash;
-use crate::error::{IoContext, Result, StorageError};
+use crate::error::{DecodeError, IoContext, Result, StorageError};
 use crate::fsutil;
-use crate::segment::{Segment, SegmentWriteOptions, parse_segment_file_name, write_segment};
+use crate::segment::{Segment, SegmentWriteOptions, check_segment_format, parse_segment_file_name, write_segment};
 use crate::stream::Batch;
 use crate::wal::{self, ReplayError, TailState, WalHeader, WalReplay, WalWriter, parse_wal_file_name, wal_file_name};
 
@@ -273,15 +276,31 @@ pub fn recover(signal: Signal, dirs: &StreamDirs, seg_opts: &SegmentWriteOptions
             continue;
         }
         let mut batches = Vec::new();
+        let mut newer_codec = None;
         let result = wal::replay(&path, |payload| {
-            let events = codec::decode_batch(payload).map_err(|_| "undecodable batch")?;
+            let events = codec::decode_batch(payload).map_err(|e| match e {
+                DecodeError::UnsupportedVersion(v) => {
+                    newer_codec = Some(v);
+                    "unsupported event codec version"
+                }
+                _ => "undecodable batch",
+            })?;
             if !events.is_empty() {
                 batches.push(Arc::new(Batch::new(events)));
             }
             Ok(())
         });
+        // A checksummed batch in a codec this build cannot read is not
+        // damage: stop before the WAL is truncated or anything is moved.
+        if let Some(found) = newer_codec {
+            let supported = codec::CODEC_VERSION.into();
+            return Err(StorageError::UnsupportedFormat { path, what: "event codec", found, supported });
+        }
         let rep = match result {
             Ok(r) => r,
+            Err(ReplayError::Unsupported { what, found, supported }) => {
+                return Err(StorageError::UnsupportedFormat { path, what, found, supported });
+            }
             Err(ReplayError::BadHeader) => {
                 let reason = "WAL header is missing, truncated or has an unknown magic or version".to_string();
                 quarantine(dirs, signal, QuarantineKind::Wal, &path, reason, &mut report)?;
@@ -405,6 +424,33 @@ fn preserve_tail(
     Ok(())
 }
 
+/// Check, without changing anything, that every segment and WAL file under
+/// `data_dir` is in a format this build reads; fails with
+/// [`StorageError::UnsupportedFormat`] for the first one that is not.
+/// Reads only file headers and footers, so it is cheap enough to run
+/// before every start. Damaged files pass: recovery judges them. Missing
+/// directories pass too (a new data directory has none).
+pub fn check_formats(data_dir: &Path) -> Result<()> {
+    for signal in Signal::ALL {
+        let dirs = StreamDirs::new(data_dir, signal);
+        for (name, path) in list_if_exists(&dirs.segments)? {
+            if parse_segment_file_name(&name).is_some() {
+                check_segment_format(&path)?;
+            }
+        }
+        for (name, path) in list_if_exists(&dirs.wal)? {
+            if parse_wal_file_name(&name).is_some() {
+                wal::check_wal_format(&path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn list_if_exists(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
+    if dir.is_dir() { list(dir) } else { Ok(Vec::new()) }
+}
+
 /// Delete stale temporary files. Nothing in `tmp/` is ever committed data.
 pub fn clean_tmp(tmp: &Path) -> Result<usize> {
     std::fs::create_dir_all(tmp).ctx(tmp)?;
@@ -419,7 +465,6 @@ pub fn clean_tmp(tmp: &Path) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DecodeError;
 
     #[test]
     fn only_proof_of_damage_leads_to_quarantine() {
@@ -432,6 +477,14 @@ mod tests {
         assert_eq!(damage_reason(&io(std::io::ErrorKind::PermissionDenied)), None);
         assert_eq!(damage_reason(&io(std::io::ErrorKind::Other)), None);
         assert_eq!(damage_reason(&StorageError::Unavailable("x".into())), None);
+        // A file from a newer Vyrtel is not damaged either.
+        let newer = StorageError::UnsupportedFormat {
+            path: "/data/segments/logs/x.seg".into(),
+            what: "segment format",
+            found: 2,
+            supported: 1,
+        };
+        assert_eq!(damage_reason(&newer), None);
 
         let truncated = damage_reason(&io(std::io::ErrorKind::UnexpectedEof)).unwrap();
         assert!(truncated.starts_with("truncated"));
