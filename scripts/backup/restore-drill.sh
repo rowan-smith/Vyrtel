@@ -28,10 +28,13 @@ trap cleanup EXIT
 [ -x "$VYRTEL" ] || fail "no executable at $VYRTEL (build it with: cargo build --release -p server)"
 
 # Start Vyrtel on a data directory and wait until it answers /health.
+# Arguments after the directory: VAR=value environment settings and
+# --flags for vyrtel.
 start() {
-  local dir=$1; shift
-  env VYRTEL_AUTH_ENABLED=true "$@" "$VYRTEL" --data-dir "$dir" --bind "127.0.0.1:$PORT" --log-level warn \
-    >"$WORK/stdout.log" 2>>"$WORK/stderr.log" &
+  local dir=$1 a envs=() flags=(); shift
+  for a in "$@"; do case $a in --*) flags+=("$a") ;; *) envs+=("$a") ;; esac; done
+  env VYRTEL_AUTH_ENABLED=true ${envs[@]+"${envs[@]}"} "$VYRTEL" --data-dir "$dir" --bind "127.0.0.1:$PORT" \
+    --log-level warn ${flags[@]+"${flags[@]}"} >"$WORK/stdout.log" 2>>"$WORK/stderr.log" &
   PID=$!
   for _ in $(seq 1 100); do
     curl -fs "$URL/health" >/dev/null 2>&1 && return 0
@@ -96,12 +99,18 @@ verify() {
 }
 
 step "Populate an instance ($VYRTEL, $("$VYRTEL" --version))"
-start "$WORK/data" VYRTEL_AUTH_ADMIN_PASSWORD="$PASSWORD"
+# A short segment age, so the backup holds sealed segments as well as WALs.
+start "$WORK/data" VYRTEL_AUTH_ADMIN_PASSWORD="$PASSWORD" VYRTEL_STORAGE_SEGMENT_MAX_AGE=1s
 login
 KEY=$(admin -d '{"name":"producers"}' "$URL/api/v1/api-keys" | grep -o '"key":"vyr_[0-9a-f]*"' | cut -d'"' -f4)
 [ -n "$KEY" ] || fail "no API key created"
 ingest() { curl -fsS -o /dev/null -H "authorization: Bearer $KEY" -H "content-type: $2" --data-binary "$3" "$URL$1"; }
 ingest /api/v1/events application/x-ndjson "$(cat "$FIXTURES/logs.ndjson")"
+for _ in $(seq 1 150); do
+  ls "$WORK"/data/segments/logs/*.seg >/dev/null 2>&1 && break
+  sleep 0.1
+done
+ls "$WORK"/data/segments/logs/*.seg >/dev/null 2>&1 || fail "no logs segment was sealed"
 ingest /v1/logs application/json "$(fixture otlp-logs.json)"
 ingest /v1/traces application/json "$(fixture otlp-traces.json)"
 ingest /v1/metrics application/json "$(fixture otlp-metrics.json)"
@@ -119,7 +128,11 @@ stop
 
 step "2. Back up the whole data directory"
 tar -C "$WORK/data" -czf "$WORK/backup.tar.gz" .
-tar -tzf "$WORK/backup.tar.gz" | grep -q '^\./vyrtel.json$' || fail "the backup has no manifest"
+# Read the whole listing before matching: with pipefail, `tar | grep -q`
+# fails when grep exits early and tar gets a broken pipe.
+tar -tzf "$WORK/backup.tar.gz" >"$WORK/backup-list.txt"
+grep -q '^\./vyrtel.json$' "$WORK/backup-list.txt" || fail "the backup has no manifest"
+grep -q '"inventory"' "$WORK/data/vyrtel.json" || fail "the clean shutdown recorded no inventory"
 rm -rf "$WORK/data"   # the original host is gone
 
 step "3. Restore on a clean host and start (no admin password configured)"
@@ -142,17 +155,46 @@ diff -u "$WORK/before.txt" "$WORK/after.txt" || fail "verification answers diffe
 echo "verification queries match; key, login and anonymous refusal behave as before"
 stop
 
-step "5. An incomplete backup is refused without changes"
-mkdir "$WORK/partial"
-tar -C "$WORK/partial" -xzf "$WORK/backup.tar.gz"
-rm "$WORK/partial/metadata/metadata.db"
-before=$(cd "$WORK/partial" && find . -print | sort)
-code=0
-VYRTEL_AUTH_ENABLED=true "$VYRTEL" --data-dir "$WORK/partial" --bind "127.0.0.1:$PORT" >/dev/null 2>"$WORK/refused.log" || code=$?
-[ "$code" = 1 ] || fail "expected exit status 1, got $code"
-grep -q 'is incomplete: metadata/metadata.db is missing' "$WORK/refused.log" || fail "unexpected message: $(cat "$WORK/refused.log")"
-[ "$(cd "$WORK/partial" && find . -print | sort)" = "$before" ] || fail "the refused directory was changed"
-cat "$WORK/refused.log"
+# Unpack a fresh copy of the backup into $WORK/$1.
+unpack() { rm -rf "${WORK:?}/$1"; mkdir "$WORK/$1"; tar -C "$WORK/$1" -xzf "$WORK/backup.tar.gz"; }
+
+# Start the copy in $WORK/$1 and require exit status 1, a message containing
+# $2, and every file and directory left as it was.
+refused() {
+  local dir=$WORK/$1 before code=0
+  before=$(cd "$dir" && find . -print | sort)
+  VYRTEL_AUTH_ENABLED=true "$VYRTEL" --data-dir "$dir" --bind "127.0.0.1:$PORT" >/dev/null 2>"$WORK/refused.log" || code=$?
+  [ "$code" = 1 ] || fail "$1: expected exit status 1, got $code"
+  grep -qF "$2" "$WORK/refused.log" || fail "$1: unexpected message: $(cat "$WORK/refused.log")"
+  [ "$(cd "$dir" && find . -print | sort)" = "$before" ] || fail "$1: the refused directory was changed"
+  cat "$WORK/refused.log"
+}
+
+step "5. Incomplete backups are refused without changes"
+unpack no-metadata
+rm "$WORK/no-metadata/metadata/metadata.db"
+refused no-metadata 'is incomplete: metadata/metadata.db is missing'
+
+unpack empty-metadata
+: >"$WORK/empty-metadata/metadata/metadata.db"
+refused empty-metadata 'is incomplete: metadata/metadata.db is empty (it has no schema)'
+
+unpack no-wal-file
+WAL=$(cd "$WORK/no-wal-file" && ls wal/logs/*.wal | head -1)
+rm "$WORK/no-wal-file/$WAL"
+refused no-wal-file "is incomplete: $WAL is missing"
+
+unpack no-segment-file
+SEG=$(cd "$WORK/no-segment-file" && ls segments/logs/*.seg | head -1)
+rm "$WORK/no-segment-file/$SEG"
+refused no-segment-file "is incomplete: $SEG is missing"
+
+step "6. Continuing without the missing file, on purpose"
+start "$WORK/no-wal-file" --accept-incomplete-restore
+grep -q 'starting without part of the data directory' "$WORK/stderr.log" || fail "the accepted problem was not logged"
+stop
+start "$WORK/no-wal-file"   # accepted once; later starts need no flag
+stop
 
 rm -rf "$WORK"
 printf '\nrestore drill passed\n'

@@ -40,6 +40,16 @@ pub struct App {
     tasks: Vec<JoinHandle<()>>,
 }
 
+/// Options for one start, given on the command line rather than in the
+/// configuration, so they do not stay in effect by accident.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StartOptions {
+    /// Start even though the data directory is missing parts recorded at
+    /// its last clean shutdown, or its metadata database is empty
+    /// (`--accept-incomplete-restore`). Format problems are never accepted.
+    pub accept_incomplete_restore: bool,
+}
+
 fn storage_config(config: &Config) -> StorageConfig {
     let budgets = config.budgets();
     let mut sc = StorageConfig::new(&config.storage.path);
@@ -74,11 +84,21 @@ impl App {
     /// Open everything and start background tasks. Must run inside a Tokio
     /// runtime.
     pub fn build(config: Config) -> anyhow::Result<App> {
+        Self::build_with(config, StartOptions::default())
+    }
+
+    /// [`App::build`] with one-off start options.
+    pub fn build_with(config: Config, options: StartOptions) -> anyhow::Result<App> {
         config.validate().map_err(anyhow::Error::msg)?;
         let budgets = config.budgets();
         let dir = &config.storage.path;
         // Read-only: on error nothing in the data directory has changed.
-        let layout = crate::datadir::check(dir)?;
+        let checked = crate::datadir::check(dir, options.accept_incomplete_restore)?;
+        for problem in &checked.accepted {
+            tracing::warn!(problem = %problem, "starting without part of the data directory (--accept-incomplete-restore)");
+        }
+        let layout = checked.layout.clone();
+        crate::datadir::begin(dir, &checked).context("updating the data directory manifest")?;
         std::fs::create_dir_all(dir).with_context(|| format!("creating data directory {}", dir.display()))?;
         crate::datadir::prepare(dir).context("creating data directory")?;
 
@@ -319,6 +339,19 @@ impl App {
         let maintenance = tokio::task::spawn_blocking(move || storage.shutdown());
         if let Err(cause) = within(maintenance, deadline, timeout, &mut force).await {
             return fail(cause, ShutdownPhase::Maintenance);
+        }
+
+        // Nothing writes telemetry files any more: record them, so a backup
+        // of the stopped directory can be checked for completeness. Only a
+        // clean shutdown gets here; a failure loses no data, only that check.
+        let dir = state.config.storage.path.clone();
+        match tokio::task::spawn_blocking(move || crate::datadir::record_stopped(&dir)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(
+                error = %e,
+                "could not record the data directory inventory; a backup of it cannot be checked for missing files"
+            ),
+            Err(panic) => std::panic::resume_unwind(panic.into_panic()),
         }
         Ok(())
     }
