@@ -217,7 +217,8 @@ async fn sustained_overload_stays_within_memory_budget() {
 // everything is let go after the discard timeout.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flood_of_rejected_slow_uploads_is_bounded() {
-    use server::routes::ingest::{MAX_DISCARDING, MAX_DISCARD_PENDING};
+    const MAX_DISCARD_PENDING: usize = server::routes::ingest::MAX_DISCARD_PENDING;
+    const MAX_DISCARDING: usize = server::routes::ingest::MAX_DISCARDING;
     const FLOOD: usize = 600;
     let _serial = SERIAL.lock().await;
     let s = TestServer::start_with(|c| {
