@@ -552,10 +552,10 @@ impl Config {
 /// is acknowledged. Measured per format by the `amplification` test in
 /// `tests/overload`: representative fixtures of every format and signal
 /// peak at 7.0–16.0×, and the worst supported one (OTLP/JSON logs of
-/// ~20-byte records) at 17.0×. Event shapes that amplify more, such as
-/// tiny native events, deeply nested properties or tiny OTLP/protobuf
-/// records, are outside this estimate; see
-/// docs/configuration.md#ingest-memory.
+/// ~20-byte records) at 17.0× (17.3× with 1 MB fixtures). Event shapes
+/// that amplify more, such as tiny native events, deeply nested properties
+/// or tiny OTLP/protobuf records, are outside this estimate and are not
+/// refused; see docs/configuration.md#ingest-memory.
 pub const INGEST_BYTES_PER_REQUEST_BYTE: u64 = 20;
 
 /// hyper's default HTTP/1 read buffer limit (`max_buf_size`).

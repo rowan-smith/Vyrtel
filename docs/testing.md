@@ -337,11 +337,18 @@ at or under the 20× estimate.
 | NDJSON empty objects | 213.25 / 213.05 | 269.24 | no |
 | OTLP protobuf logs large shared resource | 1696.56 / 1695.99 | 3079.30 | no |
 
+At 1 MB (`VYRTEL_AMPLIFICATION_TARGET=1048576`, the new default request
+size) every figure is within 3% of the 2 MB one: the highest supported
+fixture is 17.29× (OTLP/JSON small records) and the worst representative
+16.20× (OTLP/JSON metrics); empty objects peak at 213.49×, i.e. 213 MB for
+one 1 MB request. These shapes are accepted in production; see the
+limitations in [configuration](configuration.md#ingest-memory).
+
 Parse alone is consistently 1.25× body below admission (the body itself
 plus read buffers). gzip adds nothing measurable at these sizes: decoding
-is streamed in 64 KB reads. The highest supported figure is 17.0×; 20× keeps
-an 18% margin over it and 25% over the worst representative batch (OTLP/JSON
-metrics, 15.95×). The shapes outside the envelope amplify by event count
+is streamed in 64 KB reads. The highest supported figure is 17.0× (17.29×
+at 1 MB); 20× keeps a 16–18% margin over it and 23–25% over the worst
+representative batch (OTLP/JSON metrics, 15.95–16.20×). The shapes outside the envelope amplify by event count
 (each event costs a few hundred bytes however small its JSON) or by copying
 a shared OTLP resource into every event. Count-based admission cannot cover
 them at useful request sizes; see the limitations in
@@ -393,6 +400,31 @@ The trade-off: with 1MB requests and 3 slots, the same overload accepts
 fewer bytes per second of writing and rejects far more requests, and
 clients that sent 16MB batches must send smaller ones. In return ingest
 stays inside its budget instead of exceeding `max_memory`.
+
+**Linux release run.** The same suite in a `rust:1-bookworm` container
+(Docker Desktop, Linux x86_64, 22 cores, 15 GB, Rust 1.99.0, `--release
+--locked`), with the repository mounted read-only:
+
+```bash
+docker run --rm -v "$PWD:/src:ro" -v vyrtel-target:/target -e CARGO_TARGET_DIR=/target -w /src \
+  rust:1-bookworm cargo test -p server --release --locked --test overload -- --nocapture --test-threads 1
+```
+
+| | Linux x86_64 | Windows x86_64 |
+|---|---:|---:|
+| Admission ×body, every fixture | within 0.15 of Windows | table above |
+| Highest supported fixture | 17.00× | 17.00× |
+| Default ingest peak, writers parked (3 runs) | 21.2–28.5 MB | 36.2–43.4 MB |
+| Constrained ingest peak (3 runs) | 1.6–4.4 MB | 3.5–4.1 MB |
+| Drain peak (12.75 MB allowance) | 2.87 MB | 2.9–6.7 MB |
+| Pre-REL-14 ingest peak (3 runs) | 458.7–773.8 MB | 494.7–714.7 MB |
+
+Linux RSS climbed to about 507 MB during the run and stayed there: glibc
+keeps freed memory, and the amplification test that runs first allocates
+over 400 MB for its out-of-envelope fixtures. RSS from this harness is
+therefore a process high-water mark, not a per-run figure. Measure RSS for
+release sign-off on a dedicated server process, as PERF-GATE-1 (#170)
+requires.
 
 **Rejected-body drain** (`rejected_body_drain_overhead_is_within_the_fixed_allowance`).
 One slot, held by a stalled upload; 64 clients send 1 MB bodies (half gzip)

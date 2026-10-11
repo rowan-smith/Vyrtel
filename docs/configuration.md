@@ -120,6 +120,15 @@ active segments budget), batches still queued after their client went away
 (bounded by `queue_capacity`), the read buffers of connections that are not
 draining a rejected body, and the runtime.
 
+So the ingest budget bounds what admission owns; it is not a ceiling on
+all memory used to receive data over the network. Every connection that
+uploads quickly has a read buffer of up to 408 KB, whether its request is
+admitted, rejected and waiting to be drained (up to 256 are kept), or idle
+between keep-alive requests, and Vyrtel does not limit the number of
+connections. In the overload test, 28 connections held about 12 MB this way
+and 64 held about 29 MB. Limit connections at a reverse proxy or load
+balancer if many clients upload at once.
+
 **Where 20× comes from.** The `amplification` test measures each format's
 peak heap per byte of decoded body
 ([details and full table](testing.md#ingest-amplification-and-derived-admission)).
@@ -133,10 +142,19 @@ memory bound. Event shapes that amplify more than 20× are outside it:
 very small native events (~32× for `{"message":"…"}` lines), deeply
 nested properties (~30×), very small OTLP/protobuf records (~92×), OTLP
 batches that share a large resource across many tiny records (the resource
-is copied into every event; over 100×), and empty objects (`{}`, ~210×). If
-your producers send such batches, keep `max_request_size` well below the
-limit you would otherwise use, or set `max_concurrent` explicitly from your
-own measurements.
+is copied into every event; over 100×), and empty objects (`{}`, ~210×).
+Rerun with 1 MB fixtures, the new default request size, every figure is
+within 3% of these.
+
+Such payloads are valid and **are accepted**: nothing limits a request's
+event count or nesting before it is parsed, and the queue's batch limit
+(`queue_capacity`) is checked only after parsing. One 1 MB request of
+empty objects was measured at a 213 MB peak, more than ten times its
+20 MB share, so a few at once can exceed `max_memory`. Until decoding
+enforces such limits, do not expose ingestion to untrusted producers
+without a limit in front of it. If your own producers send such batches,
+keep `max_request_size` well below what you would otherwise use, or set
+`max_concurrent` explicitly from your own measurements.
 
 **Too little memory for one request.** If not even one maximum-size request
 fits, Vyrtel refuses to start rather than admit more than the budget. For
