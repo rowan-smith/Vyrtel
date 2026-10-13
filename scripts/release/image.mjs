@@ -44,8 +44,12 @@ export function hostPlatform(arch = os.arch()) {
   return `linux/${{ x64: 'amd64', arm64: 'arm64' }[arch] ?? arch}`;
 }
 
-/** Checks one `docker image inspect` entry: user, version label, platform, data volume. */
-export function checkImageConfig(inspect, { version, platform }) {
+/**
+ * Checks one `docker image inspect` entry: user, version label, platform, data volume. A registry
+ * inspection (`registry: true`) has no healthcheck to check: imagetools renders the config as the
+ * OCI image config, which has no field for Docker's HEALTHCHECK.
+ */
+export function checkImageConfig(inspect, { version, platform, registry = false }) {
   const problems = [];
   const config = inspect?.Config ?? {};
   const user = config.User ?? '';
@@ -60,7 +64,7 @@ export function checkImageConfig(inspect, { version, platform }) {
   if (platform && actual !== platform) problems.push(`is for ${actual}, expected ${platform}`);
   if (!Object.hasOwn(config.Volumes ?? {}, '/data')) problems.push('does not declare /data as a volume');
   if (!(config.Env ?? []).includes('VYRTEL_STORAGE_PATH=/data')) problems.push('does not set VYRTEL_STORAGE_PATH=/data');
-  if (!config.Healthcheck?.Test?.includes('healthcheck')) problems.push('has no `vyrtel healthcheck` HEALTHCHECK');
+  if (!registry && !config.Healthcheck?.Test?.includes('healthcheck')) problems.push('has no `vyrtel healthcheck` HEALTHCHECK');
   if (problems.length) fail(`image ${problems.join('; ')}`);
   return { user, version: label, platform: actual };
 }
@@ -110,6 +114,10 @@ export function checkBindMountRefusal({ code, stderr }) {
 }
 
 // ---- docker ----------------------------------------------------------------------
+
+/** Ready line the server prints once it listens (crates/server/src/app.rs banner). */
+const READY_LINE = /^Ready\.$/m;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function docker(args, { allowFail = false } = {}) {
   const r = await run('docker', args, {});
@@ -168,6 +176,33 @@ async function stopCleanly(name) {
   }
 }
 
+/**
+ * Starts `image` detached on `mount`, which its user cannot write, and waits up to `timeoutMs`
+ * for it to exit. Returns its exit code and output for checkBindMountRefusal. Fails at once if
+ * the server reports it is ready, and at the deadline if it is still running, so a start that
+ * unexpectedly succeeds can never hang the gate. The container is always removed. `exec` runs a
+ * docker command (tests pass a fake).
+ */
+export async function awaitRefusal({ image, platform, name, mount, timeoutMs = 30_000, pollMs = 250, exec = docker }) {
+  await exec(['run', '-d', '--platform', platform, '--name', name, '-v', mount, image]);
+  try {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const [running, code] = (await exec(['inspect', '-f', '{{.State.Running}} {{.State.ExitCode}}', name])).stdout.trim().split(/\s+/);
+      const logs = await exec(['logs', name], { allowFail: true });
+      const output = `${logs.stdout}${logs.stderr}`;
+      if (running === 'false') return { code: Number(code), stderr: logs.stderr || logs.stdout };
+      if (READY_LINE.test(output)) fail(`the server started and became ready on a bind mount its user cannot write:\n${output.trim()}`);
+      if (Date.now() >= deadline) {
+        fail(`the server was still running ${timeoutMs / 1000}s after starting on a bind mount its user cannot write; expected it to exit with the uid hint:\n${output.trim()}`);
+      }
+      await sleep(pollMs);
+    }
+  } finally {
+    await exec(['rm', '-f', name], { allowFail: true });
+  }
+}
+
 /** Whether this process may change a directory's owner, and how. */
 function chownCommand() {
   if (process.getuid?.() === 0) return [];
@@ -193,7 +228,7 @@ async function checkBindMount(image, platform, version, prefix, timeoutMs, log) 
   const sudo = chownCommand();
   const name = `${prefix}-bind`;
   try {
-    const refused = await run('docker', ['run', '--rm', '--platform', platform, '-v', `${dir}:/data`, image], {});
+    const refused = await awaitRefusal({ image, platform, name: `${prefix}-refused`, mount: `${dir}:/data`, timeoutMs });
     const reason = checkBindMountRefusal(refused);
     log(`bind mount: unwritable ${dir} refused with the uid hint (${reason})`);
 
@@ -224,8 +259,10 @@ async function checkBindMount(image, platform, version, prefix, timeoutMs, log) 
 /**
  * Runs every check above against `image` on `platform`. Returns the evidence lines it logged.
  * `bindMount`: 'auto' (Linux hosts only, where Docker enforces host ownership), 'on' or 'off'.
+ * `record`: a directory to write the tested image's record to (testedRecord), once every check
+ * has passed, so the published image can be checked against it.
  */
-export async function verifyImage(image, version, { platform = hostPlatform(), bindMount = 'auto', timeoutMs = 60_000, log = console.log } = {}) {
+export async function verifyImage(image, version, { platform = hostPlatform(), bindMount = 'auto', record, timeoutMs = 60_000, log = console.log } = {}) {
   const evidence = [];
   const note = (line) => {
     evidence.push(line);
@@ -271,6 +308,12 @@ export async function verifyImage(image, version, { platform = hostPlatform(), b
     } else {
       note(`bind mount: skipped (${bindMount === 'off' ? '--bind-mount off' : `${process.platform} host; Docker enforces bind-mount ownership only on Linux`})`);
     }
+    if (record) {
+      const tested = testedRecord(inspect, platform);
+      fs.mkdirSync(record, { recursive: true });
+      fs.writeFileSync(path.join(record, recordName(platform)), `${JSON.stringify(tested, null, 2)}\n`);
+      note(`record: ${tested.diffIds.length} layers of the tested ${platform} image written to ${path.join(record, recordName(platform))}`);
+    }
     return evidence;
   } finally {
     await docker(['rm', '-f', first, second], { allowFail: true });
@@ -280,24 +323,74 @@ export async function verifyImage(image, version, { platform = hostPlatform(), b
 
 // ---- published image -------------------------------------------------------------
 
+/** File name of a tested-image record: `linux-amd64.json`. */
+export const recordName = (platform) => `${platform.replace(/\//g, '-')}.json`;
+
 /**
- * Checks a pushed multi-platform image: every platform in `platforms` is present and passes
- * checkImageConfig. `images` is `docker buildx imagetools inspect <ref> --format '{{json .Image}}'`:
- * the OCI config of each platform, keyed by platform.
+ * What verify-image tested on one platform, for checking the published image against it:
+ * the uncompressed layer digests (diff IDs) identify the image's files exactly, however the
+ * layers are compressed, tagged or wrapped in a manifest list.
  */
-export function checkManifest(images, version, platforms = PLATFORMS) {
+export function testedRecord(inspect, platform) {
+  const diffIds = inspect?.RootFS?.Layers ?? [];
+  if (!diffIds.length) fail(`docker image inspect reported no layers for the ${platform} image`);
+  return { platform, imageId: inspect.Id, diffIds };
+}
+
+/** Reads every `*.json` record in `dir`, keyed by platform. */
+export function readRecords(dir) {
+  const records = {};
+  for (const f of fs.readdirSync(dir).filter((n) => n.endsWith('.json'))) {
+    const r = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+    records[r.platform] = r;
+  }
+  if (!Object.keys(records).length) fail(`no tested-image records in ${dir}`);
+  return records;
+}
+
+/**
+ * `docker buildx imagetools inspect --format '{{json .Image}}'` prints one config for a
+ * single-platform manifest and a map keyed by platform for a manifest list: always the map.
+ */
+export function imagesByPlatform(images) {
+  if (images && typeof images.architecture === 'string') return { [`${images.os}/${images.architecture}`]: images };
+  return images ?? {};
+}
+
+/**
+ * Checks a pushed image: every platform in `platforms` is present and passes checkImageConfig
+ * and, for each platform in `tested`, has exactly the layers of the image that was smoke-tested.
+ * `images` is the output of imagesByPlatform.
+ */
+export function checkManifest(images, version, platforms = PLATFORMS, tested = {}) {
   const missing = platforms.filter((p) => !images?.[p]);
   if (missing.length) fail(`the pushed image has no ${missing.join(' or ')} variant (has ${Object.keys(images ?? {}).join(', ') || 'none'})`);
   return platforms.map((platform) => {
     const oci = images[platform];
-    return checkImageConfig({ Os: oci.os, Architecture: oci.architecture, Config: oci.config }, { version, platform });
+    const checked = checkImageConfig({ Os: oci.os, Architecture: oci.architecture, Config: oci.config }, { version, platform, registry: true });
+    const want = tested[platform]?.diffIds;
+    if (want) {
+      const got = oci.rootfs?.diff_ids ?? [];
+      if (got.length !== want.length || got.some((d, i) => d !== want[i])) {
+        fail(`the pushed ${platform} image is not the one that was smoke-tested: its layers are ${got.join(', ') || 'none'}, the tested image's are ${want.join(', ')}`);
+      }
+    }
+    return { ...checked, sameAsTested: Boolean(want) };
   });
 }
 
-/** Inspects a pushed image in its registry, without pulling it, and runs checkManifest. */
-export async function verifyPushedImage(ref, version, { log = console.log } = {}) {
+/**
+ * Inspects a pushed image in its registry, without pulling it, and runs checkManifest. With
+ * `testedDir`, the platforms are those recorded there (verify-image --record) and each must have
+ * the tested image's layers; otherwise every published platform is checked for config only.
+ */
+export async function verifyPushedImage(ref, version, { testedDir, log = console.log } = {}) {
+  const tested = testedDir ? readRecords(testedDir) : {};
+  const platforms = testedDir ? Object.keys(tested).sort() : PLATFORMS;
   const out = (await docker(['buildx', 'imagetools', 'inspect', ref, '--format', '{{json .Image}}'])).stdout;
-  const checked = checkManifest(JSON.parse(out), version);
-  for (const c of checked) log(`${ref}: ${c.platform}, user ${c.user}, ${VERSION_LABEL}=${c.version}`);
+  const checked = checkManifest(imagesByPlatform(JSON.parse(out)), version, platforms, tested);
+  for (const c of checked) {
+    log(`${ref}: ${c.platform}, user ${c.user}, ${VERSION_LABEL}=${c.version}${c.sameAsTested ? ', same layers as the smoke-tested image' : ''}`);
+  }
   return checked;
 }

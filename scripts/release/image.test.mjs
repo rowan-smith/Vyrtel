@@ -9,22 +9,35 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 
 import {
-    checkBindMountRefusal,
-    checkImageConfig,
-    checkManifest,
-    checkPersisted,
-    hostPlatform,
-    IMAGE_UID,
-    PLATFORMS,
-    processUid,
-    publishedPort,
-    verifyImage,
-    VERSION_LABEL,
+  awaitRefusal,
+  checkBindMountRefusal,
+  checkImageConfig,
+  checkManifest,
+  checkPersisted,
+  hostPlatform,
+  IMAGE_UID,
+  imagesByPlatform,
+  PLATFORMS,
+  processUid,
+  publishedPort,
+  recordName,
+  testedRecord,
+  verifyImage,
+  VERSION_LABEL,
 } from './image.mjs';
 import { GateError, ROOT, workspaceVersion } from './release.mjs';
 
 const repoFile = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 const gateError = (pattern) => (e) => e instanceof GateError && pattern.test(e.message);
+
+/**
+ * The image config as `docker buildx imagetools inspect` shows it: the OCI config, which has no
+ * field for Docker's HEALTHCHECK.
+ */
+const ociConfig = (opts) => {
+    const { Healthcheck, ...config } = inspect(opts).Config;
+    return config;
+};
 
 /** A `docker image inspect` entry for the image the Dockerfile builds, with `overrides` applied. */
 function inspect({ user = 'nonroot:nonroot', label = '0.1.2', arch = 'amd64', config = {} } = {}) {
@@ -140,6 +153,53 @@ describe('AC3: an unwritable bind mount explains the documented uid requirement'
     assert.throws(() => checkBindMountRefusal({ code: 1, stderr: 'vyrtel: Permission denied (os error 13)' }), gateError(/without the uid hint/));
   });
 
+  /**
+   * A fake `docker` for awaitRefusal: the container exits after `exitAfter` inspections (never
+   * when null), printing `stdout`/`stderr`. Records every command it is given.
+   */
+  function fakeDocker({ exitAfter = null, code = 1, stdout = '', stderr: err = '' }) {
+    const calls = [];
+    let inspections = 0;
+    const exec = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'inspect') {
+        inspections += 1;
+        const exited = exitAfter !== null && inspections > exitAfter;
+        return { code: 0, stdout: exited ? `false ${code}\n` : 'true 0\n', stderr: '' };
+      }
+      if (args[0] === 'logs') return { code: 0, stdout, stderr: err };
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    return { exec, calls };
+  }
+  const refusal = (exec, timeoutMs = 400) =>
+    awaitRefusal({ image: 'vyrtel:rc', platform: 'linux/amd64', name: 'refused', mount: '/tmp/x:/data', timeoutMs, pollMs: 20, exec });
+
+  test('the refusal is awaited detached and the container removed', async () => {
+    const docker = fakeDocker({ exitAfter: 2, code: 1, stderr });
+    const r = await refusal(docker.exec);
+    assert.deepEqual(r, { code: 1, stderr });
+    assert.equal(checkBindMountRefusal(r).startsWith('vyrtel: creating /data/wal'), true);
+    assert.equal(docker.calls[0], 'run -d --platform linux/amd64 --name refused -v /tmp/x:/data vyrtel:rc');
+    assert.equal(docker.calls.at(-1), 'rm -f refused');
+  });
+
+  test('a server that keeps running fails at the deadline instead of hanging, and is removed', async () => {
+    const docker = fakeDocker({ exitAfter: null, stdout: 'Vyrtel 0.1.2\n' });
+    const started = Date.now();
+    await assert.rejects(refusal(docker.exec, 300), gateError(/still running 0\.3s after starting on a bind mount its user cannot write/));
+    assert.ok(Date.now() - started < 5_000, 'fails within its deadline');
+    assert.equal(docker.calls.at(-1), 'rm -f refused');
+  });
+
+  test('a server that becomes ready fails at once, before the deadline, and is removed', async () => {
+    const docker = fakeDocker({ exitAfter: null, stdout: 'Vyrtel 0.1.2\n\nReady.\n' });
+    const started = Date.now();
+    await assert.rejects(refusal(docker.exec, 60_000), gateError(/started and became ready on a bind mount/));
+    assert.ok(Date.now() - started < 5_000, 'does not wait for the deadline');
+    assert.equal(docker.calls.at(-1), 'rm -f refused');
+  });
+
   test('the hint the gate expects is the one the server prints', () => {
     const access = repoFile('crates/server/src/access.rs');
     assert.match(access, /pub const IMAGE_UID: u32 = 65532;/);
@@ -167,17 +227,32 @@ describe('AC1: the release checks the image on every published architecture', ()
     assert.match(smoke, /needs: \[preflight, verify\]/);
     assert.match(smoke, /platform: linux\/amd64, runner: ubuntu-latest/);
     assert.match(smoke, /platform: linux\/arm64, runner: ubuntu-24\.04-arm/);
-    assert.match(smoke, /release\.mjs verify-image vyrtel:release-candidate --version "\$\{\{ needs\.preflight\.outputs\.version \}\}" --platform "\$\{\{ matrix\.platform \}\}" --bind-mount on/);
+    assert.match(smoke, /release\.mjs verify-image vyrtel:release-candidate --version "\$\{\{ needs\.preflight\.outputs\.version \}\}" --platform "\$\{\{ matrix\.platform \}\}" --bind-mount on --record tested/);
     assert.match(smoke, /VYRTEL_VERSION=\$\{\{ needs\.preflight\.outputs\.version \}\}/);
-    assert.doesNotMatch(smoke, /push: true/);
     assert.match(jobBody(workflow, 'image'), /needs: \[preflight, image-smoke\]/);
   });
 
-  test('the pushed image is built for exactly the smoke-tested platforms, with the version label', () => {
+  test('each platform pushes by digest only after its smoke test, then proves the digest is the tested image', () => {
+    const smoke = jobBody(workflow, 'image-smoke');
+    const tested = smoke.indexOf('verify-image vyrtel:release-candidate');
+    const push = smoke.indexOf('push-by-digest=true');
+    const check = smoke.indexOf('verify-pushed-image');
+    assert.ok(tested >= 0 && push > tested && check > push, 'smoke test, then push, then check');
+    assert.doesNotMatch(smoke, /\n {10}tags:[^\n]*image_tags/, 'no release tag is pushed per platform');
+    assert.match(smoke, /verify-pushed-image "\$\{\{ needs\.preflight\.outputs\.image_repo \}\}@\$\{\{ steps\.push\.outputs\.digest \}\}" [^\n]*--tested tested/);
+    // The tested and pushed builds use the same labels and build arguments.
+    assert.equal((smoke.match(/labels: \$\{\{ steps\.meta\.outputs\.labels \}\}/g) ?? []).length, 2);
+    assert.equal((smoke.match(/build-args: VYRTEL_VERSION=\$\{\{ needs\.preflight\.outputs\.version \}\}/g) ?? []).length, 2);
+  });
+
+  test('the release tags point at the tested digests without a rebuild, and are checked against them', () => {
     const image = jobBody(workflow, 'image');
-    assert.match(image, new RegExp(`platforms: ${PLATFORMS.join(',')}\\n`));
-    assert.match(image, /VYRTEL_VERSION=\$\{\{ needs\.preflight\.outputs\.version \}\}/);
-    assert.match(image, /if: env\.PUBLISH == 'true'\n {8}run: node scripts\/release\/release\.mjs verify-pushed-image "\$\{\{ needs\.preflight\.outputs\.image_ref \}\}"/);
+    assert.doesNotMatch(image, /build-push-action/, 'image does not build');
+    assert.match(image, /pattern: image-tested-\*/);
+    assert.match(image, /for f in tested\/\*\.digest; do args\+=\("\$REPO@\$\(cat "\$f"\)"\); done/);
+    assert.match(image, new RegExp(`-eq ${PLATFORMS.length} \\]`), 'one tested digest per platform');
+    assert.match(image, /docker buildx imagetools create "\$\{args\[@\]\}"/);
+    assert.match(image, /if: env\.PUBLISH == 'true'\n {8}run: node scripts\/release\/release\.mjs verify-pushed-image "\$\{\{ needs\.preflight\.outputs\.image_ref \}\}" [^\n]*--tested tested/);
   });
 
   test('CI smoke-tests the image through the same gate', () => {
@@ -187,13 +262,36 @@ describe('AC1: the release checks the image on every published architecture', ()
 
   test('the pushed manifest must carry every platform, each non-root and labelled', () => {
     const oci = (arch, label = '0.1.2') => {
-      const { Config } = inspect({ label, arch });
-      return { os: 'linux', architecture: arch, config: Config };
+      return { os: 'linux', architecture: arch, config: ociConfig({ label, arch }) };
     };
     const both = { 'linux/amd64': oci('amd64'), 'linux/arm64': oci('arm64') };
     assert.deepEqual(checkManifest(both, '0.1.2').map((c) => c.platform), ['linux/amd64', 'linux/arm64']);
     assert.throws(() => checkManifest({ 'linux/amd64': oci('amd64') }, '0.1.2'), gateError(/no linux\/arm64 variant \(has linux\/amd64\)/));
     assert.throws(() => checkManifest({ ...both, 'linux/arm64': oci('arm64', 'dev') }, '0.1.2'), gateError(/is "dev", expected "0\.1\.2"/));
+  });
+
+  test('the published image must have exactly the tested layers on every tested platform', () => {
+    const layers = { 'linux/amd64': ['sha256:a1', 'sha256:a2'], 'linux/arm64': ['sha256:b1', 'sha256:b2'] };
+    const oci = (arch, diffIds) => ({ os: 'linux', architecture: arch, config: ociConfig({ arch }), rootfs: { type: 'layers', diff_ids: diffIds } });
+    const published = { 'linux/amd64': oci('amd64', layers['linux/amd64']), 'linux/arm64': oci('arm64', layers['linux/arm64']) };
+    const tested = Object.fromEntries(Object.entries(layers).map(([platform, diffIds]) => [platform, { platform, diffIds }]));
+    assert.ok(checkManifest(published, '0.1.2', PLATFORMS, tested).every((c) => c.sameAsTested));
+
+    const rebuilt = { ...published, 'linux/arm64': oci('arm64', ['sha256:b1', 'sha256:different']) };
+    assert.throws(() => checkManifest(rebuilt, '0.1.2', PLATFORMS, tested), gateError(/pushed linux\/arm64 image is not the one that was smoke-tested/));
+    const extraLayer = { ...published, 'linux/amd64': oci('amd64', [...layers['linux/amd64'], 'sha256:a3']) };
+    assert.throws(() => checkManifest(extraLayer, '0.1.2', PLATFORMS, tested), gateError(/linux\/amd64 image is not the one/));
+  });
+
+  test('a single-platform push inspects as one config; it is keyed by its platform', () => {
+    const single = { os: 'linux', architecture: 'arm64', config: ociConfig({ arch: 'arm64' }), rootfs: { diff_ids: ['sha256:b1'] } };
+    assert.deepEqual(Object.keys(imagesByPlatform(single)), ['linux/arm64']);
+    const map = { 'linux/amd64': single };
+    assert.equal(imagesByPlatform(map), map);
+    const r = testedRecord({ Id: 'sha256:img', RootFS: { Layers: ['sha256:b1'] } }, 'linux/arm64');
+    assert.deepEqual(r, { platform: 'linux/arm64', imageId: 'sha256:img', diffIds: ['sha256:b1'] });
+    assert.equal(recordName('linux/arm64'), 'linux-arm64.json');
+    assert.throws(() => testedRecord({ RootFS: { Layers: [] } }, 'linux/amd64'), gateError(/no layers/));
   });
 
   test('the host platform maps to Docker names', () => {

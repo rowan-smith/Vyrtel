@@ -32,8 +32,8 @@ The jobs run in this order. A failed job skips every job after it.
 | `ci`        | The whole [CI workflow](../.github/workflows/ci.yml) against the tagged commit: fmt, clippy, Rust tests, the restore drill, frontend lint/types/tests, Playwright E2E, the Docker [image checks](#container-image-checks) on `linux/amd64`, dependency checks, .NET build and the release gate tests.                                                                                                | Any CI job fails.                                                                         |
 | `binaries`  | Builds each target with the UI that passed CI and `VYRTEL_REQUIRE_WEB_UI=1`, so a missing UI is a build error. On its own runner, each binary must print `vyrtel <version>` and, started on an empty data directory, report that version from `/api/v1/system/info` and serve the built UI and its `/assets/*.js` entry script. | Build fails; wrong version; placeholder UI; missing UI assets; the server does not start. |
 | `verify`    | Combines the per-target checksums into `SHA256SUMS`, then checks the artifact set is exactly the four binaries, none is empty, and every checksum matches. Re-runs the binary check on the Linux x86_64 binary as downloaded. Checks the built artifacts have the hashes the performance gates profiled, or that the record documents reproducible equivalence. | A binary is missing, empty, unexpected or does not match its checksum; a profiled artifact's hash differs with no documented equivalence. |
-| `image-smoke`| On native `linux/amd64` and `linux/arm64` runners, builds the image with the release version and runs every [image check](#container-image-checks): non-root user and version label, `--version`, readiness and the embedded UI on a named volume, events surviving a recreated container, and the uid hint on an unwritable bind mount. | Any image check fails on either architecture.                                             |
-| `image`     | Only after both smoke tests pass, pushes the multi-architecture image with the preflight image tags, then inspects it in the registry: both platforms present, each running as `nonroot` with the release version label.                                                                                                        | The push fails, or the pushed image lacks a platform, the user or the label.              |
+| `image-smoke` | On native `linux/amd64` and `linux/arm64` runners, builds the image with the release version and runs every [image check](#container-image-checks): non-root user and version label, `--version`, readiness and the embedded UI on a named volume, events surviving a recreated container, and the uid hint on an unwritable bind mount. Only then pushes that platform's image **by digest, untagged**, and checks the pushed digest has exactly the tested image's layers. | Any image check fails on either architecture, or the pushed digest is not the tested image. |
+| `image`     | Only after both platforms pass, tags their two tested digests with the preflight image tags as one multi-platform image (`docker buildx imagetools create`; nothing is rebuilt), then inspects it in the registry: both platforms present, each running as `nonroot` with the release version label and the tested layers.      | A tested digest is missing, or the published image lacks a platform, the user, the label or the tested layers. |
 | `release`   | Re-checks `SHA256SUMS` and creates the GitHub release from the verified artifacts, as a prerelease (not Latest) for prerelease tags.                                                                                                                                                                                            | Checksums no longer match.                                                                |
 
 The checks are in [`scripts/release/release.mjs`](../scripts/release/release.mjs) (Node 22, no
@@ -53,7 +53,7 @@ Node 22 on the host, and removes every container and volume it creates, pass or 
 | version    | `docker run <image> --version` prints `vyrtel <version>`.                                                                                                                                                                                                            |
 | serve      | On a new named volume, `/health` answers, `/api/v1/system/info` reports the version, `/` serves the built UI and its entry script, `vyrtel healthcheck` passes inside the container, and `docker top` shows the server process as uid 65532.                       |
 | persist    | Three events are ingested and queried back; the container is stopped (it must exit 0), removed and recreated on the same volume; the query returns the same events with the same ids and timestamps, and `dataDir` and `durability` are unchanged.                     |
-| bind mount | A host directory owned by the runner's user with mode `555` is mounted at `/data`: the server must exit non-zero with the [uid hint](configuration.md#docker-and-bind-mounts). With root or passwordless `sudo`, the directory is then given to 65532 as documented and the server must start, answer and stop cleanly. |
+| bind mount | A host directory owned by the runner's user with mode `555` is mounted at `/data`, detached: the server must exit non-zero with the [uid hint](configuration.md#docker-and-bind-mounts). If it prints `Ready.`, or is still running after the timeout, the step fails rather than waiting, and the container is removed. With root or passwordless `sudo`, the directory is then given to 65532 as documented and the server must start, answer and stop cleanly. |
 
 `--bind-mount auto` (the default) runs the last step on Linux hosts only: Docker Desktop on macOS
 and Windows does not enforce host ownership on bind mounts, so the refusal cannot happen there.
@@ -75,9 +75,19 @@ vyrtel:rc: every image check passed for version 0.1.2
 ```
 
 An image built without `--build-arg VYRTEL_VERSION` is labelled `dev` and fails the config
-step. That is intended: the label is what operators and registries read. After a push,
-`verify-pushed-image <ref>` runs the config step against each platform in the registry
-(`docker buildx imagetools inspect`, no pull).
+step. That is intended: the label is what operators and registries read.
+
+**Publishing exactly what was tested.** `--record <dir>` writes `<dir>/linux-<arch>.json` once
+every check has passed: the platform and the tested image's layer diff IDs (the digests of its
+uncompressed layers, which identify its files whatever the compression, tag or manifest list).
+`verify-pushed-image <ref> --tested <dir>` inspects `<ref>` in the registry
+(`docker buildx imagetools inspect`, no pull), runs the config step on each recorded platform
+and requires its layers to equal the recorded ones. The release runs it twice: on each
+platform's untagged digest right after the push, and on the tagged release image. Without
+`--tested` it checks the config of every published platform only.
+The registry view of an image config is the OCI one, which has no field for Docker's
+HEALTHCHECK, so the registry check skips only the healthcheck; `verify-image` checks it on the
+tested image.
 
 ## Pre-tag performance sign-off
 
@@ -190,7 +200,9 @@ release gate: performance sign-off for v0.1.2 is incomplete:
        "ghcr.io/rowan-smith/vyrtel:0.1.2",
        "ghcr.io/rowan-smith/vyrtel:0.1",
        "ghcr.io/rowan-smith/vyrtel:latest"
-     ]
+     ],
+     "imageRef": "ghcr.io/rowan-smith/vyrtel:0.1.2",
+     "imageRepo": "ghcr.io/rowan-smith/vyrtel"
    }
    ```
 
@@ -293,8 +305,11 @@ Nothing is published by a failed run, so there is nothing to roll back.
 | `image-smoke`: `runs as user …` or `label … expected`                       | The Dockerfile lost its `USER`, or the build its `VYRTEL_VERSION` build arg. Fix it on `main` and re-tag.                 |
 | `image-smoke`: `data did not survive recreating the container`              | Acknowledged events were lost across a clean stop: a storage regression. Fix it and re-tag; never skip the step.          |
 | `image-smoke`: `without the uid hint` or `started on a bind mount`          | The diagnostic in `crates/server/src/access.rs` changed, or the image runs as root. Fix it and re-tag.                    |
-| `image`: `the pushed image has no linux/arm64 variant`                      | The push built fewer platforms than `image-smoke` tested. Fix `platforms:` and re-run the `image` job.                    |
+| `image-smoke`: `the pushed linux/… image is not the one that was smoke-tested` | The push-by-digest build did not reuse the tested build (a cache miss with a non-reproducible step). Re-run `image-smoke`; nothing was tagged. |
+| `image-smoke`: `the server … became ready` or `still running … after starting on a bind mount` | The image starts on a directory its user cannot write: it runs as root, or the bind-mount check broke. Fix it and re-tag. |
+| `image`: `expected 2 tested digests` or `has no linux/arm64 variant`        | A platform's tested digest was not uploaded. Re-run the failed jobs; nothing was tagged.                                  |
 | `release` fails after `image` pushed                                        | The image tags are already on GHCR. Re-run the `release` job; the binaries were verified and kept as `release-artifacts`. |
+| `image-smoke` fails after one platform pushed                               | Its untagged digest stays in GHCR but no tag points at it. It can be deleted from the package's versions; a re-run pushes again. |
 
 Re-running failed jobs on the same tag is safe. Re-tagging a different commit with a
 version that was already published is not: publish a new patch version instead.
@@ -303,10 +318,11 @@ version that was already published is not: publish a new patch version instead.
 
 - The embedded-UI and version checks run each binary natively, so they need a runner per
   platform; there is no Linux ARM64 or macOS x86_64 check without one.
-- The pushed multi-architecture image is rebuilt from the same commit, Dockerfile and build
-  arguments as the two smoke-tested images, reusing their build caches, rather than being the
-  smoke-tested images themselves. The registry check afterwards covers its user, label and
-  platforms but does not start it.
+- Each platform's image is pushed by a second build in the same job, reusing the tested
+  build's cache rather than exporting the loaded image. The layer check proves the pushed
+  image has exactly the tested files; if a cache miss produced different layers, the release
+  fails instead of publishing. The rest of the image config is checked (user, version label,
+  platform, volume, environment, healthcheck) but not compared byte for byte with the tested one.
 - Pull requests smoke-test only `linux/amd64`; `linux/arm64` is checked by `image-smoke` in
   the release workflow, including a manual rehearsal.
 - The bind-mount step needs a Linux host. The documented fix (`chown`) is exercised only where
