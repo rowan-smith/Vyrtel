@@ -9,6 +9,7 @@ mod api;
 mod auth;
 mod backup;
 mod crash;
+mod data_dir_access;
 mod ingest_limits;
 mod live;
 mod shutdown;

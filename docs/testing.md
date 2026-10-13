@@ -645,10 +645,12 @@ Set `VYRTEL_BIN` to test a different binary (e.g. a release build).
 
 ## Release gate tests
 
-`scripts/release/release.test.mjs` and `scripts/release/performance.test.mjs` (`node --test`,
+`scripts/release/release.test.mjs`, `scripts/release/performance.test.mjs` and
+`scripts/release/image.test.mjs` (`node --test`,
 CI job **Release gate tests**) cover the checks in
 [`scripts/release/release.mjs`](../scripts/release/release.mjs) and
-[`scripts/release/performance.mjs`](../scripts/release/performance.mjs) that
+[`scripts/release/performance.mjs`](../scripts/release/performance.mjs) and
+[`scripts/release/image.mjs`](../scripts/release/image.mjs) that
 [`release.yml`](../.github/workflows/release.yml) runs before publishing (see
 [releasing.md](releasing.md)):
 
@@ -661,10 +663,15 @@ CI job **Release gate tests**) cover the checks in
 | TC-PERF-01: missing or failed performance evidence blocks tagging and publication | in throwaway git repositories: no record → `pretag --create` (function and CLI) exits 1 and creates no tag; FAIL verdict, missing reviewer, failing or mis-marked metric rows, missing limit/baseline/category/reports/artifact hashes, N/A without reason, budgets declared after measuring; a version with no declared gates; a review after the tag or a lightweight tag is refused by the workflow check; uncommitted changes and existing tags |
 | TC-PERF-02: stale evidence is rejected until revalidated | a commit after PASS makes the record stale (no tag) until a PASS for the new commit; same-version gates (0.2.0) on different commits, or one missing; a record for another gate or version; rebuilt artifacts whose hash differs without documented `equivalence` |
 | TC-PERF-03: a complete passing matrix for the exact candidate passes | the documented template covers every metric category and passes; `pretag --create` makes an annotated tag on the candidate with the PASS lines, which `check-performance --tag-date` (the workflow's check) accepts; matching or documented-equivalent artifacts; prereleases need no sign-off; the manifest declares unique gates with issues; the workflow wiring |
+| REL-09 AC1: on each architecture the image becomes ready and serves the UI | the workflow runs `verify-image` in an `image-smoke` matrix on native `linux/amd64` and `linux/arm64` runners; each platform is pushed by digest only after its smoke test and checked to have the tested layers; `image` tags exactly those digests without building, and the published image is checked against the tested records (`checkManifest`: a missing platform, or a platform whose layers differ from the tested image, fails; `imagesByPlatform`, `testedRecord`); CI runs the same gate on amd64; an image for the wrong platform fails |
+| REL-09 AC2: events in a named volume survive recreating the container | `checkPersisted`: the same events and settings pass; a lost or changed event, an extra event, or a changed `dataDir` or `durability` fail; `docker port` parsing |
+| REL-09 AC3: an unwritable bind mount explains the uid requirement | `checkBindMountRefusal`: a refusal with the hint passes; a start that succeeds, or a refusal without the hint, fails; the strings it expects are the ones in `crates/server/src/access.rs`. Server side: `access::tests` (unit) and `data_dir_access` (integration, Unix, real binary on a `555` directory and on a missing directory under one). `awaitRefusal` with a fake `docker`: the expected refusal is returned and the container removed; a server that keeps running fails at the deadline (0.3 s) instead of hanging; one that prints `Ready.` fails at once; the container is removed every time |
+| REL-09 AC4: the image runs as non-root and advertises its version | `checkImageConfig`: `nonroot:nonroot`/`65532` pass; root, unset, `0:0` and a root group fail; a missing or `dev` version label fails; missing `/data` volume, storage path or healthcheck fail; `processUid` requires uid 65532 for the running process; the Dockerfile's `USER`, label and `/data` owner |
 
 ```bash
 node --test scripts/release/*.test.mjs
 VYRTEL_BIN=target/debug/vyrtel node --test scripts/release/*.test.mjs   # also checks a real binary
+VYRTEL_IMAGE=vyrtel:rc node --test scripts/release/image.test.mjs       # also runs verify-image (Docker)
 ```
 
 The CI **End-to-end** job also builds the server with `VYRTEL_REQUIRE_WEB_UI=1` and runs

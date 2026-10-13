@@ -4,7 +4,7 @@ name: Release
 #
 #   preflight ─┬─ performance ────────────┐
 #              ├─ ci (the full CI suite) ─┤
-#              └──────────────────────────┴─ binaries ─ verify ─ image ─ release
+#              └──────────────────────────┴─ binaries ─ verify ─ image-smoke ─ image ─ release
 #
 # - preflight: the tag must be v<semver> and match the workspace version, or nothing runs.
 # - performance: every performance gate for the version has a reviewer PASS for this exact
@@ -16,7 +16,12 @@ name: Release
 #   checked on its own runner before it is uploaded.
 # - verify: the full artifact set and SHA256SUMS, plus the Linux binary as shipped, and the
 #   built artifacts match the hashes the performance gates approved (or documented equivalence).
-# - image: smoke-tested locally before it is pushed; prereleases do not move `latest`.
+# - image-smoke: on native amd64 and arm64 runners, each image is checked as an operator runs it:
+#   non-root user and version label, readiness and the embedded UI, events surviving a recreated
+#   container on a named volume, and the uid hint on an unwritable bind mount. Only then is it
+#   pushed, by digest and untagged, and the pushed digest checked to have the tested layers.
+# - image: tags exactly those two tested digests as the multi-platform release image (no
+#   rebuild), then checks it in the registry; prereleases do not move `latest`.
 # - release: the GitHub release, last, from the verified artifacts. Prereleases are
 #   marked as such and never become the "latest" release.
 #
@@ -53,6 +58,8 @@ jobs:
       prerelease: ${{ steps.plan.outputs.prerelease }}
       make_latest: ${{ steps.plan.outputs.make_latest }}
       image_tags: ${{ steps.plan.outputs.image_tags }}
+      image_ref: ${{ steps.plan.outputs.image_ref }}
+      image_repo: ${{ steps.plan.outputs.image_repo }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -192,9 +199,81 @@ jobs:
           name: release-artifacts
           path: artifacts/*
 
-  image:
-    name: Container image
+  image-smoke:
+    name: Container image (${{ matrix.platform }})
     needs: [preflight, verify]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Native runners: the image is run on the architecture it is built for, not emulated.
+          - { platform: linux/amd64, runner: ubuntu-latest }
+          - { platform: linux/arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: docker/setup-buildx-action@v3
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.preflight.outputs.image_repo }}
+          # The version label is the release version (from the Dockerfile build arg), not the tag.
+          labels: org.opencontainers.image.version=${{ needs.preflight.outputs.version }}
+      - name: Build candidate
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: vyrtel:release-candidate
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VYRTEL_VERSION=${{ needs.preflight.outputs.version }}
+          cache-from: type=gha,scope=image-${{ matrix.runner }}
+          cache-to: type=gha,scope=image-${{ matrix.runner }},mode=max
+      # Non-root user and version label, --version, readiness and the embedded UI on a named
+      # volume, events and settings surviving a recreated container, and the uid hint on an
+      # unwritable bind mount (docs/releasing.md#container-image-checks). Records the tested
+      # image's layers only if every check passes.
+      - name: Smoke-test persistent deployment
+        run: node scripts/release/release.mjs verify-image vyrtel:release-candidate --version "${{ needs.preflight.outputs.version }}" --platform "${{ matrix.platform }}" --bind-mount on --record tested
+      - uses: docker/login-action@v3
+        if: env.PUBLISH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Untagged: nothing can pull it by a release tag until `image` assembles both platforms.
+      # Same builder, inputs and cache as the tested build; the next step proves the layers match.
+      - name: Push the tested image by digest
+        id: push
+        if: env.PUBLISH == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VYRTEL_VERSION=${{ needs.preflight.outputs.version }}
+          cache-from: type=gha,scope=image-${{ matrix.runner }}
+          outputs: type=image,name=${{ needs.preflight.outputs.image_repo }},push-by-digest=true,name-canonical=true,push=true
+      - name: Check the pushed digest is the tested image
+        if: env.PUBLISH == 'true'
+        run: |
+          node scripts/release/release.mjs verify-pushed-image "${{ needs.preflight.outputs.image_repo }}@${{ steps.push.outputs.digest }}" --version "${{ needs.preflight.outputs.version }}" --tested tested
+          echo "${{ steps.push.outputs.digest }}" > "tested/$(echo '${{ matrix.platform }}' | tr / -).digest"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-tested-${{ strategy.job-index }}
+          path: tested/
+
+  image:
+    name: Publish container image
+    needs: [preflight, image-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -204,31 +283,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-      - name: Build candidate (linux/amd64)
-        uses: docker/build-push-action@v6
+      - uses: actions/download-artifact@v4
         with:
-          context: .
-          platforms: linux/amd64
-          load: true
-          tags: vyrtel:release-candidate
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Check version output and embedded UI
-        run: |
-          printed="$(docker run --rm vyrtel:release-candidate --version)"
-          [ "$printed" = "vyrtel ${{ needs.preflight.outputs.version }}" ] || { echo "release gate: image --version printed '$printed'"; exit 1; }
-          docker run -d --name vyrtel -p 8080:8080 vyrtel:release-candidate
-          node scripts/release/release.mjs verify-server http://localhost:8080 --version "${{ needs.preflight.outputs.version }}"
-          docker exec vyrtel /vyrtel healthcheck
-      - name: Container logs
-        if: always()
-        run: docker logs vyrtel || true
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
+          pattern: image-tested-*
+          path: tested
+          merge-multiple: true
       - uses: docker/login-action@v3
         if: env.PUBLISH == 'true'
         with:
@@ -236,19 +296,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Image tags
-        run: echo "${{ needs.preflight.outputs.image_tags }}"
-      - name: Push
+        run: |
+          echo "${{ needs.preflight.outputs.image_tags }}"
+          ls -l tested
+      # Tags the smoke-tested per-platform images as one multi-platform image. Nothing is
+      # rebuilt: the release tags point at exactly the digests image-smoke tested and pushed.
+      - name: Publish the tested images under the release tags
         if: env.PUBLISH == 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          # From the preflight plan: prereleases get only their exact version tag.
-          tags: ${{ needs.preflight.outputs.image_tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        env:
+          TAGS: ${{ needs.preflight.outputs.image_tags }}
+          REPO: ${{ needs.preflight.outputs.image_repo }}
+        run: |
+          args=()
+          while read -r tag; do [ -n "$tag" ] && args+=(-t "$tag"); done <<< "$TAGS"
+          for f in tested/*.digest; do args+=("$REPO@$(cat "$f")"); done
+          [ "$(ls tested/*.digest | wc -l)" -eq 2 ] || { echo "release gate: expected 2 tested digests"; exit 1; }
+          docker buildx imagetools create "${args[@]}"
+      # Every platform present, non-root, labelled, and with the tested image's layers.
+      - name: Check the published image
+        if: env.PUBLISH == 'true'
+        run: node scripts/release/release.mjs verify-pushed-image "${{ needs.preflight.outputs.image_ref }}" --version "${{ needs.preflight.outputs.version }}" --tested tested
 
   release:
     name: Publish GitHub release

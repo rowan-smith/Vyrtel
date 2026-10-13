@@ -92,6 +92,8 @@ describe('AC4: a prerelease does not replace the stable latest channel', () => {
     assert.equal(plan.prerelease, false);
     assert.equal(plan.makeLatest, true);
     assert.deepEqual(plan.imageTags, ['ghcr.io/rowan-smith/vyrtel:0.1.2', 'ghcr.io/rowan-smith/vyrtel:0.1', 'ghcr.io/rowan-smith/vyrtel:latest']);
+    assert.equal(plan.imageRef, 'ghcr.io/rowan-smith/vyrtel:0.1.2');
+    assert.equal(plan.imageRepo, 'ghcr.io/rowan-smith/vyrtel');
   });
 
   test('prerelease is marked, not latest, and gets only its exact image tag', () => {
@@ -272,15 +274,20 @@ describe('AC2: nothing is published unless every gate passed', () => {
   test('only a tag push publishes; a manual run is a rehearsal', () => {
     assert.match(workflow, /PUBLISH: \$\{\{ github\.event_name == 'push' \}\}/);
     assert.match(workflow, /\n {2}release:\n(?: {4}.*\n)*? {4}if: github\.event_name == 'push'\n/);
-    assert.equal((workflow.match(/push: true/g) ?? []).length, 1, 'one image push');
-    assert.match(workflow, /if: env\.PUBLISH == 'true'\n {8}uses: docker\/build-push-action@v6\n(?: {8}.*\n)*? {10}push: true/);
+    // Images reach the registry in two places: an untagged push by digest per platform, and the
+    // tagging of those digests. Both run only when publishing.
+    assert.doesNotMatch(workflow, /push: true/);
+    assert.equal((workflow.match(/push=true/g) ?? []).length, 1, 'one push by digest');
+    assert.match(workflow, /if: env\.PUBLISH == 'true'\n {8}uses: docker\/build-push-action@v6\n(?: {8}.*\n)*? {10}outputs: type=image,[^\n]*push-by-digest=true[^\n]*push=true\n/);
+    assert.equal((workflow.match(/imagetools create/g) ?? []).length, 1, 'one tagging step');
+    assert.match(workflow, /if: env\.PUBLISH == 'true'\n {8}env:\n(?: {10}.*\n)+(?: {8}run: \|\n)(?: {10}.*\n)*? {10}docker buildx imagetools create/);
   });
 
   test('channels come from the preflight plan, never hard-coded', () => {
     assert.doesNotMatch(workflow, /latest=true/);
     assert.match(workflow, /prerelease: \$\{\{ needs\.preflight\.outputs\.prerelease \}\}/);
     assert.match(workflow, /make_latest: \$\{\{ needs\.preflight\.outputs\.make_latest \}\}/);
-    assert.match(workflow, /tags: \$\{\{ needs\.preflight\.outputs\.image_tags \}\}/);
+    assert.match(workflow, /TAGS: \$\{\{ needs\.preflight\.outputs\.image_tags \}\}/);
   });
 
   test('release builds refuse to embed the placeholder UI', () => {

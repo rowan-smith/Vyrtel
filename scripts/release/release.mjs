@@ -5,6 +5,9 @@
 //   node scripts/release/release.mjs verify-artifacts <dir> [--version 0.1.2]
 //   node scripts/release/release.mjs verify-binary <path> [--version 0.1.2]
 //   node scripts/release/release.mjs verify-server <url> [--version 0.1.2]
+//   node scripts/release/release.mjs verify-image <image> [--version 0.1.2] [--platform linux/arm64]
+//                                    [--bind-mount auto|on|off] [--record <dir>]
+//   node scripts/release/release.mjs verify-pushed-image <ref> [--version 0.1.2] [--tested <dir>]
 //   node scripts/release/release.mjs pretag --tag v0.1.2 [--evidence <dir>] [--create]
 //   node scripts/release/release.mjs check-performance --tag v0.1.2 --sha <commit> --evidence <dir>
 //                                    [--tag-date <iso>] [--artifacts <dir>]
@@ -99,6 +102,10 @@ export function releasePlan(tag, { image = 'ghcr.io/rowan-smith/vyrtel', root = 
     prerelease: t.prerelease,
     makeLatest: !t.prerelease,
     imageTags: tags.map((x) => `${repo}:${x}`),
+    // The exact-version tag, checked in the registry after the push.
+    imageRef: `${repo}:${t.version}`,
+    // Where each platform's tested image is pushed by digest before the tags are assembled.
+    imageRepo: repo,
   };
 }
 
@@ -210,7 +217,7 @@ function freePort() {
   });
 }
 
-function run(command, args, opts) {
+export function run(command, args, opts) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
@@ -298,6 +305,8 @@ export async function main(argv) {
         prerelease: plan.prerelease,
         make_latest: plan.makeLatest,
         image_tags: plan.imageTags,
+        image_ref: plan.imageRef,
+        image_repo: plan.imageRepo,
       });
       return;
     }
@@ -315,6 +324,25 @@ export async function main(argv) {
     case 'verify-server': {
       const r = await verifyServer(positional[0] ?? fail('verify-server needs a URL'), version);
       console.log(`${positional[0]}: version ${r.version}, embedded UI ok (${r.entry})`);
+      return;
+    }
+    case 'verify-image': {
+      const { verifyImage } = await import('./image.mjs');
+      const image = positional[0] ?? fail('verify-image needs an image reference');
+      const mode = flags['bind-mount'] ?? 'auto';
+      if (!['auto', 'on', 'off'].includes(mode)) fail(`--bind-mount must be auto, on or off, not "${mode}"`);
+      await verifyImage(image, version, {
+        ...(flags.platform ? { platform: flags.platform } : {}),
+        ...(flags.record ? { record: flags.record } : {}),
+        bindMount: mode,
+      });
+      console.log(`${image}: every image check passed for version ${version}`);
+      return;
+    }
+    case 'verify-pushed-image': {
+      const { verifyPushedImage } = await import('./image.mjs');
+      const ref = positional[0] ?? fail('verify-pushed-image needs an image reference');
+      await verifyPushedImage(ref, version, flags.tested ? { testedDir: flags.tested } : {});
       return;
     }
     case 'pretag': {
@@ -338,7 +366,7 @@ ${flags.tag} may be tagged on ${r.sha}; rerun with --create to create the tag`);
       return;
     }
     default:
-      fail(`unknown command "${command}"; use plan, verify-artifacts, verify-binary, verify-server, pretag or check-performance`);
+      fail(`unknown command "${command}"; use plan, verify-artifacts, verify-binary, verify-server, verify-image, verify-pushed-image, pretag or check-performance`);
   }
 }
 

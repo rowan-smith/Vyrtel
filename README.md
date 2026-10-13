@@ -112,9 +112,12 @@ docker build -t vyrtel .
 docker run -p 8080:8080 -v vyrtel-data:/data vyrtel
 ```
 
-(For a bind mount such as `-v ./vyrtel-data:/data` on Linux, make the
-directory writable by uid 65532 first — see
-[configuration](docs/configuration.md#docker-and-bind-mounts).)
+Keep `/data` on a named volume (as above) and the data survives
+recreating or upgrading the container. For a bind mount such as
+`-v ./vyrtel-data:/data` on Linux, run `sudo chown -R 65532:65532 vyrtel-data`
+first: the image runs as the non-root uid 65532, and an unwritable directory
+stops it with a hint saying so — see
+[configuration](docs/configuration.md#docker-and-bind-mounts).
 
 ### Send your first event
 
