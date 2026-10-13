@@ -92,6 +92,7 @@ describe('AC4: a prerelease does not replace the stable latest channel', () => {
     assert.equal(plan.prerelease, false);
     assert.equal(plan.makeLatest, true);
     assert.deepEqual(plan.imageTags, ['ghcr.io/rowan-smith/vyrtel:0.1.2', 'ghcr.io/rowan-smith/vyrtel:0.1', 'ghcr.io/rowan-smith/vyrtel:latest']);
+    assert.equal(plan.imageRef, 'ghcr.io/rowan-smith/vyrtel:0.1.2');
   });
 
   test('prerelease is marked, not latest, and gets only its exact image tag', () => {

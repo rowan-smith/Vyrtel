@@ -2,7 +2,10 @@
 # Vyrtel production image: one static-ish binary on a minimal runtime.
 #
 #   docker build -t vyrtel .
-#   docker run -p 8080:8080 -v ./vyrtel-data:/data vyrtel
+#   docker run -p 8080:8080 -v vyrtel-data:/data vyrtel
+#
+# Release images are built with --build-arg VYRTEL_VERSION=<version>, which
+# `scripts/release/release.mjs verify-image` checks against `vyrtel --version`.
 
 ARG RUST_VERSION=1.96
 ARG NODE_VERSION=22
@@ -32,9 +35,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # ---- runtime ---------------------------------------------------------------
 # distroless/cc: glibc + libgcc only, no shell, runs as an unprivileged user.
 FROM gcr.io/distroless/cc-debian12:nonroot
+ARG VYRTEL_VERSION=dev
+LABEL org.opencontainers.image.title="Vyrtel" \
+      org.opencontainers.image.description="Small, fast, self-hosted observability: logs, traces and metrics" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VYRTEL_VERSION}"
 COPY --from=build /vyrtel /vyrtel
-# Pre-create the data directory owned by the runtime user so named volumes
-# inherit the right ownership. Bind mounts: see docs/configuration.md.
+# Pre-create the data directory owned by the runtime user (uid/gid 65532) so
+# named volumes inherit the right ownership. Bind mounts keep the host
+# directory's owner: see docs/configuration.md#docker-and-bind-mounts.
 COPY --from=build --chown=nonroot:nonroot /data /data
 ENV VYRTEL_STORAGE_PATH=/data \
     VYRTEL_SERVER_BIND=0.0.0.0:8080

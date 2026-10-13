@@ -227,6 +227,10 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("vyrtel: {e}");
+                    let error = e.to_string();
+                    if server::access::is_access_error(&error) {
+                        eprint!("{}", server::access::hint(dir, &error));
+                    }
                     ExitCode::FAILURE
                 }
             };
@@ -234,6 +238,7 @@ fn main() -> ExitCode {
         Some(Command::Serve) | None => {}
     }
     init_logging(&config);
+    let data_dir = config.storage.path.clone();
     let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,
         Err(e) => {
@@ -266,11 +271,9 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("vyrtel: {e:#}");
-            let text = format!("{e:#}").to_ascii_lowercase();
-            if text.contains("permission denied") || text.contains("access is denied") {
-                eprintln!(
-                    "hint: the data directory must be writable by the user running Vyrtel                      (in Docker the image runs as uid 65532; see docs/configuration.md)"
-                );
+            let error = format!("{e:#}");
+            if server::access::is_access_error(&error) {
+                eprint!("{}", server::access::hint(&data_dir, &error));
             }
             ExitCode::FAILURE
         }

@@ -1,6 +1,7 @@
 //! The Vyrtel server: one process with HTTP API, OTLP ingestion, query
 //! engine, storage, metadata, background jobs and the embedded web UI.
 
+pub mod access;
 pub mod alerts;
 pub mod app;
 pub mod auth;

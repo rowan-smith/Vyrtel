@@ -308,14 +308,88 @@ clients that fall further behind are told how many batches they missed.
 
 ## Docker and bind mounts
 
-The image runs as the unprivileged `nonroot` user (uid/gid 65532). Named
-volumes work out of the box. With a bind mount on Linux, make the host
-directory writable for that user first:
+The image (`ghcr.io/rowan-smith/vyrtel`, `linux/amd64` and `linux/arm64`)
+runs as the unprivileged `nonroot` user, uid/gid 65532, and keeps all data
+in `/data` (`VYRTEL_STORAGE_PATH=/data`, declared as a volume). Each image
+carries its version in the `org.opencontainers.image.version` label:
 
 ```bash
-mkdir -p vyrtel-data && sudo chown 65532:65532 vyrtel-data
-docker run -p 8080:8080 -v ./vyrtel-data:/data ghcr.io/rowan-smith/vyrtel:latest
+docker image inspect --format '{{.Config.User}} {{index .Config.Labels "org.opencontainers.image.version"}}' ghcr.io/rowan-smith/vyrtel:0.1.2
+# nonroot:nonroot 0.1.2
 ```
+
+Pin a version tag (`0.1.2`, or `0.1` for patch updates) in production
+rather than `latest`, so a recreated container never upgrades by surprise
+([upgrading](#stopping-and-upgrading)).
+
+**Named volumes** work out of the box: a new volume copies the image's
+`/data`, owned by 65532. The data lives in the volume, not the container,
+so stopping, removing and recreating the container (for example to change
+an environment variable or upgrade the image) keeps every acknowledged
+event, dashboard, alert and API key:
+
+```bash
+docker run -d --name vyrtel -p 8080:8080 -v vyrtel-data:/data ghcr.io/rowan-smith/vyrtel:0.1.2
+docker stop vyrtel && docker rm vyrtel
+docker run -d --name vyrtel -p 8080:8080 -v vyrtel-data:/data ghcr.io/rowan-smith/vyrtel:0.1.2
+```
+
+Without `-v`, Docker creates an anonymous volume per container, and
+recreating the container starts with an empty one.
+
+**Bind mounts on Linux** keep the host directory's owner and mode, and a
+directory that `docker run` creates for a missing path is owned by root.
+Give the directory to uid/gid 65532 first:
+
+```bash
+mkdir -p vyrtel-data && sudo chown -R 65532:65532 vyrtel-data
+docker run -d --name vyrtel -p 8080:8080 -v ./vyrtel-data:/data ghcr.io/rowan-smith/vyrtel:0.1.2
+```
+
+If the directory is not writable, Vyrtel exits with status 1 before
+creating anything and says why:
+
+```text
+vyrtel: locking the data directory: I/O error on /data/.lock: Permission denied (os error 13): Permission denied (os error 13)
+hint: the data directory /data must be writable by the user running Vyrtel.
+      Vyrtel runs as uid 65532 (gid 65532); /data is owned by uid 0 (gid 0) with mode 555.
+      The Docker image runs as uid/gid 65532. Named volumes get that owner automatically;
+      for a bind mount, give the host directory to that user first, e.g.
+        sudo chown -R 65532:65532 ./vyrtel-data
+      See docs/configuration.md#docker-and-bind-mounts.
+```
+
+Run the `chown` on the host directory, then start the container again.
+`-R` matters when the directory already holds files written by another
+user, for example by an older container run as root. The same hint is
+printed outside Docker, naming the user Vyrtel runs as, and by
+`vyrtel check-data-dir` when it cannot read the directory
+(`check-data-dir` only reads, so it does not detect a directory that is
+readable but not writable). A read-only volume or mount (`:ro`) is refused
+too, with `mount it read-write (no :ro)` in place of the `chown` advice.
+
+Docker Desktop on macOS and Windows does not enforce host ownership on bind
+mounts, so no `chown` is needed there. On SELinux hosts, also add `:Z` to
+the mount (`-v ./vyrtel-data:/data:Z`). Running the image as another user
+(`--user`) is possible but the directory must then be writable by that
+user. Rootless Docker, user-namespace remapping, Kubernetes and Windows
+containers are not tested.
+
+Every release runs these steps on amd64 and arm64 before the image is
+published ([container image checks](releasing.md#container-image-checks)).
+
+#### Docker changes in 0.1.2
+
+* Images carry `org.opencontainers.image.version` (and title, description
+  and licence labels). Images you build yourself are labelled `dev` unless
+  you pass `--build-arg VYRTEL_VERSION=<version>`.
+* The permission hint names the directory, its owner and mode, the uid
+  Vyrtel runs as and the exact `chown -R 65532:65532` fix, and a read-only
+  mount gets its own advice. Before, it was one line pointing at this page.
+  The exit status (1) is unchanged.
+* Nothing else changes for existing deployments: the user (65532), `/data`,
+  the port and the healthcheck are as before, so existing named volumes and
+  correctly owned bind mounts keep working with the new image.
 
 ## Stopping and upgrading
 
