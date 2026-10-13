@@ -8,6 +8,8 @@
 /web/test-results
 /web/playwright-report
 **/*.db
+# Data-directory fixtures from released versions (tests/fixtures/datadir/README.md).
+!tests/fixtures/datadir/*/data/metadata/metadata.db
 .DS_Store
 .idea/
 *.iml

@@ -358,11 +358,16 @@ pub struct Process {
 impl Process {
     /// Start with auth disabled plus `env`, and wait until it is healthy.
     pub async fn start(dir: &Path, env: &[(&str, &str)]) -> Process {
+        Process::start_binary(Path::new(env!("CARGO_BIN_EXE_vyrtel")), dir, env).await
+    }
+
+    /// [`Process::start`] with another Vyrtel binary, such as an older release.
+    pub async fn start_binary(binary: &Path, dir: &Path, env: &[(&str, &str)]) -> Process {
         use std::process::{Command, Stdio};
         // Reserve a free port, then hand it to the server.
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let stderr = tempfile::NamedTempFile::new().unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_vyrtel"))
+        let child = Command::new(binary)
             .args(["--data-dir", dir.to_str().unwrap(), "--bind", &format!("127.0.0.1:{port}"), "--log-level", "warn"])
             .env("VYRTEL_AUTH_ENABLED", "false")
             .envs(env.iter().copied())
@@ -494,4 +499,86 @@ impl Sse {
             }
         }
     }
+}
+
+/// The trace id every shared fixture uses (tests/fixtures/README.md).
+pub const FIXTURE_TRACE: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
+
+/// A logged-in admin session against any Vyrtel: an in-process
+/// [`TestServer`] or a [`Process`], including older releases.
+pub struct Admin {
+    pub client: reqwest::Client,
+    pub url: String,
+    pub cookie: String,
+}
+
+impl Admin {
+    pub async fn login(s: &TestServer, password: &str) -> Admin {
+        Admin::login_at(&s.client, &s.url, password).await
+    }
+
+    pub async fn login_at(client: &reqwest::Client, url: &str, password: &str) -> Admin {
+        let r = client
+            .post(format!("{url}/api/v1/auth/login"))
+            .json(&json!({"username": "admin", "password": password}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "admin login");
+        let cookie = r.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
+        Admin { client: client.clone(), url: url.to_string(), cookie }
+    }
+
+    pub async fn get(&self, path: &str) -> Value {
+        let r = self.client.get(format!("{}{path}", self.url)).header("cookie", &self.cookie).send().await.unwrap();
+        assert_eq!(r.status(), 200, "GET {path}");
+        r.json().await.unwrap()
+    }
+
+    pub async fn post(&self, path: &str, body: Value) -> Value {
+        let r = self
+            .client
+            .post(format!("{}{path}", self.url))
+            .header("cookie", &self.cookie)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert!(r.status().is_success(), "POST {path} → {}", r.status());
+        r.json().await.unwrap_or(Value::Null)
+    }
+
+    pub async fn delete(&self, path: &str) -> u16 {
+        let r = self.client.delete(format!("{}{path}", self.url)).header("cookie", &self.cookie).send().await.unwrap();
+        r.status().as_u16()
+    }
+}
+
+/// The documented verification queries (docs/configuration.md#verification-queries),
+/// as one comparable value.
+pub async fn verification(a: &Admin) -> Value {
+    let mut counts = json!({});
+    for signal in ["logs", "traces", "metrics"] {
+        counts[signal] = a.post(&format!("/api/v1/query/{signal}/count"), json!({"query": ""})).await["count"].clone();
+    }
+    let trace = a.get(&format!("/api/v1/traces/{FIXTURE_TRACE}")).await;
+    let mut span_names: Vec<String> =
+        trace["spans"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap().to_string()).collect();
+    span_names.sort();
+    json!({
+        "counts": counts,
+        "errorLogs": a.post("/api/v1/query/logs", json!({"query": "level = Error", "limit": 100})).await["events"]
+            .as_array().unwrap().iter().map(|e| e["message"].clone()).collect::<Vec<_>>(),
+        "traceSpans": span_names,
+        "metricNames": a.get("/api/v1/metrics").await["metrics"],
+        "dashboards": a.get("/api/v1/dashboards").await,
+        "alerts": a.get("/api/v1/alerts").await["alerts"].as_array().unwrap().iter()
+            .map(|al| json!({"id": al["id"], "name": al["name"], "query": al["query"], "op": al["op"],
+                             "threshold": al["threshold"], "enabled": al["enabled"]}))
+            .collect::<Vec<_>>(),
+        "savedQueries": a.get("/api/v1/saved-queries").await,
+        "apiKeys": a.get("/api/v1/api-keys").await["apiKeys"].as_array().unwrap().iter()
+            .map(|k| json!({"id": k["id"], "name": k["name"], "prefix": k["prefix"], "scope": k["scope"]}))
+            .collect::<Vec<_>>(),
+    })
 }

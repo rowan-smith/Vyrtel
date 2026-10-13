@@ -198,10 +198,15 @@ fails is refused with exit status 1 and left untouched, so a partial or
 newer backup is never started half-empty (`--accept-incomplete-restore`
 starts a partial one on purpose). Then it takes the data-directory lock,
 checks again under it, removes the inventory, creates the stream
-directories, opens the metadata store (migrations), opens storage with that
-lock (recovery) and records the manifest. Nothing in the directory changes
-before the lock is held. See
-[backup and restore](configuration.md#backup-and-restore).
+directories, opens the metadata store (schema migrations, one transaction
+each), records the manifest with the current format and opens storage with
+that lock (recovery). Nothing in the directory changes before the lock is
+held, and the format is recorded before any telemetry file changes, so an
+interrupted upgrade is either finished by the next start or refused by an
+older version. `vyrtel check-data-dir` runs the same check and prints the
+migrations a start would make (`datadir::plan`) without changing anything.
+See [backup and restore](configuration.md#backup-and-restore) and
+[upgrades and data migrations](configuration.md#upgrades-and-data-migrations).
 
 On a stop signal (SIGINT/SIGTERM; on
 Windows Ctrl+C, Ctrl+Break, console close or system shutdown) the server

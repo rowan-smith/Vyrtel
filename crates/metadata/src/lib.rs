@@ -28,6 +28,11 @@ pub enum MetadataError {
     /// before anything is written.
     #[error("metadata schema version {found} is newer than this Vyrtel supports (up to {supported})")]
     NewerSchema { found: i64, supported: i64 },
+    /// A schema migration failed. Each migration is one transaction, so
+    /// the database is left at schema `at`, as the last one committed it;
+    /// the next open retries from there.
+    #[error("metadata migration to schema version {version} failed (the database stays at version {at}): {source}")]
+    Migration { version: i64, at: i64, source: rusqlite::Error },
 }
 
 /// The schema version this build migrates databases to.
@@ -369,6 +374,10 @@ impl Metadata {
     }
 
     fn init(conn: Connection) -> Result<Self> {
+        Self::init_with(conn, migrations::MIGRATIONS)
+    }
+
+    fn init_with(conn: Connection, migrations: &[(i64, &str)]) -> Result<Self> {
         // WAL for concurrent readers and crash safety; foreign keys are
         // off by default in SQLite and must be enabled per connection.
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -376,31 +385,40 @@ impl Metadata {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let m = Self { conn: Mutex::new(conn) };
-        m.migrate()?;
+        m.migrate(migrations)?;
         Ok(m)
     }
 
-    fn migrate(&self) -> Result<()> {
+    /// Apply every migration above the database's version, in order, each
+    /// in its own transaction together with its `schema_migrations` row. An
+    /// interruption (a failed statement, a crash, a full disk) rolls back
+    /// only the migration in progress, so the next open resumes with it.
+    fn migrate(&self, migrations: &[(i64, &str)]) -> Result<()> {
+        let supported = migrations.last().map_or(0, |m| m.0);
         let mut c = self.conn.lock().unwrap();
         c.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)",
         )?;
-        let current: i64 = c.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |r| r.get(0))?;
-        if current > SCHEMA_VERSION {
-            return Err(MetadataError::NewerSchema { found: current, supported: SCHEMA_VERSION });
+        let mut current: i64 =
+            c.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |r| r.get(0))?;
+        if current > supported {
+            return Err(MetadataError::NewerSchema { found: current, supported });
         }
-        for (version, sql) in migrations::MIGRATIONS {
+        for (version, sql) in migrations {
             if *version <= current {
                 continue;
             }
-            let tx = c.transaction()?;
-            tx.execute_batch(sql)?;
+            let failed = |source| MetadataError::Migration { version: *version, at: current, source };
+            let tx = c.transaction().map_err(failed)?;
+            tx.execute_batch(sql).map_err(failed)?;
             tx.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
                 params![version, now_ms()],
-            )?;
-            tx.commit()?;
-            tracing::info!(version, "applied metadata migration");
+            )
+            .map_err(failed)?;
+            tx.commit().map_err(failed)?;
+            tracing::info!(from = current, to = version, "applied metadata migration");
+            current = *version;
         }
         Ok(())
     }
@@ -958,4 +976,77 @@ fn validate_name(name: &str, what: &str) -> Result<()> {
         return Err(MetadataError::Invalid(format!("{what} name is too long")));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const V1: (i64, &str) = (1, "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL);");
+    const V2: (i64, &str) = (2, "ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;");
+    /// Changes the schema, then fails part-way through.
+    const V3_FAILS: (i64, &str) = (3, "CREATE TABLE tags (name TEXT); INSERT INTO missing VALUES (1);");
+    const V3: (i64, &str) = (3, "CREATE TABLE tags (name TEXT);");
+
+    fn open(path: &Path, migrations: &[(i64, &str)]) -> Result<Metadata> {
+        Metadata::init_with(Connection::open(path)?, migrations)
+    }
+
+    fn tables(path: &Path) -> Vec<String> {
+        let c = Connection::open(path).unwrap();
+        let mut st = c.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").unwrap();
+        st.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+    }
+
+    #[test]
+    fn an_interrupted_migration_rolls_back_and_resumes() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("metadata.db");
+        {
+            let m = open(&path, &[V1]).unwrap();
+            m.conn.lock().unwrap().execute("INSERT INTO notes (body) VALUES ('kept')", []).unwrap();
+        }
+
+        // Migration 2 commits, migration 3 fails part-way: only 3 is undone.
+        match open(&path, &[V1, V2, V3_FAILS]) {
+            Err(e @ MetadataError::Migration { version: 3, at: 2, .. }) => {
+                let text = e.to_string();
+                assert!(
+                    text.starts_with(
+                        "metadata migration to schema version 3 failed (the database stays at version 2): "
+                    ),
+                    "{text}"
+                );
+            }
+            Err(e) => panic!("expected Migration, got {e}"),
+            Ok(_) => panic!("migration 3 must fail"),
+        }
+        assert_eq!(Metadata::inspect(&path).unwrap(), 2);
+        assert_eq!(tables(&path), ["notes", "schema_migrations"], "nothing of migration 3 remains");
+
+        // The next start resumes with migration 3 and keeps the data.
+        let m = open(&path, &[V1, V2, V3]).unwrap();
+        assert_eq!(m.schema_version().unwrap(), 3);
+        let c = m.conn.lock().unwrap();
+        let row: (String, i64) =
+            c.query_row("SELECT body, pinned FROM notes", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(row, ("kept".to_string(), 0));
+        let applied: Vec<i64> = c
+            .prepare("SELECT version FROM schema_migrations ORDER BY version")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(applied, [1, 2, 3], "each migration applied once");
+    }
+
+    #[test]
+    fn the_newest_known_migration_bounds_what_opens() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("metadata.db");
+        drop(open(&path, &[V1, V2]).unwrap());
+        assert!(matches!(open(&path, &[V1]), Err(MetadataError::NewerSchema { found: 2, supported: 1 })));
+        assert_eq!(Metadata::inspect(&path).unwrap(), 2);
+    }
 }

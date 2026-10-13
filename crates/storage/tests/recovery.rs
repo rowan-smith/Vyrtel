@@ -810,9 +810,15 @@ fn checksummed_wal_record_in_a_newer_format_stops_startup() {
         }
         let wal = only_wal(d.path());
         append_record(&wal, record_version, payload);
-        // File headers are fine; recovery finds the record and stops before
+        // File headers are fine, but the read-only pre-start check replays
+        // the WAL and finds the record; so does recovery, which stops before
         // truncating the WAL or quarantining anything.
-        check_formats(d.path()).unwrap();
+        match check_formats(d.path()) {
+            Err(StorageError::UnsupportedFormat { path, what: w, found: f, .. }) => {
+                assert_eq!((path.as_path(), w, f), (wal.as_path(), what, found));
+            }
+            other => panic!("expected UnsupportedFormat, got {other:?}"),
+        }
         assert_newer_format_stops_startup(d.path(), &wal, what, found);
     }
 }
@@ -831,9 +837,103 @@ fn unknown_record_version_with_a_bad_checksum_is_still_a_corrupt_tail() {
         let mut f = std::fs::OpenOptions::new().append(true).open(&wal).unwrap();
         f.write_all(&[9, 3, 0, 0, 0, 1, 2, 3, 0, 0, 0, 0]).unwrap();
     }
+    // Damage, not a newer format: the pre-start check lets recovery judge it.
+    check_formats(d.path()).unwrap();
     let s = Storage::open(config(d.path()), None).unwrap();
     assert_eq!(messages(&s), ["acknowledged"]);
     let q = &s.recovery_report(Signal::Logs).quarantined[0];
     assert_eq!(q.kind, QuarantineKind::WalTail);
     assert!(q.reason.contains("unknown record version"), "{}", q.reason);
+}
+
+/// Observer 0.1.0 (Vyrtel's first release, under its earlier name) wrote the
+/// same layout with other magic bytes. Its files are not damage: startup
+/// stops, names the file, and moves or truncates nothing.
+#[test]
+fn observer_files_stop_startup_and_are_kept() {
+    // Rewrite a Vyrtel file's magic as Observer 0.1.0 wrote it.
+    let as_observer = |path: &Path, magic: &[u8; 8]| {
+        let mut b = std::fs::read(path).unwrap();
+        b[..8].copy_from_slice(magic);
+        std::fs::write(path, b).unwrap();
+    };
+
+    let d = tempfile::tempdir().unwrap();
+    {
+        let s = Storage::open(config(d.path()), None).unwrap();
+        submit(&s, vec![log(1, "acknowledged")]);
+    }
+    let wal = only_wal(d.path());
+    as_observer(&wal, wal::OBSERVER_WAL_MAGIC);
+    let before = snapshot(d.path());
+    for result in [check_formats(d.path()).map(|_| ()), Storage::open(config(d.path()), None).map(|_| ())] {
+        match result {
+            Err(e @ StorageError::ObserverFormat { .. }) => {
+                assert!(e.to_string().ends_with("was written by Observer 0.1.0 (Vyrtel's first release, under its earlier name), which this Vyrtel cannot read"), "{e}");
+            }
+            other => panic!("expected ObserverFormat, got {other:?}"),
+        }
+    }
+    assert_eq!(snapshot(d.path()), before, "nothing quarantined or truncated");
+
+    let d = tempfile::tempdir().unwrap();
+    let seg = sealed_segment(d.path());
+    as_observer(&seg, storage::segment::OBSERVER_SEGMENT_MAGIC);
+    let before = snapshot(d.path());
+    assert!(matches!(check_formats(d.path()), Err(StorageError::ObserverFormat { path }) if path == seg));
+    assert!(matches!(Storage::open(config(d.path()), None), Err(StorageError::ObserverFormat { path }) if path == seg));
+    assert_eq!(snapshot(d.path()), before, "nothing quarantined");
+}
+
+/// Rewrite a segment's summary as a newer writer would: its format version
+/// changed, recompressed and checksummed, the footer pointing at it.
+fn set_summary_format(path: &Path, v: u16) {
+    use storage::segment::{ChunkRef, FOOTER_LEN, Footer};
+    let b = std::fs::read(path).unwrap();
+    let footer = Footer::decode(&b[b.len() - FOOTER_LEN..]).unwrap();
+    let s = footer.summary;
+    let mut raw = zstd::bulk::decompress(&b[s.offset as usize..][..s.len as usize], s.raw_len as usize).unwrap();
+    raw[9..11].copy_from_slice(&v.to_le_bytes());
+    let comp = zstd::bulk::compress(&raw, 3).unwrap();
+    let mut out = b[..b.len() - FOOTER_LEN].to_vec();
+    let summary = ChunkRef {
+        offset: out.len() as u64,
+        len: comp.len() as u32,
+        raw_len: raw.len() as u32,
+        crc: crc32fast::hash(&comp),
+    };
+    out.extend_from_slice(&comp);
+    out.extend_from_slice(&Footer { summary, index: footer.index }.encode());
+    std::fs::write(path, out).unwrap();
+}
+
+#[test]
+fn segment_summary_in_a_newer_format_is_found_before_startup() {
+    // The rewrite itself keeps a version-1 segment readable.
+    let d = tempfile::tempdir().unwrap();
+    let seg = sealed_segment(d.path());
+    set_summary_format(&seg, 1);
+    check_formats(d.path()).unwrap();
+    assert_eq!(messages(&Storage::open(config(d.path()), None).unwrap()), ["sealed"]);
+
+    // Header and footer say version 1; only the checksummed summary says 2.
+    let d = tempfile::tempdir().unwrap();
+    let seg = sealed_segment(d.path());
+    set_summary_format(&seg, 2);
+    match check_formats(d.path()) {
+        Err(StorageError::UnsupportedFormat { path, what: "segment format", found: 2, supported: 1 }) => {
+            assert_eq!(path, seg)
+        }
+        other => panic!("expected UnsupportedFormat, got {other:?}"),
+    }
+    assert_newer_format_stops_startup(d.path(), &seg, "segment format", 2);
+
+    // A summary that fails its checksum is damage, judged by recovery.
+    let mut b = std::fs::read(&seg).unwrap();
+    let footer = storage::segment::Footer::decode(&b[b.len() - storage::segment::FOOTER_LEN..]).unwrap();
+    b[footer.summary.offset as usize] ^= 0xff;
+    std::fs::write(&seg, b).unwrap();
+    check_formats(d.path()).unwrap();
+    let s = Storage::open(config(d.path()), None).unwrap();
+    assert_eq!(s.recovery_report(Signal::Logs).quarantined[0].kind, QuarantineKind::Segment);
 }

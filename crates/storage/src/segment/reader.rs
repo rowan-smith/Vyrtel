@@ -5,6 +5,7 @@
 //! on demand, and only the columns a query needs are decompressed.
 
 use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use telemetry::*;
@@ -172,17 +173,67 @@ fn unsupported(path: &Path, found: u16) -> StorageError {
 }
 
 /// Fail with [`StorageError::UnsupportedFormat`] if the segment at `path`
-/// was written in a format version this build cannot read. Reads only the
-/// header and footer and never reports damage: a file too short or
-/// without the segment magic passes, and [`Segment::open`] judges it.
+/// was written in a format version this build cannot read, checking every
+/// version [`Segment::open`] checks: header, footer and summary. Never
+/// reports damage: a file too short, without the segment magic, or whose
+/// summary fails its checksum passes, and [`Segment::open`] judges it.
 ///
 /// The header carries no checksum, so an unknown header version counts
 /// as a newer format unless the checksummed footer proves the file is
 /// version 1: then the header is damaged, which `Segment::open` reports.
+/// The summary's version is read only once its checksum holds, streaming
+/// the compressed summary through the checksum in [`SCAN_CHUNK`] pieces and
+/// decompressing just the bytes up to its version, so memory stays bounded
+/// and no column or index is decoded.
 pub fn check_segment_format(path: &Path) -> Result<()> {
     let file = File::open(path).ctx(path)?;
     let file_len = file.metadata().ctx(path)?.len();
-    check_format(&file, path, file_len)
+    check_format(&file, path, file_len)?;
+    check_summary_version(&file, path, file_len)
+}
+
+/// How much of a chunk the format check holds in memory at once.
+pub const SCAN_CHUNK: usize = 64 * 1024;
+
+/// A summary starts with the segment id (u64), the signal (u8) and its
+/// format version (u16).
+const SUMMARY_VERSION_AT: usize = 9;
+
+fn check_summary_version(file: &File, path: &Path, file_len: u64) -> Result<()> {
+    if file_len < (HEADER_LEN + FOOTER_LEN) as u64 {
+        return Ok(());
+    }
+    let mut fb = [0u8; FOOTER_LEN];
+    read_exact_at(file, &mut fb, file_len - FOOTER_LEN as u64).ctx(path)?;
+    let Ok(footer) = Footer::decode(&fb) else { return Ok(()) };
+    let r = footer.summary;
+    let end = r.offset.saturating_add(r.len.into());
+    if end > file_len {
+        return Ok(());
+    }
+    let mut crc = crc32fast::Hasher::new();
+    let mut buf = vec![0u8; SCAN_CHUNK.min(r.len as usize)];
+    let mut at = r.offset;
+    while at < end {
+        let n = buf.len().min((end - at) as usize);
+        read_exact_at(file, &mut buf[..n], at).ctx(path)?;
+        crc.update(&buf[..n]);
+        at += n as u64;
+    }
+    if crc.finalize() != r.crc {
+        return Ok(());
+    }
+    let mut f = file;
+    f.seek(SeekFrom::Start(r.offset)).ctx(path)?;
+    let mut prefix = [0u8; SUMMARY_VERSION_AT + 2];
+    let decoded = zstd::stream::read::Decoder::new(f.take(r.len.into())).and_then(|mut d| d.read_exact(&mut prefix));
+    if decoded.is_err() {
+        return Ok(());
+    }
+    match u16::from_le_bytes([prefix[SUMMARY_VERSION_AT], prefix[SUMMARY_VERSION_AT + 1]]) {
+        FORMAT_VERSION => Ok(()),
+        found => Err(unsupported(path, found)),
+    }
 }
 
 fn check_format(file: &File, path: &Path, file_len: u64) -> Result<()> {
@@ -191,6 +242,9 @@ fn check_format(file: &File, path: &Path, file_len: u64) -> Result<()> {
     }
     let mut hb = [0u8; HEADER_LEN];
     read_exact_at(file, &mut hb, 0).ctx(path)?;
+    if hb.starts_with(OBSERVER_SEGMENT_MAGIC) {
+        return Err(StorageError::ObserverFormat { path: path.to_path_buf() });
+    }
     let mut fb = [0u8; FOOTER_LEN];
     read_exact_at(file, &mut fb, file_len - FOOTER_LEN as u64).ctx(path)?;
     // The footer is checked before its version, so this one is genuine.

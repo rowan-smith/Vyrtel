@@ -269,9 +269,12 @@ MB of ingest heap against the 76.8 MB budget
 vyrtel [OPTIONS] [COMMAND]
 
 Commands:
-  serve        Run the server (default)
-  healthcheck  Exit 0 if the server answers /health (used by Docker)
-  config       Print the effective configuration
+  serve           Run the server (default)
+  healthcheck     Exit 0 if the server answers /health (used by Docker)
+  config          Print the effective configuration
+  check-data-dir  Check, reading only, whether this version can start the
+                  data directory and what starting it would migrate
+                  (see Upgrades and data migrations)
 
 Options:
   -c, --config <PATH>         TOML config file
@@ -445,13 +448,25 @@ longer than `shutdown_timeout`.
 2. Check the last lines it logged: `shutdown complete` and exit status 0
    means everything accepted was acknowledged. `shutdown incomplete` (exit
    status 1) lists what was not; see above.
-3. Replace the binary or image (`docker pull`, new package) and read the
+3. Check that the new version can read the data directory, with the new
+   binary or image and before starting it:
+   `vyrtel check-data-dir --data-dir /var/lib/vyrtel/data`, or
+   `docker run --rm -v vyrtel-data:/data ghcr.io/rowan-smith/vyrtel:0.1.2 check-data-dir`.
+   It changes nothing. Exit status 1 means the new version cannot start it:
+   stay on the current one. Otherwise it lists what the first start will
+   migrate and which versions can read the directory afterwards; if it
+   lists a migration, take a [backup](#back-up-a-stopped-server) of the
+   stopped directory now. See
+   [Upgrades and data migrations](#upgrades-and-data-migrations).
+4. Replace the binary or image (`docker pull`, new package) and read the
    release notes for configuration changes, such as
    [Upgrading to 0.1.2](#upgrading-to-012).
-4. Start it on the same data directory. Each signal logs a `recovered
-   stream` line with the WAL records it replayed. After a clean stop,
+5. Start it on the same data directory. Each migration logs an `upgrading
+   the data directory` line before it runs and `data directory upgraded`
+   once all of them have; each signal logs a `recovered stream` line with
+   the WAL records it replayed. After a clean stop,
    `GET /api/v1/system/storage` shows an empty `recovery.quarantined` list.
-5. Check `GET /ready` is `200` and that recent data is queryable.
+6. Check `GET /ready` is `200` and that recent data is queryable.
 
 Zero-downtime upgrades of a single process are not supported: between the
 old process exiting and the new one listening, connections are refused.
@@ -670,7 +685,8 @@ fix the restore and start again:
 | `metadata/metadata.db` but a signal's `wal/` or `segments/` directory is missing (no `vyrtel.json`) | `is incomplete: wal/logs is missing; …`                  | Restore the whole directory again |
 | `vyrtel.json` is not valid JSON, has no usable `format`, or its inventory lists something other than WAL and segment files | `has an unusable vyrtel.json: …` | Restore `vyrtel.json` from the same backup |
 | `vyrtel.json` has a newer `format`                                               | `has format 2 (written by Vyrtel 0.3.0), but Vyrtel 0.1.2 reads only format 1` | Start it with that version or newer |
-| A segment or WAL file in a newer format                                          | `cannot be read by Vyrtel 0.1.2: segments/logs/000000000004.seg uses segment format version 2, …` | Start it with the version that wrote it, or newer |
+| A WAL or segment file written by Observer 0.1.0 (Vyrtel's first release, under its earlier name) | `was written by Observer 0.1.0, … (segments/logs/000000000001.seg is in Observer's file format), and Vyrtel 0.1.2 cannot read its telemetry` | See [Data from Observer 0.1.0](#data-from-observer-010) |
+| A segment or WAL file in a newer format (its header or footer, or any checksummed WAL record or event batch in it) | `cannot be read by Vyrtel 0.1.2: segments/logs/000000000004.seg uses segment format version 2, …` | Start it with the version that wrote it, or newer |
 | `metadata/metadata.db` migrated by a newer version                              | `cannot be read by Vyrtel 0.1.2: metadata/metadata.db has schema version 2, …` | Start it with the version that wrote it, or newer |
 | `metadata/metadata.db` is not an SQLite database                                 | `has an unreadable metadata/metadata.db: …`                             | Restore it from the same backup |
 
@@ -726,13 +742,14 @@ newer Vyrtel is never quarantined.
   which does not know about it, leaves it in place while changing files, so
   0.1.2 then refuses the directory as incomplete. Start that once with
   `--accept-incomplete-restore` after checking nothing was actually lost.
-* Segment and WAL headers and the metadata schema are checked before
-  anything changes. A newer version of an individual WAL record or event
-  encoding is found while recovering that signal's WAL: startup stops there
-  and that WAL is left as it was, but signals recovered before it may
-  already have had their ordinary crash recovery (sealing old WALs). A
-  newer Vyrtel always raises the `vyrtel.json` format when it changes any of
-  these, so a whole backup from it is refused before that.
+* The check reads every version recovery reads but not the data: per WAL
+  record a few bytes, per segment its header, footer and summary. It runs
+  twice per start (before and after taking the lock), so it adds a little
+  startup time on directories with large WALs; see
+  [measurements](testing.md#startup-format-check). Before 0.1.2 a newer
+  WAL record, event encoding or segment summary was found only while
+  recovering that signal, after signals recovered earlier had already had
+  their crash recovery.
 * `vyrtel.json`'s `writtenBy` is updated by every version that starts the
   directory, so it names the newest version that has used it.
 
@@ -780,6 +797,205 @@ scripts/backup/restore-drill.sh target/release/vyrtel
 * Once started by 0.1.2, a data directory still starts with 0.1.1, which
   ignores `vyrtel.json`; see the limitation above before going back to
   0.1.2 afterwards.
+
+## Upgrades and data migrations
+
+An upgrade never needs an export or import: start the new version on the
+same data directory, as in the [upgrade runbook](#upgrade-runbook). The
+first start migrates what has to change, and any version from 0.1.2 on
+refuses data it cannot read instead of changing it.
+
+### Before upgrading: `vyrtel check-data-dir`
+
+Run the **new** version's `check-data-dir` on the stopped data directory.
+It reads only (no lock file, no journal, nothing created, safe even if it
+is the wrong directory) and runs the same checks as a start, so it answers
+"can this version read my data?" before you switch:
+
+* Exit status **0**: the new version can start it. It prints what it found,
+  what the first start will change, and which versions can read the
+  directory afterwards.
+* Exit status **1**: it cannot. It prints the same message a start would
+  (see [What startup checks](#what-startup-checks)), for example a directory
+  written by a newer Vyrtel, and changes nothing. Keep running the version
+  you have.
+* Exit status **2**: the configuration could not be loaded.
+
+`--data-dir`, `-c` and `VYRTEL_STORAGE_PATH` choose the directory as they do
+for a start, and `--accept-incomplete-restore` shows what such a start
+would accept. For a data directory written by 0.1.1:
+
+```text
+$ vyrtel check-data-dir --data-dir /var/lib/vyrtel/data
+data directory /var/lib/vyrtel/data
+  vyrtel.json: none (written before 0.1.2, or a first start that stopped early)
+  metadata/metadata.db: schema version 1
+Vyrtel 0.1.2 (format 1, metadata schema up to 1) can start it.
+Starting it will:
+  - record data-directory format 1 in vyrtel.json (it has none: written before 0.1.2)
+Afterwards every release that reads it now (Vyrtel 0.1.1 and later) can still read it.
+```
+
+The same directory once 0.1.2 has stopped cleanly:
+
+```text
+data directory /var/lib/vyrtel/data
+  vyrtel.json: format 1, last written by Vyrtel 0.1.2
+  clean-shutdown inventory: every WAL and segment file is present with its size
+  metadata/metadata.db: schema version 1
+Vyrtel 0.1.2 (format 1, metadata schema up to 1) can start it.
+Starting it migrates nothing.
+Afterwards every release that reads it now (Vyrtel 0.1.1 and later) can still read it.
+```
+
+### What a start migrates
+
+| Step (as `check-data-dir` and the startup log name it) | When | Interrupted? | Afterwards readable by |
+|---|---|---|---|
+| `record data-directory format 1 in vyrtel.json` | the directory has no `vyrtel.json` (0.1.1) | atomic: `vyrtel.json` is there or not; the next start writes it | every Vyrtel release (0.1.1 ignores the file) |
+| `migrate metadata/metadata.db from schema version N to M` | a release with a newer metadata schema (none yet: every release so far uses schema 1) | each version is one SQLite transaction: the database stays at the last version committed, and the next start continues from there | only releases that know schema M |
+
+Telemetry files are never rewritten by an upgrade: every release so far
+reads and writes WAL format 1, record version 1, event codec 1 and segment
+format 1, and a future release that changes one keeps the old decoder
+([Versioning](storage-format.md#versioning)). The order of a start is
+fixed: check (reading only), lock, metadata migrations, `vyrtel.json` with
+the new format, then storage recovery. So an upgrade interrupted at any
+point has already recorded the new format before any telemetry file
+changes, and a version that cannot read that format refuses the directory
+instead of misreading it.
+
+### Prerequisites for a migration
+
+When `check-data-dir` lists a `migrate` step it ends with `Back up the
+stopped data directory first`:
+
+1. Stop the old version cleanly (exit status 0, see the
+   [upgrade runbook](#upgrade-runbook)), so the backup carries its
+   clean-shutdown inventory.
+2. Take a [backup of the stopped data directory](#back-up-a-stopped-server)
+   and keep it until the new version has run for as long as you might want
+   to go back. It is the only way back to the old version (see below).
+3. Leave free space of about the size of `metadata/metadata.db` on its
+   volume: SQLite writes the migration to its `-wal` file before
+   committing it. A full disk fails the migration, which is rolled back.
+4. Run the new version as the same user, so it can write the directory.
+
+Recording `vyrtel.json`, the only change 0.1.2 makes to a 0.1.1 directory,
+needs no backup to be undone; it is still a good moment to take one.
+
+### Downgrades
+
+| Release | Data-directory format | Metadata schema | Refuses newer data unchanged |
+|---------|-----------------------|-----------------|------------------------------|
+| 0.1.0 (Observer) | Observer's own (see below) | 1 | no               |
+| 0.1.1   | 1                     | 1               | no                           |
+| 0.1.2   | 1                     | 1               | yes                          |
+
+* A release can read a directory whose format and schema are at most its
+  own. `check-data-dir` prints the oldest release that can read the
+  directory after the upgrade (from this table, `datadir::RELEASES`).
+* From 0.1.2 on, a release refuses a directory in a newer format, with a
+  newer metadata schema, or with any WAL or segment file in a newer format,
+  and changes nothing in it (exit status 1, see
+  [What startup checks](#what-startup-checks)).
+* 0.1.1 does not check: it would open a newer metadata schema or set
+  aside newer files as damaged. Never start it on a directory a newer
+  release has migrated.
+* Going back after 0.1.2: 0.1.1 still reads the directory, as nothing but
+  `vyrtel.json` was added. Starting it leaves a clean-shutdown inventory
+  that no longer matches, so the next 0.1.2 start is refused as incomplete;
+  start that once with `--accept-incomplete-restore` after checking that
+  nothing is missing ([Limitations](#what-startup-checks)).
+* Going back after a migration that `check-data-dir` reported as readable
+  only by newer releases: stop the new version, restore the backup taken
+  before the upgrade, and start the old version on it. Telemetry and
+  configuration changes made since the upgrade are not in that backup.
+  Converting a directory back to an older format is not supported.
+
+### Data from Observer 0.1.0
+
+Vyrtel's first release, 0.1.0, was published as **Observer** (`observer`
+binaries, `OBSERVER_*` variables, `obs_` API keys). Its WAL and segment
+files have the same layout as Vyrtel's but other magic bytes (`OBSVWAL1`,
+`OBSVSEG1`), and no Vyrtel release reads them. 0.1.1 took them for damage
+and moved every one to `quarantine/`, so an Observer directory started
+with 0.1.1 showed no telemetry. From 0.1.2 such a directory is refused
+before anything changes:
+
+```text
+vyrtel: data directory /var/lib/vyrtel/data was written by Observer 0.1.0, Vyrtel's first release under its earlier name (segments/logs/000000000001.seg is in Observer's file format), and Vyrtel 0.1.2 cannot read its telemetry. Vyrtel did not start and changed nothing in it. Keep running Observer 0.1.0 on it, or start Vyrtel on a new data directory (see docs/configuration.md#upgrades-and-data-migrations)
+```
+
+Keep Observer 0.1.0 running on that directory for as long as you need its
+data, and point Vyrtel at a new one. Observer 0.1.0 cannot read Vyrtel's
+files either. If 0.1.1 already quarantined them, the files in
+`quarantine/<signal>/` are Observer's originals with a `.<timestamp>`
+suffix and nothing was lost: stop Vyrtel, copy the directory, move each
+file in the copy back to `wal/<signal>/` (`.wal`) or `segments/<signal>/`
+(`.seg`) without the suffix, and start Observer 0.1.0 on the copy. It
+reads them again (and sets aside the files 0.1.1 wrote there).
+
+### Interrupted upgrades
+
+Start the same new version again: the upgrade continues where it stopped.
+
+| Interrupted during | What is on disk | Next start of the new version | An older version |
+|---|---|---|---|
+| the read-only check, or before the lock is taken | unchanged | starts from the beginning | starts as before |
+| recording `vyrtel.json` | the old `vyrtel.json` (or none), maybe a `vyrtel.json.tmp`, which is ignored and replaced | records it | starts as before |
+| a metadata migration | the schema of the last committed migration | continues with the next migration | from 0.1.2: refused unchanged if that schema is newer than it knows; 0.1.1: do not start it, restore the backup |
+| storage recovery, after `vyrtel.json` was recorded | the new format recorded; WALs partly replayed | ordinary crash recovery | from 0.1.2: refused unchanged if the format is newer than it reads |
+
+A migration that fails rather than stops, for example on a full disk,
+stops the start with exit status 1 and a message such as:
+
+```text
+vyrtel: opening metadata store: metadata migration to schema version 2 failed (the database stays at version 1): database or disk is full. Starting again retries the migration; to go back to the version you upgraded from, restore the backup taken before the upgrade (see docs/configuration.md#upgrades-and-data-migrations)
+```
+
+Fix the cause and start again. If it keeps failing, restore the backup
+taken before the upgrade and start the old version on it.
+
+### Reproducing an upgrade from 0.1.1
+
+`tests/fixtures/datadir/v0.1.1/data` is a data directory written and
+cleanly stopped by the 0.1.1 release
+([fixtures](../tests/fixtures/datadir/README.md)). From the repository root
+(Linux, macOS):
+
+```bash
+cp -R tests/fixtures/datadir/v0.1.1/data /tmp/vyrtel-upgrade
+# git keeps no empty directories; the release left these in place:
+mkdir -p /tmp/vyrtel-upgrade/{wal,segments}/{logs,traces,metrics}
+vyrtel check-data-dir --data-dir /tmp/vyrtel-upgrade        # exit 0, plan as above
+VYRTEL_RETENTION_LOGS=forever VYRTEL_RETENTION_TRACES=forever VYRTEL_RETENTION_METRICS=forever \
+  VYRTEL_AUTH_ENABLED=true vyrtel --data-dir /tmp/vyrtel-upgrade &
+curl -s -c /tmp/cookies -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"fixture-password"}' localhost:8080/api/v1/auth/login
+curl -s -b /tmp/cookies -H 'content-type: application/json' -d '{"query":""}' \
+  localhost:8080/api/v1/query/logs/count
+# {"count":10,…}   as in fixture.json "answers"
+```
+
+Retention is turned off because the fixture's events are as old as the
+fixture. `tests/integration/upgrade.rs` runs this for every committed
+release and compares every [verification query](#verification-queries)
+with the answers that release gave.
+
+#### Upgrade changes in 0.1.2
+
+* New `vyrtel check-data-dir` command.
+* A start logs each migration (`upgrading the data directory`) and
+  `data directory upgraded`.
+* `vyrtel.json` is now recorded before storage recovery instead of after it.
+* A WAL record, event batch or segment summary in a newer format is found
+  by the check before anything changes, in every signal, instead of while
+  recovering its signal.
+* A failed metadata migration names the version it stopped at.
+* A data directory written by Observer 0.1.0 is refused with exit status 1
+  and left unchanged. Before, every WAL and segment file in it was moved
+  to `quarantine/` as damaged.
 
 ## Storage failures
 

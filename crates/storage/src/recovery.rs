@@ -301,6 +301,7 @@ pub fn recover(signal: Signal, dirs: &StreamDirs, seg_opts: &SegmentWriteOptions
             Err(ReplayError::Unsupported { what, found, supported }) => {
                 return Err(StorageError::UnsupportedFormat { path, what, found, supported });
             }
+            Err(ReplayError::Observer) => return Err(StorageError::ObserverFormat { path }),
             Err(ReplayError::BadHeader) => {
                 let reason = "WAL header is missing, truncated or has an unknown magic or version".to_string();
                 quarantine(dirs, signal, QuarantineKind::Wal, &path, reason, &mut report)?;
@@ -427,8 +428,13 @@ fn preserve_tail(
 /// Check, without changing anything, that every segment and WAL file under
 /// `data_dir` is in a format this build reads; fails with
 /// [`StorageError::UnsupportedFormat`] for the first one that is not.
-/// Reads only file headers and footers, so it is cheap enough to run
-/// before every start. Damaged files pass: recovery judges them. Missing
+/// Checks every version recovery would: segment header, footer and
+/// summary ([`check_segment_format`]), and each WAL's header, record
+/// versions and batch codec versions ([`wal::check_record_formats`]), so a
+/// newer file in one signal stops startup before recovery has changed any
+/// signal. Memory stays bounded and no event, column or index is decoded:
+/// a WAL record costs its 5-byte prefix and one payload byte, a segment its
+/// summary's checksum. Damaged files pass: recovery judges them. Missing
 /// directories pass too (a new data directory has none).
 pub fn check_formats(data_dir: &Path) -> Result<()> {
     for signal in Signal::ALL {
@@ -441,10 +447,25 @@ pub fn check_formats(data_dir: &Path) -> Result<()> {
         for (name, path) in list_if_exists(&dirs.wal)? {
             if parse_wal_file_name(&name).is_some() {
                 wal::check_wal_format(&path)?;
+                check_wal_records(&path)?;
             }
         }
     }
     Ok(())
+}
+
+/// Find a checksummed record or batch in a newer format in the WAL at
+/// `path`, as recovery would. A bad header or a damaged tail passes:
+/// recovery quarantines or truncates it.
+fn check_wal_records(path: &Path) -> Result<()> {
+    match wal::check_record_formats(path, codec::CODEC_VERSION) {
+        Ok(()) | Err(ReplayError::BadHeader) => Ok(()),
+        Err(ReplayError::Unsupported { what, found, supported }) => {
+            Err(StorageError::UnsupportedFormat { path: path.to_path_buf(), what, found, supported })
+        }
+        Err(ReplayError::Observer) => Err(StorageError::ObserverFormat { path: path.to_path_buf() }),
+        Err(ReplayError::Io(source)) => Err(StorageError::Io { path: path.to_path_buf(), source }),
+    }
 }
 
 fn list_if_exists(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
