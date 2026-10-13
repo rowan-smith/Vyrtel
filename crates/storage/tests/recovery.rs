@@ -884,3 +884,56 @@ fn observer_files_stop_startup_and_are_kept() {
     assert!(matches!(Storage::open(config(d.path()), None), Err(StorageError::ObserverFormat { path }) if path == seg));
     assert_eq!(snapshot(d.path()), before, "nothing quarantined");
 }
+
+/// Rewrite a segment's summary as a newer writer would: its format version
+/// changed, recompressed and checksummed, the footer pointing at it.
+fn set_summary_format(path: &Path, v: u16) {
+    use storage::segment::{ChunkRef, FOOTER_LEN, Footer};
+    let b = std::fs::read(path).unwrap();
+    let footer = Footer::decode(&b[b.len() - FOOTER_LEN..]).unwrap();
+    let s = footer.summary;
+    let mut raw = zstd::bulk::decompress(&b[s.offset as usize..][..s.len as usize], s.raw_len as usize).unwrap();
+    raw[9..11].copy_from_slice(&v.to_le_bytes());
+    let comp = zstd::bulk::compress(&raw, 3).unwrap();
+    let mut out = b[..b.len() - FOOTER_LEN].to_vec();
+    let summary = ChunkRef {
+        offset: out.len() as u64,
+        len: comp.len() as u32,
+        raw_len: raw.len() as u32,
+        crc: crc32fast::hash(&comp),
+    };
+    out.extend_from_slice(&comp);
+    out.extend_from_slice(&Footer { summary, index: footer.index }.encode());
+    std::fs::write(path, out).unwrap();
+}
+
+#[test]
+fn segment_summary_in_a_newer_format_is_found_before_startup() {
+    // The rewrite itself keeps a version-1 segment readable.
+    let d = tempfile::tempdir().unwrap();
+    let seg = sealed_segment(d.path());
+    set_summary_format(&seg, 1);
+    check_formats(d.path()).unwrap();
+    assert_eq!(messages(&Storage::open(config(d.path()), None).unwrap()), ["sealed"]);
+
+    // Header and footer say version 1; only the checksummed summary says 2.
+    let d = tempfile::tempdir().unwrap();
+    let seg = sealed_segment(d.path());
+    set_summary_format(&seg, 2);
+    match check_formats(d.path()) {
+        Err(StorageError::UnsupportedFormat { path, what: "segment format", found: 2, supported: 1 }) => {
+            assert_eq!(path, seg)
+        }
+        other => panic!("expected UnsupportedFormat, got {other:?}"),
+    }
+    assert_newer_format_stops_startup(d.path(), &seg, "segment format", 2);
+
+    // A summary that fails its checksum is damage, judged by recovery.
+    let mut b = std::fs::read(&seg).unwrap();
+    let footer = storage::segment::Footer::decode(&b[b.len() - storage::segment::FOOTER_LEN..]).unwrap();
+    b[footer.summary.offset as usize] ^= 0xff;
+    std::fs::write(&seg, b).unwrap();
+    check_formats(d.path()).unwrap();
+    let s = Storage::open(config(d.path()), None).unwrap();
+    assert_eq!(s.recovery_report(Signal::Logs).quarantined[0].kind, QuarantineKind::Segment);
+}

@@ -280,6 +280,33 @@ async fn future_formats_are_refused_read_only_naming_the_supported_versions() {
     refused("metadata/metadata.db has schema version 2, and this version knows schema versions up to 1");
     schema(1);
 
+    // A segment whose header and footer say version 1 but whose
+    // checksummed summary says 2: found by the check, not by recovery after
+    // metadata migrations and the manifest write.
+    let seg = std::fs::read_dir(dir.join("segments").join("traces")).unwrap().flatten().next().unwrap().path();
+    let seg_bytes = std::fs::read(&seg).unwrap();
+    {
+        use storage::segment::{ChunkRef, FOOTER_LEN, Footer};
+        let b = &seg_bytes;
+        let footer = Footer::decode(&b[b.len() - FOOTER_LEN..]).unwrap();
+        let s = footer.summary;
+        let mut raw = zstd::bulk::decompress(&b[s.offset as usize..][..s.len as usize], s.raw_len as usize).unwrap();
+        raw[9..11].copy_from_slice(&2u16.to_le_bytes());
+        let comp = zstd::bulk::compress(&raw, 3).unwrap();
+        let mut out = b[..b.len() - FOOTER_LEN].to_vec();
+        let summary = ChunkRef {
+            offset: out.len() as u64,
+            len: comp.len() as u32,
+            raw_len: raw.len() as u32,
+            crc: crc32fast::hash(&comp),
+        };
+        out.extend_from_slice(&comp);
+        out.extend_from_slice(&Footer { summary, index: footer.index }.encode());
+        std::fs::write(&seg, out).unwrap();
+    }
+    refused(&format!("{} uses segment format version 2, and this version reads only 1", rel(dir, &seg)));
+    std::fs::write(&seg, &seg_bytes).unwrap();
+
     // A checksummed WAL record in a newer format, in the last signal
     // recovered, while the first signal's WAL has a torn tail that recovery
     // would truncate: before REL-07 that recovery ran before the newer record

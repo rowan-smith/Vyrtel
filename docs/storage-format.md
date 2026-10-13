@@ -103,9 +103,9 @@ refused, with nothing changed, when:
   database before it writes either, so such a database was truncated or
   replaced;
 * a `*.seg` or `*.wal` file declares a format version this build does not
-  read (`storage::check_formats`: segment headers and footers, WAL headers,
-  and the record version and batch codec version of every checksummed WAL
-  record, see [Versioning](#versioning));
+  read (`storage::check_formats`: a segment's header, footer and
+  checksummed summary; a WAL's header, and the record version and batch
+  codec version of every checksummed record; see [Versioning](#versioning));
 * `metadata/metadata.db` is not an SQLite database, or its
   `schema_migrations` holds a version above the newest migration. It is
   opened read-only and, when there is no `-wal` file, with SQLite's
@@ -552,10 +552,25 @@ much space they use.
   | WAL record version byte        | newer format if the record's CRC holds; otherwise a corrupt tail, as before                                  |
   | Batch codec version            | newer format (the record's CRC held)                                                                           |
 
-  All of these are checked before startup changes anything: the startup
-  check replays every WAL without decoding events, so a newer record in
-  one signal's WAL stops startup before any signal is recovered. Recovery
-  checks them again while replaying, before a WAL is truncated or sealed.
+  All of these are checked before startup changes anything, so a newer
+  file in one signal stops startup before any signal is recovered or the
+  metadata is migrated. The check holds at most 64 KiB of any file in
+  memory and decodes no event, column or index:
+
+  * segment: header and footer, then the summary's checksum, streamed in
+    64 KiB pieces, and only if it holds, the first 11 decompressed bytes
+    (segment id, signal, summary version);
+  * WAL: the header, then per record its 5-byte prefix and the first
+    payload byte (the batch codec version); the rest of the record is
+    skipped. Only when one of those versions is unknown is the record's
+    checksum computed (streamed), since an unknown version is believed only
+    if it holds. A known record is not checksummed here, so the check may
+    look past a corrupt record where replay stops; it can only refuse more.
+
+  The check runs twice per start, before and after taking the
+  data-directory lock, then recovery reads the WALs in full. Recovery
+  checks the versions again while replaying, before a WAL is truncated or
+  sealed.
 
 ### Migrations
 

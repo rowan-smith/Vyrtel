@@ -305,7 +305,15 @@ talks HTTP to it:
   upgrade start reaches are recorded, then each one in turn fails once:
   a failed `vyrtel.json` write leaves every telemetry file unchanged, and
   in every case the next start completes the upgrade and answers the
-  verification queries as the release did. Unit tests: an interrupted
+  verification queries as the release did. A segment whose header and
+  footer say version 1 but whose checksummed summary says 2 is refused by
+  `check-data-dir` and `App::build` with nothing changed (before, it passed
+  the check and was found only after the manifest was written; storage test
+  `segment_summary_in_a_newer_format_is_found_before_startup`, where a
+  summary failing its checksum is still quarantined as damage). The WAL
+  scan believes an unknown record or codec version only when the record's
+  checksum, streamed over a 200 KB record, holds (`wal.rs`
+  `record_format_scan_reads_prefixes_and_believes_only_checksums`). Unit tests: an interrupted
   metadata migration rolls back only itself and the next open resumes
   (`crates/metadata/src/lib.rs`); `datadir::plan`, the `check-data-dir`
   report and the `RELEASES` table (`crates/server/src/datadir.rs`); WAL
@@ -333,6 +341,43 @@ the WAL file. CI runs it against the release build in the backend job.
 
 ```bash
 cargo build --release -p server && scripts/backup/restore-drill.sh target/release/vyrtel
+```
+
+### Startup format check
+
+The startup check reads every format version recovery reads before
+anything changes (REL-07), and runs twice per start (before and after
+taking the lock). It reads each WAL record's 5-byte prefix and first
+payload byte and skips the rest, computes a record's checksum only when a
+version is unknown, and holds at most 64 KiB of a file at once; a segment
+costs its header, footer and a streamed checksum of its summary.
+`scripts/bench/startup-preflight.sh` starts each binary on the same stopped
+data directories, all telemetry in the WAL, and reports the median of 5
+starts: time until `/health` answers, bytes read (`rchar`) and peak memory
+(`VmHWM`) at that point, and `check-data-dir` time and peak memory.
+
+Linux x86_64 (`rust:1-bookworm` in Docker on Windows 11, release builds,
+warm page cache), `--memory-limit 4GB`:
+
+| WAL | Build | Startup | Read | Peak memory | `check-data-dir` |
+|-----|-------|--------:|-----:|------------:|-----------------:|
+| 82 MB, 120 records of about 680 KB | before REL-07 (`98ba4be`) | 569 ms | 81 MiB | 376 MiB | n/a |
+| | first REL-07 check, full replay (`15aabd4`) | 535 ms | 243 MiB | 377 MiB | 10 ms, 6 MiB |
+| | prefix scan (this version) | 533 ms | 95 MiB | 377 MiB | <10 ms, 7 MiB |
+| 15 MB, 20,000 records of about 750 B | before REL-07 | 124 ms | 14 MiB | 77 MiB | n/a |
+| | first REL-07 check | 125 ms | 42 MiB | 77 MiB | <10 ms, 6 MiB |
+| | prefix scan (this version) | 129 ms | 41 MiB | 77 MiB | <10 ms, 7 MiB |
+
+With large records the check now reads about 7 MiB per pass instead of the
+whole WAL. With small records the 64 KiB read buffer covers many records, so
+each pass still reads the file once (from the page cache): about 5 ms on
+15 MB here. Startup times vary by ±50 ms between runs, more than any
+difference between builds, and peak memory is recovery's. The full replay
+also allocated each record's payload (up to 256 MiB for one record); the
+scan never holds more than 64 KiB. Run it with:
+
+```bash
+scripts/bench/startup-preflight.sh ./vyrtel-before ./vyrtel-after
 ```
 
 ### Overload memory test

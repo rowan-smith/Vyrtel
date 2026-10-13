@@ -742,11 +742,14 @@ newer Vyrtel is never quarantined.
   which does not know about it, leaves it in place while changing files, so
   0.1.2 then refuses the directory as incomplete. Start that once with
   `--accept-incomplete-restore` after checking nothing was actually lost.
-* WAL files are read in full by this check (record headers and checksums
-  only, events are not decoded), so a start reads them twice; segment files
-  only have their header and footer read. Before 0.1.2 a newer WAL record
-  or event encoding was found only while recovering that signal, after
-  signals recovered earlier had already had their crash recovery.
+* The check reads every version recovery reads but not the data: per WAL
+  record a few bytes, per segment its header, footer and summary. It runs
+  twice per start (before and after taking the lock), so it adds a little
+  startup time on directories with large WALs; see
+  [measurements](testing.md#startup-format-check). Before 0.1.2 a newer
+  WAL record, event encoding or segment summary was found only while
+  recovering that signal, after signals recovered earlier had already had
+  their crash recovery.
 * `vyrtel.json`'s `writtenBy` is updated by every version that starts the
   directory, so it names the newest version that has used it.
 
@@ -986,9 +989,9 @@ with the answers that release gave.
 * A start logs each migration (`upgrading the data directory`) and
   `data directory upgraded`.
 * `vyrtel.json` is now recorded before storage recovery instead of after it.
-* A WAL record or event batch in a newer format is found by the check
-  before anything changes, in every signal, instead of while recovering
-  its signal.
+* A WAL record, event batch or segment summary in a newer format is found
+  by the check before anything changes, in every signal, instead of while
+  recovering its signal.
 * A failed metadata migration names the version it stopped at.
 * A data directory written by Observer 0.1.0 is refused with exit status 1
   and left unchanged. Before, every WAL and segment file in it was moved
