@@ -762,6 +762,21 @@ mod tests {
         c.validate().unwrap();
     }
 
+    /// The performance baseline's pinned configuration (docs/benchmarks.md) must stay loadable,
+    /// and its explicit ingest concurrency must equal what Vyrtel would derive, so the pin
+    /// documents the default rather than quietly diverging from it.
+    #[test]
+    fn baseline_config_file_is_valid_and_pins_the_derived_ingest_concurrency() {
+        let c = Config::from_toml(include_str!("../../../dotnet/Vyrtel.Baseline/baseline.toml")).unwrap();
+        c.validate().unwrap();
+        assert!(!c.storage.compaction, "compaction stays off so merges cannot land mid-measurement");
+        let derived =
+            Config::from_toml("[storage]\nmax_memory = \"512MB\"\n[ingest]\nmax_request_size = \"1MB\"").unwrap();
+        assert!(derived.ingest_admission().derived);
+        assert_eq!(c.ingest.max_concurrent, derived.ingest_max_concurrent());
+        assert!(c.ingest_admission().within_budget());
+    }
+
     #[test]
     fn unknown_keys_rejected() {
         assert!(Config::from_toml("[storage]\nmax_memroy = \"1GB\"").is_err());

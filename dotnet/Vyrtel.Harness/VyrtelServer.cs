@@ -18,6 +18,12 @@ public sealed class VyrtelServer : IAsyncDisposable
     public string? ExecutablePath { get; }
     /// <summary>Size of the server executable on disk, in bytes (0 when connected to an external server).</summary>
     public long ExecutableSizeBytes { get; }
+    /// <summary>The launched server process, or null when connected to an external server.</summary>
+    public Process? Process => _process;
+    /// <summary>Data directory of a launched server (null when connected to an external server).</summary>
+    public string? DataDir => _dataDir;
+    /// <summary>Time from process start until <c>/health</c> answered (zero when not launched).</summary>
+    public TimeSpan StartupTime { get; private init; }
 
     private long? _footprintBytes;
 
@@ -87,6 +93,12 @@ public sealed class VyrtelServer : IAsyncDisposable
     {
         if (await IsHealthyAsync(options.BaseUrl, ct))
         {
+            if (!options.AllowExisting)
+            {
+                throw new InvalidOperationException(
+                    $"A server is already listening at {options.BaseUrl}; stop it or choose another port, " +
+                    "because this run must launch its own server with a pinned configuration.");
+            }
             Console.WriteLine($"vyrtel: using the server already listening at {options.BaseUrl}");
             return new VyrtelServer(options.BaseUrl, null, null, null, options.KeepData);
         }
@@ -112,20 +124,29 @@ public sealed class VyrtelServer : IAsyncDisposable
         Directory.CreateDirectory(dataDir);
 
         var port = options.BaseUrl.Port > 0 ? options.BaseUrl.Port : 8080;
-        var arguments = $"--data-dir \"{dataDir}\" --bind 127.0.0.1:{port} --log-level {options.LogLevel}";
-        var startInfo = new ProcessStartInfo(executable, arguments)
+        var startInfo = new ProcessStartInfo(executable)
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+        foreach (var arg in options.ExtraArguments)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+        // Flags take precedence over a --config file, so the harness always owns these three.
+        foreach (var arg in new[] { "--data-dir", dataDir, "--bind", $"127.0.0.1:{port}", "--log-level", options.LogLevel })
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
 
         var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         process.OutputDataReceived += (_, e) => { if (e.Data is not null) Console.WriteLine($"  [vyrtel] {e.Data}"); };
         process.ErrorDataReceived += (_, e) => { if (e.Data is not null) Console.WriteLine($"  [vyrtel] {e.Data}"); };
 
         Console.WriteLine($"vyrtel: launching {executable} (data-dir {dataDir})");
+        var started = Stopwatch.StartNew();
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
@@ -141,9 +162,12 @@ public sealed class VyrtelServer : IAsyncDisposable
             if (await IsHealthyAsync(options.BaseUrl, ct))
             {
                 Console.WriteLine($"vyrtel: ready at {options.BaseUrl}");
-                return new VyrtelServer(options.BaseUrl, process, dataDir, executable, options.KeepData);
+                return new VyrtelServer(options.BaseUrl, process, dataDir, executable, options.KeepData)
+                {
+                    StartupTime = started.Elapsed,
+                };
             }
-            await Task.Delay(200, ct);
+            await Task.Delay(50, ct);
         }
 
         try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }

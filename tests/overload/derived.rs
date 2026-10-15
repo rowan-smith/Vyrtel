@@ -110,6 +110,9 @@ async fn run(name: &str, configure: fn(&mut Config), bodies: &Arc<Vec<Body>>, ru
     // overhead, not ingest's; it is reported and left out of the window.
     let held = s.state().ingest_permits.clone().try_acquire_many_owned(limit as u32).unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
+    // Load clients get their own connection pool: their connections live on clients_rt, and
+    // once it shuts down a pooled one is dead (DispatchGone) if s.client later reuses it.
+    let load = reqwest::Client::new();
     let rss_before = rss();
     let start = reset_peak();
 
@@ -118,7 +121,7 @@ async fn run(name: &str, configure: fn(&mut Config), bodies: &Arc<Vec<Body>>, ru
     let stop = Instant::now() + WARM_UP + STALLED + RUNNING;
     let mut tasks = Vec::new();
     for i in 0..clients {
-        let (client, url, bodies, counts) = (s.client.clone(), s.url.clone(), bodies.clone(), counts.clone());
+        let (client, url, bodies, counts) = (load.clone(), s.url.clone(), bodies.clone(), counts.clone());
         tasks.push(clients_rt.spawn(async move {
             let mut n = i;
             while Instant::now() < stop {
@@ -293,13 +296,16 @@ async fn rejected_body_drain_overhead_is_within_the_fixed_allowance() {
     let plain = Bytes::from(ndjson_payload(5_000, 160).into_bytes()[..1 << 20].to_vec());
     let gz = Bytes::from(common::gzip(&plain));
     tokio::time::sleep(Duration::from_millis(50)).await;
+    // Load clients get their own connection pool: their connections live on clients_rt, and
+    // once it shuts down a pooled one is dead (DispatchGone) if s.client later reuses it.
+    let load = reqwest::Client::new();
     let start = reset_peak();
     let stop = Instant::now() + Duration::from_secs(3);
     let rejected = Arc::new(AtomicU64::new(0));
     let clients_rt = client_runtime();
     let mut tasks = Vec::new();
     for i in 0..clients {
-        let (client, url, rejected) = (s.client.clone(), s.u("/api/v1/events"), rejected.clone());
+        let (client, url, rejected) = (load.clone(), s.u("/api/v1/events"), rejected.clone());
         let body = if i % 2 == 0 { plain.clone() } else { gz.clone() };
         tasks.push(clients_rt.spawn(async move {
             while Instant::now() < stop {

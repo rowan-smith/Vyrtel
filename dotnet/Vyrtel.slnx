@@ -1,4 +1,6 @@
 <Solution>
+  <Project Path="Vyrtel.Baseline/Vyrtel.Baseline.csproj" />
+  <Project Path="Vyrtel.Baseline.Tests/Vyrtel.Baseline.Tests.csproj" />
   <Project Path="Vyrtel.Benchmark/Vyrtel.Benchmark.csproj" />
   <Project Path="Vyrtel.Harness/Vyrtel.Harness.csproj" />
   <Project Path="Vyrtel.LiveDataSim/Vyrtel.LiveDataSim.csproj" />

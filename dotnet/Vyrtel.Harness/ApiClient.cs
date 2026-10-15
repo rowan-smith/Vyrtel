@@ -93,6 +93,30 @@ public sealed class ApiClient : IDisposable
     public Task IngestOtlpMetrics(byte[] payload, CancellationToken ct = default) =>
         Ingest("v1/metrics", payload, "application/json", ct);
 
+    /// <summary>
+    /// Sends a request and returns the status and body without throwing on an error status, so
+    /// callers can count accepted and rejected requests separately. Transport failures still throw.
+    /// </summary>
+    public async Task<RawResponse> SendRaw(HttpMethod method, string path, HttpContent? content, CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(method, path) { Content = content };
+        using var response = await _http.SendAsync(request, ct);
+        var body = await response.Content.ReadAsByteArrayAsync(ct);
+        return new RawResponse((int)response.StatusCode, body);
+    }
+
+    /// <summary><see cref="SendRaw"/> with a JSON body.</summary>
+    public Task<RawResponse> PostJsonRaw(string path, object body, CancellationToken ct = default) =>
+        SendRaw(HttpMethod.Post, path, Json(body), ct);
+
+    /// <summary><see cref="SendRaw"/> with a raw ingest payload of the given media type.</summary>
+    public Task<RawResponse> IngestRaw(string path, byte[] payload, string mediaType, CancellationToken ct = default)
+    {
+        var content = new ByteArrayContent(payload);
+        content.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
+        return SendRaw(HttpMethod.Post, path, content, ct);
+    }
+
     public async Task<string> GetString(string path, CancellationToken ct = default)
     {
         using var response = await _http.GetAsync(path, ct);

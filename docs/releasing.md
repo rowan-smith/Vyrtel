@@ -128,6 +128,22 @@ the same fixture the tests use; its values are illustrative, not measurements.
 | `metrics`                                                | At least one row per category: `footprint`, `cpu`, `ingestion`, `queries`, `correctness`, `backpressure`, `storage`, `networking`, `ui`, `lifecycle`. A measured row has `name`, `unit`, numeric `value`, `limit.max` and/or `limit.min`, `result`, and either `baseline` + `delta` (= value − baseline) or a `noBaseline` reason for an absolute budget. A category that does not apply has a `{ "category": …, "na": "<reason>" }` row. |
 | `equivalence` (optional)                                 | `method` and `evidence` link, for when the release workflow's rebuilt artifacts are not byte-identical to the profiled ones.                                                                                                                                                                                                                 |
 
+**Producing the measurements.** [Reproducible baselines](benchmarks.md#reproducible-baselines)
+give the `ingestion`, `queries`, `backpressure`, `footprint` and `storage` rows on one host:
+
+1. Before measuring the candidate, check out the prior release's commit and record its baseline
+   with `--runs 5 --label v<prior>` on the machine used for sign-off, or reuse a report already
+   recorded for it on that machine. Its proposed budgets are the limits, fixed before the
+   candidate is measured (`budgetsDeclaredAt`), and its means are the `baseline` values.
+2. On the candidate, run the same command with `--label v<version>-rc --compare <prior report>`.
+   Exit status 2 means the evidence is not ready. The output says why: fix a regression or a
+   missing metric, or re-record both reports on matching terms if they are incompatible
+   (configuration, workload or host).
+3. Link both reports' `.json`, `.md` and `.samples.csv` from `reports`, and copy the compared
+   metrics into `metrics` with their `baseline` and `delta`. A metric the baseline did not gate
+   (too noisy or fewer than 3 runs) needs a `noBaseline` reason or a quieter re-run, not an
+   invented limit.
+
 The check recomputes every row. A value outside its limit fails even when it is marked `pass`,
 any `fail` row fails the gate, and a delta that does not match its baseline is rejected. Limits
 are never loosened to pass: a regression is fixed and the affected workloads re-run.

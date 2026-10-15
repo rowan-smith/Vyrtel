@@ -128,7 +128,20 @@ dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short --label v
 # The first --warmup seconds (default 3) are discarded and hotspots are diffed over
 # the measured window only.
 dotnet run --project dotnet/Vyrtel.Profiling -c Release -- --duration 30 --warmup 3 --concurrency 4
+
+# Reproducible baseline: repeated runs with the pinned configuration, cold/warm queries with
+# diagnostics, accepted/rejected counts, peak RSS and variance-derived regression budgets;
+# writes target/baseline/report.{json,md,samples.csv}. --compare checks against an earlier report.
+dotnet run --project dotnet/Vyrtel.Baseline -c Release -- --runs 5 --notes "NVMe SSD, AC power"
+dotnet run --project dotnet/Vyrtel.Baseline -c Release -- compare old.json target/baseline/report.json
+
+# Unit tests for the baseline tool (no server needed; CI runs them in the .NET job)
+dotnet test dotnet/Vyrtel.slnx -c Release
 ```
+
+Use the benchmark and profiler to see trends and hotspots; use the baseline to decide whether a
+change regressed, because it pins the server configuration, repeats the workload and states how
+noisy the machine is. See [Reproducible baselines](benchmarks.md#reproducible-baselines).
 
 Both reports record what was built and how big it is on disk: the release binary size, the
 seeded dataset's data-directory footprint, and the server's own storage counters (bytes stored
@@ -140,6 +153,7 @@ size show up next to the latency numbers.
 tag, writing a `versions/<tag>.json` snapshot) and commits the rollup to the
 `benchmark-results` branch, which the site build overlays onto `docs/benchmarks/` to render the
 [benchmarks page](benchmarks.md), including the version-history comparison.
+The same workflow's `baseline` job uploads a 3-run baseline as a workflow artifact.
 `dotnet/Vyrtel.LiveDataSim` is a sample ASP.NET Core producer (not part of the build).
 
 ## Release builds

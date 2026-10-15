@@ -1,0 +1,6013 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-15T12:03:05.4025503+00:00",
+  "label": "0.1.1 same-commit check",
+  "vyrtelVersion": "0.1.1",
+  "workload": {
+    "seed": 42,
+    "events": 100000,
+    "traces": 1000,
+    "metricPoints": 100,
+    "batch": 500,
+    "runs": 3,
+    "warmIterations": 20,
+    "mixedDurationSeconds": 20,
+    "mixedWarmupSeconds": 3,
+    "mixedConcurrency": 4
+  },
+  "config": {
+    "file": "dotnet/Vyrtel.Baseline/baseline.toml",
+    "sha256": "3593a029c80e2d511b9cc1e5f159b165ae49a5b02db423bbe070ded1ab5cc8e0",
+    "effective": {
+      "server": {
+        "bind": "127.0.0.1:18480",
+        "shutdown_timeout": "8s"
+      },
+      "storage": {
+        "path": "C:\\Users\\rowan\\AppData\\Local\\Temp\\vyrtel-baseline-1-22fe7c76184e4458b0db02e30f7f34d7",
+        "max_memory": 536870912,
+        "segment_target_size": 4194304,
+        "segment_max_age": "5m",
+        "segment_max_events": 2000000,
+        "durability": "normal",
+        "fsync_interval": "1s",
+        "compaction": false,
+        "zstd_level": 3,
+        "block_events": 1024
+      },
+      "retention": {
+        "logs": "30d",
+        "traces": "2w",
+        "metrics": "30d"
+      },
+      "ingest": {
+        "max_request_size": 1048576,
+        "queue_capacity": 10000,
+        "ack_timeout": "30s",
+        "max_concurrent": 3
+      },
+      "query": {
+        "timeout": "30s",
+        "max_concurrent": 4,
+        "max_scan_bytes": 4294967296,
+        "max_results": 1000,
+        "max_live_streams": 64
+      },
+      "auth": {
+        "enabled": false,
+        "admin_username": "admin",
+        "session_ttl": "1w"
+      },
+      "alerts": {
+        "enabled": false,
+        "webhook_timeout": "10s"
+      },
+      "log": {
+        "level": "warn",
+        "format": "text"
+      }
+    },
+    "ingest": {
+      "maxConcurrent": 3,
+      "concurrencySource": "explicit",
+      "maxRequestBytes": 1048576
+    }
+  },
+  "host": {
+    "os": "Microsoft Windows 10.0.26200",
+    "architecture": "X64",
+    "cpuModel": "Intel(R) Core(TM) Ultra 7 155H",
+    "logicalCores": 22,
+    "totalMemoryBytes": 33848909824,
+    "disk": {
+      "mount": "C:\\",
+      "format": "NTFS",
+      "type": "Fixed",
+      "totalBytes": 509722226688,
+      "freeBytes": 23869194240
+    },
+    "runtime": ".NET 10.0.8",
+    "notes": "Laptop, NVMe SSD, AC power, desktop apps open"
+  },
+  "build": {
+    "profile": "release",
+    "executableBytes": 12385280,
+    "executableSha256": "cb7f5384782d8be7c2522aa35a918e213c0587846ae2f892a6458fc1abbd365e",
+    "gitCommit": "b61cd28761aad5bdd50a6f516b8ecc2fe2dc43a4",
+    "gitDirty": true,
+    "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)"
+  },
+  "compression": {
+    "method": "zstd level 3, independently compressed column chunks",
+    "zstdLevel": 3,
+    "ratio": 4.01,
+    "indexOverhead": 0.076,
+    "bytesStoredPerEvent": 73.10997090203686,
+    "segmentCount": 22,
+    "dataDirBytes": 7537680
+  },
+  "totalDurationSeconds": 197.1121957,
+  "runs": [
+    {
+      "run": 1,
+      "durationSeconds": 66.0194185,
+      "seed": {
+        "seconds": 1.9768466,
+        "itemsSent": 101100,
+        "itemsAccepted": 101100,
+        "requests": {
+          "total": 1201,
+          "accepted": 1201,
+          "rejectedBackpressure": 0,
+          "rejectedTooLarge": 0,
+          "rejectedOther": 0,
+          "transportErrors": 0,
+          "byStatus": {
+            "200": 1201
+          },
+          "rejected": 0
+        },
+        "itemsPerSecond": 51142.05624250258,
+        "latency": {
+          "count": 1201,
+          "min": 0.1322,
+          "max": 10.4686,
+          "mean": 0.8097626977518733,
+          "p50": 0.1949,
+          "p90": 3.2237,
+          "p95": 4.1614,
+          "p99": 5.8185,
+          "stdDev": 1.4374925114497292
+        }
+      },
+      "queries": [
+        {
+          "name": "logs.level",
+          "label": "level = Error (bitmap)",
+          "category": "selective",
+          "coldMs": 28.9561,
+          "coldDiagnostics": {
+            "elapsedMs": 20.347299999999997,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 114,
+            "eventsExamined": 31597,
+            "eventsMatched": 611,
+            "bytesRead": 3123152,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "level:bitmap"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 18.1277,
+            "max": 25.8569,
+            "mean": 21.093455,
+            "p50": 20.3623,
+            "p90": 23.2296,
+            "p95": 23.9543,
+            "p99": 25.8569,
+            "stdDev": 1.912070824628297
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 16.3063,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 114,
+            "eventsExamined": 31597,
+            "eventsMatched": 611,
+            "bytesRead": 3123152,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "level:bitmap"
+            ]
+          },
+          "restartMs": 515.8859,
+          "failures": 0
+        },
+        {
+          "name": "logs.service",
+          "label": "service = payments",
+          "category": "selective",
+          "coldMs": 7.742,
+          "coldDiagnostics": {
+            "elapsedMs": 5.982600000000001,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 50,
+            "eventsExamined": 6429,
+            "eventsMatched": 817,
+            "bytesRead": 843100,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "service:bitmap"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 6.988,
+            "max": 8.8542,
+            "mean": 7.350224999999999,
+            "p50": 7.2153,
+            "p90": 7.6937,
+            "p95": 7.8046,
+            "p99": 8.8542,
+            "stdDev": 0.42393131131178124
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 6.0398,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 50,
+            "eventsExamined": 6429,
+            "eventsMatched": 817,
+            "bytesRead": 843100,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "service:bitmap"
+            ]
+          },
+          "restartMs": 515.8645,
+          "failures": 0
+        },
+        {
+          "name": "logs.traceId",
+          "label": "traceId = \u2026 (Bloom filter)",
+          "category": "selective",
+          "coldMs": 2.7079,
+          "coldDiagnostics": {
+            "elapsedMs": 1.4687000000000001,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 20,
+            "blocksConsidered": 110,
+            "blocksSkipped": 108,
+            "blocksRead": 3,
+            "eventsExamined": 1808,
+            "eventsMatched": 1,
+            "bytesRead": 45433,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "traceId:bloom"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 0.4333,
+            "max": 1.6463,
+            "mean": 0.6049450000000001,
+            "p50": 0.4581,
+            "p90": 0.815,
+            "p95": 1.1743,
+            "p99": 1.6463,
+            "stdDev": 0.3035912391687217
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 0.9817999999999999,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 20,
+            "blocksConsidered": 110,
+            "blocksSkipped": 108,
+            "blocksRead": 3,
+            "eventsExamined": 1808,
+            "eventsMatched": 1,
+            "bytesRead": 45433,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "traceId:bloom"
+            ]
+          },
+          "restartMs": 515.5941,
+          "failures": 0
+        },
+        {
+          "name": "logs.range",
+          "label": "durationMs \u003E 1990 (zone map)",
+          "category": "selective",
+          "coldMs": 100.3467,
+          "coldDiagnostics": {
+            "elapsedMs": 98.6798,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 22,
+            "blocksRead": 88,
+            "eventsExamined": 82432,
+            "eventsMatched": 182,
+            "bytesRead": 5113871,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "durationMs:zonemap"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 99.6792,
+            "max": 111.3309,
+            "mean": 104.78861500000002,
+            "p50": 104.8189,
+            "p90": 107.2287,
+            "p95": 108.5453,
+            "p99": 111.3309,
+            "stdDev": 2.919767938376899
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 99.9683,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 22,
+            "blocksRead": 88,
+            "eventsExamined": 82432,
+            "eventsMatched": 182,
+            "bytesRead": 5113871,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "durationMs:zonemap"
+            ]
+          },
+          "restartMs": 516.743,
+          "failures": 0
+        },
+        {
+          "name": "logs.count",
+          "label": "count: level = Error",
+          "category": "selective",
+          "coldMs": 7.2934,
+          "coldDiagnostics": {
+            "elapsedMs": 4.9546,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 1981,
+            "bytesRead": 491724,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "level:bitmap"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 3.4628,
+            "max": 5.3787,
+            "mean": 3.928095,
+            "p50": 3.7816,
+            "p90": 4.2669,
+            "p95": 4.8992,
+            "p99": 5.3787,
+            "stdDev": 0.4575058336987859
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 3.2262,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 1981,
+            "bytesRead": 491724,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "level:bitmap"
+            ]
+          },
+          "restartMs": 517.7688,
+          "failures": 0
+        },
+        {
+          "name": "logs.scan.timedOut",
+          "label": "message contains \u0022timed out\u0022 (scan)",
+          "category": "scan",
+          "coldMs": 66.5117,
+          "coldDiagnostics": {
+            "elapsedMs": 39.0001,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 178,
+            "eventsExamined": 75788,
+            "eventsMatched": 372,
+            "bytesRead": 5709150,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 36.0869,
+            "max": 41.6816,
+            "mean": 38.67607,
+            "p50": 38.7785,
+            "p90": 40.8309,
+            "p95": 40.8983,
+            "p99": 41.6816,
+            "stdDev": 1.650650833076713
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 36.2398,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 178,
+            "eventsExamined": 75788,
+            "eventsMatched": 372,
+            "bytesRead": 5709150,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "restartMs": 518.8014,
+          "failures": 0
+        },
+        {
+          "name": "logs.scan.error",
+          "label": "message contains \u0022error\u0022 (scan)",
+          "category": "scan",
+          "coldMs": 17.457,
+          "coldDiagnostics": {
+            "elapsedMs": 16.3968,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 0,
+            "bytesRead": 1046567,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 15.0157,
+            "max": 19.9391,
+            "mean": 16.384594999999997,
+            "p50": 16.2477,
+            "p90": 17.4332,
+            "p95": 18.4298,
+            "p99": 19.9391,
+            "stdDev": 1.2015203082038672
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 14.9689,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 0,
+            "bytesRead": 1046567,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "restartMs": 518.9399,
+          "failures": 0
+        },
+        {
+          "name": "logs.latest",
+          "label": "latest logs (limit 200)",
+          "category": "recent",
+          "coldMs": 6.5511,
+          "coldDiagnostics": {
+            "elapsedMs": 4.8627,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 44,
+            "eventsExamined": 1206,
+            "eventsMatched": 1206,
+            "bytesRead": 619120,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 5.6611,
+            "max": 8.6477,
+            "mean": 6.495315,
+            "p50": 6.2474,
+            "p90": 7.3624,
+            "p95": 8.1331,
+            "p99": 8.6477,
+            "stdDev": 0.7978263340081239
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 5.609699999999999,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 44,
+            "eventsExamined": 1206,
+            "eventsMatched": 1206,
+            "bytesRead": 619120,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 515.7083,
+          "failures": 0
+        },
+        {
+          "name": "logs.histogram",
+          "label": "histogram, 60 buckets",
+          "category": "aggregate",
+          "coldMs": 5.4225,
+          "coldDiagnostics": {
+            "elapsedMs": 3.7482,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 100000,
+            "bytesRead": 491724,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 3.3514,
+            "max": 4.6117,
+            "mean": 3.6952950000000007,
+            "p50": 3.4891,
+            "p90": 4.3925,
+            "p95": 4.4603,
+            "p99": 4.6117,
+            "stdDev": 0.40326779593322615
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 4.0064,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 100000,
+            "bytesRead": 491724,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 514.952,
+          "failures": 0
+        },
+        {
+          "name": "logs.facets",
+          "label": "facets, 2000-event sample",
+          "category": "aggregate",
+          "coldMs": 26.2407,
+          "coldDiagnostics": {
+            "elapsedMs": 20.6614,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 54,
+            "eventsExamined": 7800,
+            "eventsMatched": 7800,
+            "bytesRead": 969706,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 18.1347,
+            "max": 22.0687,
+            "mean": 19.436659999999996,
+            "p50": 19.2377,
+            "p90": 20.2815,
+            "p95": 20.9434,
+            "p99": 22.0687,
+            "stdDev": 0.9174447067233739
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 17.8076,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 54,
+            "eventsExamined": 7800,
+            "eventsMatched": 7800,
+            "bytesRead": 969706,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 531.5249,
+          "failures": 0
+        },
+        {
+          "name": "traces.search",
+          "label": "trace search (limit 50)",
+          "category": "trace",
+          "coldMs": 5.8364,
+          "coldDiagnostics": {
+            "elapsedMs": 2.2618,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 4530,
+            "eventsMatched": 1680,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 6000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 2.1812,
+            "max": 4.4081,
+            "mean": 2.5414600000000003,
+            "p50": 2.4444,
+            "p90": 2.675,
+            "p95": 2.7379,
+            "p99": 4.4081,
+            "stdDev": 0.4678443796594626
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 2.0542,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 4530,
+            "eventsMatched": 1680,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 6000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 516.6085,
+          "failures": 0
+        },
+        {
+          "name": "traces.get",
+          "label": "trace by id",
+          "category": "trace",
+          "coldMs": 1.364,
+          "coldDiagnostics": {
+            "elapsedMs": 0.10490000000000001,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 3000,
+            "eventsMatched": 3,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 3000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 0.1735,
+            "max": 0.8173,
+            "mean": 0.44385,
+            "p50": 0.4186,
+            "p90": 0.663,
+            "p95": 0.6792,
+            "p99": 0.8173,
+            "stdDev": 0.18627252954517448
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 0.025400000000000002,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 3000,
+            "eventsMatched": 3,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 3000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 515.5471,
+          "failures": 0
+        },
+        {
+          "name": "metrics.series",
+          "label": "metric series",
+          "category": "metric",
+          "coldMs": 1.7021,
+          "coldDiagnostics": {
+            "elapsedMs": 0.0252,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 100,
+            "eventsMatched": 100,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 100,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 0.2616,
+            "max": 0.3797,
+            "mean": 0.31199,
+            "p50": 0.311,
+            "p90": 0.3489,
+            "p95": 0.3708,
+            "p99": 0.3797,
+            "stdDev": 0.03476681569664111
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 0.0031999999999999997,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 100,
+            "eventsMatched": 100,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 100,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "restartMs": 518.4324,
+          "failures": 0
+        }
+      ],
+      "mixed": {
+        "measuredSeconds": 17,
+        "concurrency": 4,
+        "requestsPerSecond": 211.94117647058823,
+        "eventsAccepted": 315200,
+        "requests": {
+          "total": 3603,
+          "accepted": 3603,
+          "rejectedBackpressure": 0,
+          "rejectedTooLarge": 0,
+          "rejectedOther": 0,
+          "transportErrors": 0,
+          "byStatus": {
+            "200": 3603
+          },
+          "rejected": 0
+        },
+        "operations": [
+          {
+            "name": "ingest.ndjson",
+            "label": "ingest NDJSON (800 events)",
+            "requests": {
+              "total": 244,
+              "accepted": 244,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 244
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 244,
+              "min": 3.4202,
+              "max": 29.6847,
+              "mean": 7.226569672131145,
+              "p50": 5.8963,
+              "p90": 12.9892,
+              "p95": 20.0723,
+              "p99": 27.9123,
+              "stdDev": 5.080998027936979
+            }
+          },
+          {
+            "name": "ingest.json",
+            "label": "ingest JSON array (800 events)",
+            "requests": {
+              "total": 150,
+              "accepted": 150,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 150
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 150,
+              "min": 3.6545,
+              "max": 24.9541,
+              "mean": 7.1672406666666655,
+              "p50": 6.0987,
+              "p90": 11.7764,
+              "p95": 15.4427,
+              "p99": 23.0894,
+              "stdDev": 3.7691280541174406
+            }
+          },
+          {
+            "name": "logs.latest",
+            "label": "latest logs (limit 200)",
+            "requests": {
+              "total": 542,
+              "accepted": 542,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 542
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 542,
+              "min": 7.168,
+              "max": 35.965,
+              "mean": 18.405505350553497,
+              "p50": 18.7841,
+              "p90": 24.7066,
+              "p95": 26.7835,
+              "p99": 30.3546,
+              "stdDev": 5.185932180199023
+            }
+          },
+          {
+            "name": "logs.count",
+            "label": "count: level = Error",
+            "requests": {
+              "total": 462,
+              "accepted": 462,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 462
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 462,
+              "min": 7.9677,
+              "max": 35.8565,
+              "mean": 19.284996103896116,
+              "p50": 19.1736,
+              "p90": 26.9,
+              "p95": 27.8093,
+              "p99": 31.99,
+              "stdDev": 5.7402235738717104
+            }
+          },
+          {
+            "name": "logs.level",
+            "label": "level = Error",
+            "requests": {
+              "total": 359,
+              "accepted": 359,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 359
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 359,
+              "min": 30.0993,
+              "max": 84.4847,
+              "mean": 45.60237688022285,
+              "p50": 44.5848,
+              "p90": 55.4292,
+              "p95": 58.882,
+              "p99": 67.7943,
+              "stdDev": 7.223032241336057
+            }
+          },
+          {
+            "name": "logs.service",
+            "label": "service = payments",
+            "requests": {
+              "total": 328,
+              "accepted": 328,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 328
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 328,
+              "min": 7.2568,
+              "max": 34.2741,
+              "mean": 19.562371341463415,
+              "p50": 19.7488,
+              "p90": 26.6347,
+              "p95": 28.8637,
+              "p99": 32.9632,
+              "stdDev": 5.614974615062833
+            }
+          },
+          {
+            "name": "logs.traceId",
+            "label": "traceId (Bloom filter)",
+            "requests": {
+              "total": 312,
+              "accepted": 312,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 312
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 312,
+              "min": 0.5908,
+              "max": 2.9786,
+              "mean": 1.1060945512820517,
+              "p50": 1.0748,
+              "p90": 1.4864,
+              "p95": 1.639,
+              "p99": 2.7041,
+              "stdDev": 0.3418395734220283
+            }
+          },
+          {
+            "name": "logs.scan",
+            "label": "message contains (scan)",
+            "requests": {
+              "total": 161,
+              "accepted": 161,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 161
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 161,
+              "min": 42.7885,
+              "max": 119.0364,
+              "mean": 73.06608819875777,
+              "p50": 75.1283,
+              "p90": 92.1137,
+              "p95": 96.7843,
+              "p99": 105.5656,
+              "stdDev": 15.927477883630768
+            }
+          },
+          {
+            "name": "logs.histogram",
+            "label": "histogram, 60 buckets",
+            "requests": {
+              "total": 159,
+              "accepted": 159,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 159
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 159,
+              "min": 7.9013,
+              "max": 31.9307,
+              "mean": 18.346401886792453,
+              "p50": 18.3174,
+              "p90": 25.4569,
+              "p95": 27.3014,
+              "p99": 31.4731,
+              "stdDev": 5.399290546310454
+            }
+          },
+          {
+            "name": "logs.facets",
+            "label": "facets",
+            "requests": {
+              "total": 147,
+              "accepted": 147,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 147
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 147,
+              "min": 24.647,
+              "max": 91.9652,
+              "mean": 48.18448367346939,
+              "p50": 48.2396,
+              "p90": 64.2602,
+              "p95": 71.5624,
+              "p99": 81.0037,
+              "stdDev": 12.757740501380075
+            }
+          },
+          {
+            "name": "traces.search",
+            "label": "trace search (limit 50)",
+            "requests": {
+              "total": 305,
+              "accepted": 305,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 305
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 305,
+              "min": 2.098,
+              "max": 13.174,
+              "mean": 4.16697213114754,
+              "p50": 3.8432,
+              "p90": 6.3186,
+              "p95": 6.8785,
+              "p99": 8.4713,
+              "stdDev": 1.5750890981409957
+            }
+          },
+          {
+            "name": "traces.get",
+            "label": "trace by id",
+            "requests": {
+              "total": 161,
+              "accepted": 161,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 161
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 161,
+              "min": 0.2434,
+              "max": 3.0373,
+              "mean": 0.580151552795031,
+              "p50": 0.5349,
+              "p90": 0.8302,
+              "p95": 0.9314,
+              "p99": 2.6759,
+              "stdDev": 0.32394812356795455
+            }
+          },
+          {
+            "name": "metrics.names",
+            "label": "list metric names",
+            "requests": {
+              "total": 152,
+              "accepted": 152,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 152
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 152,
+              "min": 0.1339,
+              "max": 0.8255,
+              "mean": 0.3056730263157895,
+              "p50": 0.2824,
+              "p90": 0.4672,
+              "p95": 0.529,
+              "p99": 0.7686,
+              "stdDev": 0.11835997341727081
+            }
+          },
+          {
+            "name": "metrics.series",
+            "label": "metric series",
+            "requests": {
+              "total": 121,
+              "accepted": 121,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 121
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 121,
+              "min": 0.2284,
+              "max": 2.8415,
+              "mean": 0.4869082644628099,
+              "p50": 0.4309,
+              "p90": 0.6889,
+              "p95": 0.8329,
+              "p99": 0.9943,
+              "stdDev": 0.27031224524821196
+            }
+          }
+        ]
+      },
+      "memory": {
+        "peakRssBytes": 58888192,
+        "peakRssSource": "os-peak",
+        "idleRssBytes": 12967936,
+        "seedPeakRssBytes": 31584256,
+        "queryPeakRssBytes": 21848064,
+        "mixedPeakRssBytes": 58888192
+      },
+      "storage": {
+        "rawBytes": 27525642,
+        "storedBytes": 7537638,
+        "eventCount": 103100,
+        "segmentCount": 22,
+        "compressionRatio": 4.01,
+        "indexOverhead": 0.076,
+        "receivedBytes": 46514317,
+        "segmentBytes": 6218764,
+        "indexBytes": 473726,
+        "walBytes": 709372,
+        "metadataBytes": 135776,
+        "bytesStoredPerEvent": 73.10997090203686
+      },
+      "dataDirBytes": 7537680,
+      "meanRestartMs": 517.874676923077
+    },
+    {
+      "run": 2,
+      "durationSeconds": 65.4299307,
+      "seed": {
+        "seconds": 1.4061885,
+        "itemsSent": 101100,
+        "itemsAccepted": 101100,
+        "requests": {
+          "total": 1201,
+          "accepted": 1201,
+          "rejectedBackpressure": 0,
+          "rejectedTooLarge": 0,
+          "rejectedOther": 0,
+          "transportErrors": 0,
+          "byStatus": {
+            "200": 1201
+          },
+          "rejected": 0
+        },
+        "itemsPerSecond": 71896.47760595396,
+        "latency": {
+          "count": 1201,
+          "min": 0.1095,
+          "max": 16.1608,
+          "mean": 0.739507743547044,
+          "p50": 0.167,
+          "p90": 3.091,
+          "p95": 3.6761,
+          "p99": 5.2172,
+          "stdDev": 1.3663713413386769
+        }
+      },
+      "queries": [
+        {
+          "name": "logs.level",
+          "label": "level = Error (bitmap)",
+          "category": "selective",
+          "coldMs": 20.387,
+          "coldDiagnostics": {
+            "elapsedMs": 18.1236,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 114,
+            "eventsExamined": 31661,
+            "eventsMatched": 614,
+            "bytesRead": 3112012,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "level:bitmap"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 18.3586,
+            "max": 23.8447,
+            "mean": 20.527794999999998,
+            "p50": 20.5647,
+            "p90": 22.1308,
+            "p95": 22.7177,
+            "p99": 23.8447,
+            "stdDev": 1.4717165754297725
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 21.733999999999998,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 114,
+            "eventsExamined": 31661,
+            "eventsMatched": 614,
+            "bytesRead": 3112012,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "level:bitmap"
+            ]
+          },
+          "restartMs": 514.5739,
+          "failures": 0
+        },
+        {
+          "name": "logs.service",
+          "label": "service = payments",
+          "category": "selective",
+          "coldMs": 31.2395,
+          "coldDiagnostics": {
+            "elapsedMs": 6.6657,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 50,
+            "eventsExamined": 6450,
+            "eventsMatched": 820,
+            "bytesRead": 840189,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "service:bitmap"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 6.7346,
+            "max": 9.9768,
+            "mean": 8.124870000000001,
+            "p50": 8.2039,
+            "p90": 9.5216,
+            "p95": 9.8129,
+            "p99": 9.9768,
+            "stdDev": 1.06224792482239
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 5.5817000000000005,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 50,
+            "eventsExamined": 6450,
+            "eventsMatched": 820,
+            "bytesRead": 840189,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "service:bitmap"
+            ]
+          },
+          "restartMs": 522.045,
+          "failures": 0
+        },
+        {
+          "name": "logs.traceId",
+          "label": "traceId = \u2026 (Bloom filter)",
+          "category": "selective",
+          "coldMs": 1.6432,
+          "coldDiagnostics": {
+            "elapsedMs": 0.8748,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 20,
+            "blocksConsidered": 110,
+            "blocksSkipped": 108,
+            "blocksRead": 3,
+            "eventsExamined": 1808,
+            "eventsMatched": 1,
+            "bytesRead": 45185,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "traceId:bloom"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 0.4826,
+            "max": 1.0587,
+            "mean": 0.6111449999999999,
+            "p50": 0.5626,
+            "p90": 0.6951,
+            "p95": 0.8568,
+            "p99": 1.0587,
+            "stdDev": 0.13569129233591032
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 0.25930000000000003,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 20,
+            "blocksConsidered": 110,
+            "blocksSkipped": 108,
+            "blocksRead": 3,
+            "eventsExamined": 1808,
+            "eventsMatched": 1,
+            "bytesRead": 45185,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "traceId:bloom"
+            ]
+          },
+          "restartMs": 513.449,
+          "failures": 0
+        },
+        {
+          "name": "logs.range",
+          "label": "durationMs \u003E 1990 (zone map)",
+          "category": "selective",
+          "coldMs": 107.5881,
+          "coldDiagnostics": {
+            "elapsedMs": 105.8404,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 22,
+            "blocksRead": 88,
+            "eventsExamined": 82432,
+            "eventsMatched": 182,
+            "bytesRead": 5100351,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "durationMs:zonemap"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 103.516,
+            "max": 112.9558,
+            "mean": 107.20500999999999,
+            "p50": 107.253,
+            "p90": 109.8689,
+            "p95": 110.2288,
+            "p99": 112.9558,
+            "stdDev": 2.539988646866463
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 105.7788,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 22,
+            "blocksRead": 88,
+            "eventsExamined": 82432,
+            "eventsMatched": 182,
+            "bytesRead": 5100351,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "durationMs:zonemap"
+            ]
+          },
+          "restartMs": 523.5233,
+          "failures": 0
+        },
+        {
+          "name": "logs.count",
+          "label": "count: level = Error",
+          "category": "selective",
+          "coldMs": 4.378,
+          "coldDiagnostics": {
+            "elapsedMs": 3.6917,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 1981,
+            "bytesRead": 481522,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "level:bitmap"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 3.297,
+            "max": 4.8984,
+            "mean": 3.7230800000000004,
+            "p50": 3.5489,
+            "p90": 4.2925,
+            "p95": 4.2936,
+            "p99": 4.8984,
+            "stdDev": 0.3934925955298804
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 3.212,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 1981,
+            "bytesRead": 481522,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "level:bitmap"
+            ]
+          },
+          "restartMs": 518.8264,
+          "failures": 0
+        },
+        {
+          "name": "logs.scan.timedOut",
+          "label": "message contains \u0022timed out\u0022 (scan)",
+          "category": "scan",
+          "coldMs": 42.3202,
+          "coldDiagnostics": {
+            "elapsedMs": 40.4133,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 178,
+            "eventsExamined": 75975,
+            "eventsMatched": 368,
+            "bytesRead": 5688233,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 36.8438,
+            "max": 43.194,
+            "mean": 39.426444999999994,
+            "p50": 39.7109,
+            "p90": 41.1073,
+            "p95": 41.3606,
+            "p99": 43.194,
+            "stdDev": 1.6767822560440606
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 39.620599999999996,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 178,
+            "eventsExamined": 75975,
+            "eventsMatched": 368,
+            "bytesRead": 5688233,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "restartMs": 516.1639,
+          "failures": 0
+        },
+        {
+          "name": "logs.scan.error",
+          "label": "message contains \u0022error\u0022 (scan)",
+          "category": "scan",
+          "coldMs": 16.0758,
+          "coldDiagnostics": {
+            "elapsedMs": 15.3185,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 0,
+            "bytesRead": 1036365,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 14.7707,
+            "max": 19.2521,
+            "mean": 16.189985,
+            "p50": 15.6134,
+            "p90": 17.9122,
+            "p95": 18.8587,
+            "p99": 19.2521,
+            "stdDev": 1.2776896585037258
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 15.1257,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 0,
+            "bytesRead": 1036365,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "restartMs": 516.1458,
+          "failures": 0
+        },
+        {
+          "name": "logs.latest",
+          "label": "latest logs (limit 200)",
+          "category": "recent",
+          "coldMs": 7.8201,
+          "coldDiagnostics": {
+            "elapsedMs": 6.3328999999999995,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 44,
+            "eventsExamined": 1211,
+            "eventsMatched": 1211,
+            "bytesRead": 616783,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 5.7049,
+            "max": 8.963,
+            "mean": 6.635145,
+            "p50": 6.527,
+            "p90": 7.4184,
+            "p95": 7.6402,
+            "p99": 8.963,
+            "stdDev": 0.7838575974828456
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 4.4714,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 44,
+            "eventsExamined": 1211,
+            "eventsMatched": 1211,
+            "bytesRead": 616783,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 518.6113,
+          "failures": 0
+        },
+        {
+          "name": "logs.histogram",
+          "label": "histogram, 60 buckets",
+          "category": "aggregate",
+          "coldMs": 5.2294,
+          "coldDiagnostics": {
+            "elapsedMs": 4.5229,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 100000,
+            "bytesRead": 481522,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 3.4607,
+            "max": 4.8626,
+            "mean": 3.8605549999999993,
+            "p50": 3.7802,
+            "p90": 4.1978,
+            "p95": 4.3596,
+            "p99": 4.8626,
+            "stdDev": 0.3599365448096007
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 3.4358,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 100000,
+            "bytesRead": 481522,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 519.1147,
+          "failures": 0
+        },
+        {
+          "name": "logs.facets",
+          "label": "facets, 2000-event sample",
+          "category": "aggregate",
+          "coldMs": 19.262,
+          "coldDiagnostics": {
+            "elapsedMs": 17.820800000000002,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 54,
+            "eventsExamined": 7786,
+            "eventsMatched": 7786,
+            "bytesRead": 966373,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 18.3632,
+            "max": 21.2498,
+            "mean": 19.705820000000003,
+            "p50": 19.4423,
+            "p90": 20.8917,
+            "p95": 21.1067,
+            "p99": 21.2498,
+            "stdDev": 0.859639647637005
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 18.8574,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 54,
+            "eventsExamined": 7786,
+            "eventsMatched": 7786,
+            "bytesRead": 966373,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 517.0037,
+          "failures": 0
+        },
+        {
+          "name": "traces.search",
+          "label": "trace search (limit 50)",
+          "category": "trace",
+          "coldMs": 3.8454,
+          "coldDiagnostics": {
+            "elapsedMs": 2.9199,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 4471,
+            "eventsMatched": 1621,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 6000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 2.3548,
+            "max": 4.9132,
+            "mean": 3.0019400000000003,
+            "p50": 2.7382,
+            "p90": 3.9947,
+            "p95": 4.3449,
+            "p99": 4.9132,
+            "stdDev": 0.6908657584585636
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 2.2723999999999998,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 4471,
+            "eventsMatched": 1621,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 6000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 516.6277,
+          "failures": 0
+        },
+        {
+          "name": "traces.get",
+          "label": "trace by id",
+          "category": "trace",
+          "coldMs": 1.1868,
+          "coldDiagnostics": {
+            "elapsedMs": 0.13119999999999998,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 3000,
+            "eventsMatched": 3,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 3000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 0.3174,
+            "max": 1.0632,
+            "mean": 0.514845,
+            "p50": 0.5066,
+            "p90": 0.602,
+            "p95": 0.635,
+            "p99": 1.0632,
+            "stdDev": 0.15319560071668953
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 0.027299999999999998,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 3000,
+            "eventsMatched": 3,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 3000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 519.4122,
+          "failures": 0
+        },
+        {
+          "name": "metrics.series",
+          "label": "metric series",
+          "category": "metric",
+          "coldMs": 1.0045,
+          "coldDiagnostics": {
+            "elapsedMs": 0.0407,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 100,
+            "eventsMatched": 100,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 100,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 0.4993,
+            "max": 0.7346,
+            "mean": 0.6291249999999999,
+            "p50": 0.603,
+            "p90": 0.6992,
+            "p95": 0.7118,
+            "p99": 0.7346,
+            "stdDev": 0.06086010598084758
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 0.0040999999999999995,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 100,
+            "eventsMatched": 100,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 100,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "restartMs": 519.436,
+          "failures": 0
+        }
+      ],
+      "mixed": {
+        "measuredSeconds": 17,
+        "concurrency": 4,
+        "requestsPerSecond": 215.52941176470588,
+        "eventsAccepted": 319200,
+        "requests": {
+          "total": 3664,
+          "accepted": 3664,
+          "rejectedBackpressure": 0,
+          "rejectedTooLarge": 0,
+          "rejectedOther": 0,
+          "transportErrors": 0,
+          "byStatus": {
+            "200": 3664
+          },
+          "rejected": 0
+        },
+        "operations": [
+          {
+            "name": "ingest.ndjson",
+            "label": "ingest NDJSON (800 events)",
+            "requests": {
+              "total": 249,
+              "accepted": 249,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 249
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 249,
+              "min": 3.3013,
+              "max": 22.4191,
+              "mean": 6.571738955823293,
+              "p50": 5.7812,
+              "p90": 9.5712,
+              "p95": 14.9114,
+              "p99": 19.9733,
+              "stdDev": 3.4054113014887006
+            }
+          },
+          {
+            "name": "ingest.json",
+            "label": "ingest JSON array (800 events)",
+            "requests": {
+              "total": 150,
+              "accepted": 150,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 150
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 150,
+              "min": 3.5706,
+              "max": 32.9244,
+              "mean": 7.556353333333333,
+              "p50": 5.9066,
+              "p90": 13.4341,
+              "p95": 19.9919,
+              "p99": 31.2385,
+              "stdDev": 5.44007096493965
+            }
+          },
+          {
+            "name": "logs.latest",
+            "label": "latest logs (limit 200)",
+            "requests": {
+              "total": 547,
+              "accepted": 547,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 547
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 547,
+              "min": 7.2533,
+              "max": 96.3706,
+              "mean": 18.562101828153573,
+              "p50": 18.8659,
+              "p90": 24.422,
+              "p95": 26.2367,
+              "p99": 28.3647,
+              "stdDev": 5.912661921427848
+            }
+          },
+          {
+            "name": "logs.count",
+            "label": "count: level = Error",
+            "requests": {
+              "total": 474,
+              "accepted": 474,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 474
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 474,
+              "min": 7.6829,
+              "max": 50.3948,
+              "mean": 19.17328122362869,
+              "p50": 19.0062,
+              "p90": 26.5608,
+              "p95": 27.9767,
+              "p99": 32.0893,
+              "stdDev": 5.71391457149698
+            }
+          },
+          {
+            "name": "logs.level",
+            "label": "level = Error",
+            "requests": {
+              "total": 367,
+              "accepted": 367,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 367
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 367,
+              "min": 27.2149,
+              "max": 91.2998,
+              "mean": 44.58994523160764,
+              "p50": 44.2476,
+              "p90": 53.1552,
+              "p95": 55.5317,
+              "p99": 61.1542,
+              "stdDev": 6.638950748681073
+            }
+          },
+          {
+            "name": "logs.service",
+            "label": "service = payments",
+            "requests": {
+              "total": 335,
+              "accepted": 335,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 335
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 335,
+              "min": 7.7372,
+              "max": 31.4486,
+              "mean": 19.052643582089548,
+              "p50": 19.6749,
+              "p90": 24.7211,
+              "p95": 26.7451,
+              "p99": 29.6429,
+              "stdDev": 4.959832929791911
+            }
+          },
+          {
+            "name": "logs.traceId",
+            "label": "traceId (Bloom filter)",
+            "requests": {
+              "total": 316,
+              "accepted": 316,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 316
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 316,
+              "min": 0.5525,
+              "max": 2.4459,
+              "mean": 1.0758208860759502,
+              "p50": 1.0116,
+              "p90": 1.5423,
+              "p95": 1.7034,
+              "p99": 2.051,
+              "stdDev": 0.3259594842977525
+            }
+          },
+          {
+            "name": "logs.scan",
+            "label": "message contains (scan)",
+            "requests": {
+              "total": 159,
+              "accepted": 159,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 159
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 159,
+              "min": 40.8036,
+              "max": 99.8598,
+              "mean": 71.12375534591197,
+              "p50": 73.3771,
+              "p90": 88.5482,
+              "p95": 93.5102,
+              "p99": 98.1098,
+              "stdDev": 14.797013224234929
+            }
+          },
+          {
+            "name": "logs.histogram",
+            "label": "histogram, 60 buckets",
+            "requests": {
+              "total": 163,
+              "accepted": 163,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 163
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 163,
+              "min": 8.3915,
+              "max": 32.1777,
+              "mean": 18.87034049079756,
+              "p50": 18.5236,
+              "p90": 26.3444,
+              "p95": 27.7207,
+              "p99": 31.2049,
+              "stdDev": 5.421656912079645
+            }
+          },
+          {
+            "name": "logs.facets",
+            "label": "facets",
+            "requests": {
+              "total": 148,
+              "accepted": 148,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 148
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 148,
+              "min": 24.7082,
+              "max": 112.6519,
+              "mean": 47.855282432432446,
+              "p50": 48.604,
+              "p90": 63.5732,
+              "p95": 69.867,
+              "p99": 78.9223,
+              "stdDev": 13.23913856327701
+            }
+          },
+          {
+            "name": "traces.search",
+            "label": "trace search (limit 50)",
+            "requests": {
+              "total": 311,
+              "accepted": 311,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 311
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 311,
+              "min": 2.1809,
+              "max": 10.0421,
+              "mean": 4.0800463022508024,
+              "p50": 3.6132,
+              "p90": 6.1389,
+              "p95": 6.7419,
+              "p99": 7.628,
+              "stdDev": 1.487753147115613
+            }
+          },
+          {
+            "name": "traces.get",
+            "label": "trace by id",
+            "requests": {
+              "total": 166,
+              "accepted": 166,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 166
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 166,
+              "min": 0.1994,
+              "max": 1.0701,
+              "mean": 0.5226855421686748,
+              "p50": 0.4937,
+              "p90": 0.7725,
+              "p95": 0.8351,
+              "p99": 0.965,
+              "stdDev": 0.17340072708423296
+            }
+          },
+          {
+            "name": "metrics.names",
+            "label": "list metric names",
+            "requests": {
+              "total": 155,
+              "accepted": 155,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 155
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 155,
+              "min": 0.0989,
+              "max": 1.1974,
+              "mean": 0.328843870967742,
+              "p50": 0.2898,
+              "p90": 0.5174,
+              "p95": 0.6336,
+              "p99": 0.8957,
+              "stdDev": 0.1580480290652554
+            }
+          },
+          {
+            "name": "metrics.series",
+            "label": "metric series",
+            "requests": {
+              "total": 124,
+              "accepted": 124,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 124
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 124,
+              "min": 0.2162,
+              "max": 2.3015,
+              "mean": 0.48266774193548373,
+              "p50": 0.4394,
+              "p90": 0.6579,
+              "p95": 0.7301,
+              "p99": 1.3895,
+              "stdDev": 0.23244343049837213
+            }
+          }
+        ]
+      },
+      "memory": {
+        "peakRssBytes": 56688640,
+        "peakRssSource": "os-peak",
+        "idleRssBytes": 12959744,
+        "seedPeakRssBytes": 33034240,
+        "queryPeakRssBytes": 21913600,
+        "mixedPeakRssBytes": 56688640
+      },
+      "storage": {
+        "rawBytes": 27519514,
+        "storedBytes": 7521293,
+        "eventCount": 103100,
+        "segmentCount": 22,
+        "compressionRatio": 4.02,
+        "indexOverhead": 0.076,
+        "receivedBytes": 46514317,
+        "segmentBytes": 6202444,
+        "indexBytes": 473700,
+        "walBytes": 709373,
+        "metadataBytes": 135776,
+        "bytesStoredPerEvent": 72.95143549951503
+      },
+      "dataDirBytes": 7521335,
+      "meanRestartMs": 518.0717615384615
+    },
+    {
+      "run": 3,
+      "durationSeconds": 65.3155172,
+      "seed": {
+        "seconds": 1.3737989,
+        "itemsSent": 101100,
+        "itemsAccepted": 101100,
+        "requests": {
+          "total": 1201,
+          "accepted": 1201,
+          "rejectedBackpressure": 0,
+          "rejectedTooLarge": 0,
+          "rejectedOther": 0,
+          "transportErrors": 0,
+          "byStatus": {
+            "200": 1201
+          },
+          "rejected": 0
+        },
+        "itemsPerSecond": 73591.55695931916,
+        "latency": {
+          "count": 1201,
+          "min": 0.1101,
+          "max": 13.6057,
+          "mean": 0.7017386344712745,
+          "p50": 0.15,
+          "p90": 3.0174,
+          "p95": 3.4509,
+          "p99": 4.5819,
+          "stdDev": 1.311220407765021
+        }
+      },
+      "queries": [
+        {
+          "name": "logs.level",
+          "label": "level = Error (bitmap)",
+          "category": "selective",
+          "coldMs": 19.8955,
+          "coldDiagnostics": {
+            "elapsedMs": 17.5976,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 114,
+            "eventsExamined": 31684,
+            "eventsMatched": 614,
+            "bytesRead": 3111181,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "level:bitmap"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 17.8202,
+            "max": 22.8828,
+            "mean": 19.841084999999996,
+            "p50": 19.4896,
+            "p90": 21.3659,
+            "p95": 21.445,
+            "p99": 22.8828,
+            "stdDev": 1.406222503646972
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 16.0783,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 114,
+            "eventsExamined": 31684,
+            "eventsMatched": 614,
+            "bytesRead": 3111181,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "level:bitmap"
+            ]
+          },
+          "restartMs": 529.6265,
+          "failures": 0
+        },
+        {
+          "name": "logs.service",
+          "label": "service = payments",
+          "category": "selective",
+          "coldMs": 7.2881,
+          "coldDiagnostics": {
+            "elapsedMs": 5.924600000000001,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 50,
+            "eventsExamined": 6455,
+            "eventsMatched": 816,
+            "bytesRead": 839805,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "service:bitmap"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 6.6503,
+            "max": 10.0713,
+            "mean": 7.296385000000001,
+            "p50": 6.9716,
+            "p90": 7.7938,
+            "p95": 9.0286,
+            "p99": 10.0713,
+            "stdDev": 0.8538925886322314
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 5.7791,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 50,
+            "eventsExamined": 6455,
+            "eventsMatched": 816,
+            "bytesRead": 839805,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "service:bitmap"
+            ]
+          },
+          "restartMs": 529.4513,
+          "failures": 0
+        },
+        {
+          "name": "logs.traceId",
+          "label": "traceId = \u2026 (Bloom filter)",
+          "category": "selective",
+          "coldMs": 1.542,
+          "coldDiagnostics": {
+            "elapsedMs": 0.9597,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 20,
+            "blocksConsidered": 110,
+            "blocksSkipped": 108,
+            "blocksRead": 3,
+            "eventsExamined": 1808,
+            "eventsMatched": 1,
+            "bytesRead": 45209,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "traceId:bloom"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 0.4369,
+            "max": 1.452,
+            "mean": 0.636855,
+            "p50": 0.5037,
+            "p90": 1.042,
+            "p95": 1.0775,
+            "p99": 1.452,
+            "stdDev": 0.26933360154472485
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 0.3139,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 20,
+            "blocksConsidered": 110,
+            "blocksSkipped": 108,
+            "blocksRead": 3,
+            "eventsExamined": 1808,
+            "eventsMatched": 1,
+            "bytesRead": 45209,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "traceId:bloom"
+            ]
+          },
+          "restartMs": 516.1775,
+          "failures": 0
+        },
+        {
+          "name": "logs.range",
+          "label": "durationMs \u003E 1990 (zone map)",
+          "category": "selective",
+          "coldMs": 99.4134,
+          "coldDiagnostics": {
+            "elapsedMs": 97.88669999999999,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 22,
+            "blocksRead": 88,
+            "eventsExamined": 82432,
+            "eventsMatched": 182,
+            "bytesRead": 5099244,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "durationMs:zonemap"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 97.5652,
+            "max": 111.9852,
+            "mean": 103.07593000000001,
+            "p50": 103.3315,
+            "p90": 105.6741,
+            "p95": 106.0604,
+            "p99": 111.9852,
+            "stdDev": 3.2727684466470324
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 102.69019999999999,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 22,
+            "blocksRead": 88,
+            "eventsExamined": 82432,
+            "eventsMatched": 182,
+            "bytesRead": 5099244,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "durationMs:zonemap"
+            ]
+          },
+          "restartMs": 518.4055,
+          "failures": 0
+        },
+        {
+          "name": "logs.count",
+          "label": "count: level = Error",
+          "category": "selective",
+          "coldMs": 4.2958,
+          "coldDiagnostics": {
+            "elapsedMs": 3.6744999999999997,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 1981,
+            "bytesRead": 481028,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "level:bitmap"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 3.3822,
+            "max": 5.2298,
+            "mean": 3.811855,
+            "p50": 3.5679,
+            "p90": 4.4541,
+            "p95": 5.1129,
+            "p99": 5.2298,
+            "stdDev": 0.5452962656594168
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 3.4724,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 1981,
+            "bytesRead": 481028,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "level:bitmap"
+            ]
+          },
+          "restartMs": 517.3475,
+          "failures": 0
+        },
+        {
+          "name": "logs.scan.timedOut",
+          "label": "message contains \u0022timed out\u0022 (scan)",
+          "category": "scan",
+          "coldMs": 43.2508,
+          "coldDiagnostics": {
+            "elapsedMs": 41.3808,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 178,
+            "eventsExamined": 75996,
+            "eventsMatched": 371,
+            "bytesRead": 5686664,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 35.9743,
+            "max": 41.2874,
+            "mean": 38.40934,
+            "p50": 38.103,
+            "p90": 40.4401,
+            "p95": 40.6101,
+            "p99": 41.2874,
+            "stdDev": 1.5009883345386312
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 36.4941,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 178,
+            "eventsExamined": 75996,
+            "eventsMatched": 371,
+            "bytesRead": 5686664,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "restartMs": 518.5023,
+          "failures": 0
+        },
+        {
+          "name": "logs.scan.error",
+          "label": "message contains \u0022error\u0022 (scan)",
+          "category": "scan",
+          "coldMs": 17.0382,
+          "coldDiagnostics": {
+            "elapsedMs": 16.406299999999998,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 0,
+            "bytesRead": 1035871,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 14.8475,
+            "max": 18.6079,
+            "mean": 16.2292,
+            "p50": 16.1054,
+            "p90": 17.1198,
+            "p95": 18.0652,
+            "p99": 18.6079,
+            "stdDev": 0.9766164279636204
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 15.796600000000002,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 0,
+            "bytesRead": 1035871,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "restartMs": 516.9156,
+          "failures": 0
+        },
+        {
+          "name": "logs.latest",
+          "label": "latest logs (limit 200)",
+          "category": "recent",
+          "coldMs": 7.2875,
+          "coldDiagnostics": {
+            "elapsedMs": 5.6029,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 44,
+            "eventsExamined": 1208,
+            "eventsMatched": 1208,
+            "bytesRead": 616504,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 5.5494,
+            "max": 11.0465,
+            "mean": 6.713469999999999,
+            "p50": 6.1193,
+            "p90": 8.0601,
+            "p95": 8.1983,
+            "p99": 11.0465,
+            "stdDev": 1.3069888692394398
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 4.4192,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 44,
+            "eventsExamined": 1208,
+            "eventsMatched": 1208,
+            "bytesRead": 616504,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 520.1223,
+          "failures": 0
+        },
+        {
+          "name": "logs.histogram",
+          "label": "histogram, 60 buckets",
+          "category": "aggregate",
+          "coldMs": 4.3314,
+          "coldDiagnostics": {
+            "elapsedMs": 3.7868,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 100000,
+            "bytesRead": 481028,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 3.4668,
+            "max": 4.2942,
+            "mean": 3.7541700000000007,
+            "p50": 3.6452,
+            "p90": 4.1057,
+            "p95": 4.2817,
+            "p99": 4.2942,
+            "stdDev": 0.2621243559839489
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 3.9962,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 110,
+            "eventsExamined": 100000,
+            "eventsMatched": 100000,
+            "bytesRead": 481028,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 518.2876,
+          "failures": 0
+        },
+        {
+          "name": "logs.facets",
+          "label": "facets, 2000-event sample",
+          "category": "aggregate",
+          "coldMs": 19.3313,
+          "coldDiagnostics": {
+            "elapsedMs": 17.8595,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 54,
+            "eventsExamined": 7782,
+            "eventsMatched": 7782,
+            "bytesRead": 965988,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 18.1545,
+            "max": 23.8749,
+            "mean": 19.740250000000003,
+            "p50": 19.7568,
+            "p90": 20.4706,
+            "p95": 23.0901,
+            "p99": 23.8749,
+            "stdDev": 1.4723502542033375
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 17.7527,
+            "segmentsConsidered": 22,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 110,
+            "blocksSkipped": 0,
+            "blocksRead": 54,
+            "eventsExamined": 7782,
+            "eventsMatched": 7782,
+            "bytesRead": 965988,
+            "unsealedEventsScanned": 1000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 519.9771,
+          "failures": 0
+        },
+        {
+          "name": "traces.search",
+          "label": "trace search (limit 50)",
+          "category": "trace",
+          "coldMs": 3.4593,
+          "coldDiagnostics": {
+            "elapsedMs": 2.8741,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 4467,
+            "eventsMatched": 1617,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 6000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 2.1047,
+            "max": 2.7459,
+            "mean": 2.3121300000000002,
+            "p50": 2.2546,
+            "p90": 2.494,
+            "p95": 2.6362,
+            "p99": 2.7459,
+            "stdDev": 0.16046200763650206
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 1.9300000000000002,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 4467,
+            "eventsMatched": 1617,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 6000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 519.8549,
+          "failures": 0
+        },
+        {
+          "name": "traces.get",
+          "label": "trace by id",
+          "category": "trace",
+          "coldMs": 0.5632,
+          "coldDiagnostics": {
+            "elapsedMs": 0.1082,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 3000,
+            "eventsMatched": 3,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 3000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 0.1481,
+            "max": 0.6432,
+            "mean": 0.3085,
+            "p50": 0.2544,
+            "p90": 0.4493,
+            "p95": 0.5881,
+            "p99": 0.6432,
+            "stdDev": 0.1384304271390316
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 0.027800000000000002,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 3000,
+            "eventsMatched": 3,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 3000,
+            "indexes": [
+              "timestamp:time"
+            ]
+          },
+          "restartMs": 516.6376,
+          "failures": 0
+        },
+        {
+          "name": "metrics.series",
+          "label": "metric series",
+          "category": "metric",
+          "coldMs": 0.5874,
+          "coldDiagnostics": {
+            "elapsedMs": 0.0252,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 100,
+            "eventsMatched": 100,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 100,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "warm": {
+            "count": 20,
+            "min": 0.1586,
+            "max": 0.6783,
+            "mean": 0.28948999999999997,
+            "p50": 0.2027,
+            "p90": 0.5309,
+            "p95": 0.5668,
+            "p99": 0.6783,
+            "stdDev": 0.159752920737652
+          },
+          "warmDiagnostics": {
+            "elapsedMs": 0.0036,
+            "segmentsConsidered": 0,
+            "segmentsSkipped": 0,
+            "blocksConsidered": 0,
+            "blocksSkipped": 0,
+            "blocksRead": 0,
+            "eventsExamined": 100,
+            "eventsMatched": 100,
+            "bytesRead": 0,
+            "unsealedEventsScanned": 100,
+            "indexes": [
+              "timestamp:time",
+              "message:none"
+            ]
+          },
+          "restartMs": 513.5152,
+          "failures": 0
+        }
+      ],
+      "mixed": {
+        "measuredSeconds": 17,
+        "concurrency": 4,
+        "requestsPerSecond": 223.52941176470588,
+        "eventsAccepted": 330400,
+        "requests": {
+          "total": 3800,
+          "accepted": 3800,
+          "rejectedBackpressure": 0,
+          "rejectedTooLarge": 0,
+          "rejectedOther": 0,
+          "transportErrors": 0,
+          "byStatus": {
+            "200": 3800
+          },
+          "rejected": 0
+        },
+        "operations": [
+          {
+            "name": "ingest.ndjson",
+            "label": "ingest NDJSON (800 events)",
+            "requests": {
+              "total": 257,
+              "accepted": 257,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 257
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 257,
+              "min": 3.2395,
+              "max": 23.0596,
+              "mean": 6.065319844357976,
+              "p50": 5.3761,
+              "p90": 7.7433,
+              "p95": 13.0119,
+              "p99": 21.6238,
+              "stdDev": 3.2160057495240664
+            }
+          },
+          {
+            "name": "ingest.json",
+            "label": "ingest JSON array (800 events)",
+            "requests": {
+              "total": 156,
+              "accepted": 156,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 156
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 156,
+              "min": 3.5696,
+              "max": 32.0809,
+              "mean": 6.614848717948717,
+              "p50": 5.8101,
+              "p90": 8.6484,
+              "p95": 14.5315,
+              "p99": 25.4174,
+              "stdDev": 3.758143948203381
+            }
+          },
+          {
+            "name": "logs.latest",
+            "label": "latest logs (limit 200)",
+            "requests": {
+              "total": 564,
+              "accepted": 564,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 564
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 564,
+              "min": 7.2698,
+              "max": 30.9634,
+              "mean": 17.632974290780144,
+              "p50": 17.9954,
+              "p90": 22.3397,
+              "p95": 23.7414,
+              "p99": 28.809,
+              "stdDev": 4.1435872724531295
+            }
+          },
+          {
+            "name": "logs.count",
+            "label": "count: level = Error",
+            "requests": {
+              "total": 485,
+              "accepted": 485,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 485
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 485,
+              "min": 6.8273,
+              "max": 38.87,
+              "mean": 18.53864680412372,
+              "p50": 18.1533,
+              "p90": 26.0486,
+              "p95": 28.0501,
+              "p99": 31.4895,
+              "stdDev": 5.416183900533267
+            }
+          },
+          {
+            "name": "logs.level",
+            "label": "level = Error",
+            "requests": {
+              "total": 382,
+              "accepted": 382,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 382
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 382,
+              "min": 28.8699,
+              "max": 81.5646,
+              "mean": 43.12617356020943,
+              "p50": 42.5367,
+              "p90": 49.3016,
+              "p95": 51.9499,
+              "p99": 61.0004,
+              "stdDev": 5.495488972678105
+            }
+          },
+          {
+            "name": "logs.service",
+            "label": "service = payments",
+            "requests": {
+              "total": 346,
+              "accepted": 346,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 346
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 346,
+              "min": 7.3889,
+              "max": 33.1965,
+              "mean": 18.281797398843928,
+              "p50": 18.8995,
+              "p90": 23.664,
+              "p95": 24.8731,
+              "p99": 29.0213,
+              "stdDev": 4.505601319596822
+            }
+          },
+          {
+            "name": "logs.traceId",
+            "label": "traceId (Bloom filter)",
+            "requests": {
+              "total": 330,
+              "accepted": 330,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 330
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 330,
+              "min": 0.5962,
+              "max": 5.2718,
+              "mean": 1.0974124242424235,
+              "p50": 1.0349,
+              "p90": 1.4987,
+              "p95": 1.6275,
+              "p99": 2.4755,
+              "stdDev": 0.42231818590858766
+            }
+          },
+          {
+            "name": "logs.scan",
+            "label": "message contains (scan)",
+            "requests": {
+              "total": 166,
+              "accepted": 166,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 166
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 166,
+              "min": 41.9235,
+              "max": 125.3927,
+              "mean": 69.98930361445784,
+              "p50": 68.4144,
+              "p90": 87.7364,
+              "p95": 97.9255,
+              "p99": 105.2385,
+              "stdDev": 14.762389981702343
+            }
+          },
+          {
+            "name": "logs.histogram",
+            "label": "histogram, 60 buckets",
+            "requests": {
+              "total": 174,
+              "accepted": 174,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 174
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 174,
+              "min": 7.9772,
+              "max": 34.5113,
+              "mean": 18.685097701149424,
+              "p50": 18.2146,
+              "p90": 26.5564,
+              "p95": 27.7609,
+              "p99": 33.9251,
+              "stdDev": 5.597273847883697
+            }
+          },
+          {
+            "name": "logs.facets",
+            "label": "facets",
+            "requests": {
+              "total": 155,
+              "accepted": 155,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 155
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 155,
+              "min": 22.1554,
+              "max": 110.3012,
+              "mean": 46.06772774193549,
+              "p50": 46.0902,
+              "p90": 60.4466,
+              "p95": 62.7231,
+              "p99": 79.5836,
+              "stdDev": 12.263692448329435
+            }
+          },
+          {
+            "name": "traces.search",
+            "label": "trace search (limit 50)",
+            "requests": {
+              "total": 323,
+              "accepted": 323,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 323
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 323,
+              "min": 2.1482,
+              "max": 8.692,
+              "mean": 3.920120743034056,
+              "p50": 3.4752,
+              "p90": 5.7363,
+              "p95": 6.5424,
+              "p99": 8.2599,
+              "stdDev": 1.4362347564030287
+            }
+          },
+          {
+            "name": "traces.get",
+            "label": "trace by id",
+            "requests": {
+              "total": 169,
+              "accepted": 169,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 169
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 169,
+              "min": 0.23,
+              "max": 1.1895,
+              "mean": 0.499825443786982,
+              "p50": 0.4515,
+              "p90": 0.732,
+              "p95": 0.8247,
+              "p99": 1.1299,
+              "stdDev": 0.17451289760958516
+            }
+          },
+          {
+            "name": "metrics.names",
+            "label": "list metric names",
+            "requests": {
+              "total": 165,
+              "accepted": 165,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 165
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 165,
+              "min": 0.1084,
+              "max": 3.3597,
+              "mean": 0.31132727272727273,
+              "p50": 0.2594,
+              "p90": 0.4652,
+              "p95": 0.5328,
+              "p99": 1.0762,
+              "stdDev": 0.2701507263036594
+            }
+          },
+          {
+            "name": "metrics.series",
+            "label": "metric series",
+            "requests": {
+              "total": 128,
+              "accepted": 128,
+              "rejectedBackpressure": 0,
+              "rejectedTooLarge": 0,
+              "rejectedOther": 0,
+              "transportErrors": 0,
+              "byStatus": {
+                "200": 128
+              },
+              "rejected": 0
+            },
+            "latency": {
+              "count": 128,
+              "min": 0.1957,
+              "max": 1.469,
+              "mean": 0.4502445312500001,
+              "p50": 0.4152,
+              "p90": 0.6314,
+              "p95": 0.7129,
+              "p99": 1.1649,
+              "stdDev": 0.17873697378166878
+            }
+          }
+        ]
+      },
+      "memory": {
+        "peakRssBytes": 56209408,
+        "peakRssSource": "os-peak",
+        "idleRssBytes": 12935168,
+        "seedPeakRssBytes": 33832960,
+        "queryPeakRssBytes": 22020096,
+        "mixedPeakRssBytes": 56209408
+      },
+      "storage": {
+        "rawBytes": 27519326,
+        "storedBytes": 7519772,
+        "eventCount": 103100,
+        "segmentCount": 22,
+        "compressionRatio": 4.02,
+        "indexOverhead": 0.076,
+        "receivedBytes": 46514317,
+        "segmentBytes": 6200922,
+        "indexBytes": 473700,
+        "walBytes": 709374,
+        "metadataBytes": 135776,
+        "bytesStoredPerEvent": 72.93668283220174
+      },
+      "dataDirBytes": 7519814,
+      "meanRestartMs": 519.6016076923077
+    }
+  ],
+  "summary": [
+    {
+      "key": "seed.itemsPerSecond",
+      "label": "Seeding throughput",
+      "unit": "items/s",
+      "better": "higher",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 65543.3636025919,
+      "stdDev": 12500.662532976938,
+      "cvPercent": 19.07235430999852,
+      "min": 51142.05624250258,
+      "max": 73591.55695931916,
+      "justification": "not gated: 3 runs, CV 19.1% \u2192 90% upper bound 58.8% (\u00D73.08) \u2192 3\u00D7 = 176.3%, rounded up to 180%; floor 15% \u2192 180% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        51142.05624250258,
+        71896.47760595396,
+        73591.55695931916
+      ]
+    },
+    {
+      "key": "seed.p95Ms",
+      "label": "Seeding request p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 3.7628,
+      "stdDev": 0.3630980996920808,
+      "cvPercent": 9.649678422772425,
+      "min": 3.4509,
+      "max": 4.1614,
+      "justification": "not gated: 3 runs, CV 9.6% \u2192 90% upper bound 29.7% (\u00D73.08) \u2192 3\u00D7 = 89.2%, rounded up to 90%; floor 15% \u2192 90% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        4.1614,
+        3.6761,
+        3.4509
+      ]
+    },
+    {
+      "key": "query.logs.level.coldMs",
+      "label": "level = Error (bitmap): cold",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 23.07953333333333,
+      "stdDev": 5.095185953754125,
+      "cvPercent": 22.076642019426128,
+      "min": 19.8955,
+      "max": 28.9561,
+      "justification": "not gated: 3 runs, CV 22.1% \u2192 90% upper bound 68.0% (\u00D73.08) \u2192 3\u00D7 = 204.1%, rounded up to 205%; floor 15% \u2192 205% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        28.9561,
+        20.387,
+        19.8955
+      ]
+    },
+    {
+      "key": "query.logs.level.warmP50Ms",
+      "label": "level = Error (bitmap): warm p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 20.13886666666667,
+      "stdDev": 0.5713158875204971,
+      "cvPercent": 2.836882020109525,
+      "min": 19.4896,
+      "max": 20.5647,
+      "budgetPercent": 30,
+      "justification": "3 runs, CV 2.8% \u2192 90% upper bound 8.7% (\u00D73.08) \u2192 3\u00D7 = 26.2%, rounded up to 30%; floor 15% \u2192 30%",
+      "values": [
+        20.3623,
+        20.5647,
+        19.4896
+      ]
+    },
+    {
+      "key": "query.logs.level.warmP95Ms",
+      "label": "level = Error (bitmap): warm p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 22.705666666666662,
+      "stdDev": 1.2546932785877722,
+      "cvPercent": 5.5259037182543524,
+      "min": 21.445,
+      "max": 23.9543,
+      "justification": "not gated: 3 runs, CV 5.5% \u2192 90% upper bound 17.0% (\u00D73.08) \u2192 3\u00D7 = 51.1%, rounded up to 55%; floor 15% \u2192 55% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        23.9543,
+        22.7177,
+        21.445
+      ]
+    },
+    {
+      "key": "query.logs.service.coldMs",
+      "label": "service = payments: cold",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 15.4232,
+      "stdDev": 13.699197625043592,
+      "cvPercent": 88.82201893928364,
+      "min": 7.2881,
+      "max": 31.2395,
+      "justification": "not gated: 3 runs, CV 88.8% \u2192 90% upper bound 273.7% (\u00D73.08) \u2192 3\u00D7 = 821.0%, rounded up to 825%; floor 15% \u2192 825% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        7.742,
+        31.2395,
+        7.2881
+      ]
+    },
+    {
+      "key": "query.logs.service.warmP50Ms",
+      "label": "service = payments: warm p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 7.4636,
+      "stdDev": 0.6525951961208425,
+      "cvPercent": 8.743705398478516,
+      "min": 6.9716,
+      "max": 8.2039,
+      "justification": "not gated: 3 runs, CV 8.7% \u2192 90% upper bound 26.9% (\u00D73.08) \u2192 3\u00D7 = 80.8%, rounded up to 85%; floor 15% \u2192 85% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        7.2153,
+        8.2039,
+        6.9716
+      ]
+    },
+    {
+      "key": "query.logs.service.warmP95Ms",
+      "label": "service = payments: warm p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 8.882033333333334,
+      "stdDev": 1.0121405847674199,
+      "cvPercent": 11.395370257944911,
+      "min": 7.8046,
+      "max": 9.8129,
+      "justification": "not gated: 3 runs, CV 11.4% \u2192 90% upper bound 35.1% (\u00D73.08) \u2192 3\u00D7 = 105.3%, rounded up to 110%; floor 15% \u2192 110% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        7.8046,
+        9.8129,
+        9.0286
+      ]
+    },
+    {
+      "key": "query.logs.traceId.coldMs",
+      "label": "traceId = \u2026 (Bloom filter): cold",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 1.9643666666666666,
+      "stdDev": 0.645903803467152,
+      "cvPercent": 32.88102035264048,
+      "min": 1.542,
+      "max": 2.7079,
+      "justification": "not gated: 3 runs, CV 32.9% \u2192 90% upper bound 101.3% (\u00D73.08) \u2192 3\u00D7 = 303.9%, rounded up to 305%; floor 15% \u2192 305% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        2.7079,
+        1.6432,
+        1.542
+      ]
+    },
+    {
+      "key": "query.logs.traceId.warmP50Ms",
+      "label": "traceId = \u2026 (Bloom filter): warm p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 0.5081333333333333,
+      "stdDev": 0.05239087070600499,
+      "cvPercent": 10.310457368014626,
+      "min": 0.4581,
+      "max": 0.5626,
+      "justification": "not gated: 3 runs, CV 10.3% \u2192 90% upper bound 31.8% (\u00D73.08) \u2192 3\u00D7 = 95.3%, rounded up to 100%; floor 15% \u2192 100% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        0.4581,
+        0.5626,
+        0.5037
+      ]
+    },
+    {
+      "key": "query.logs.traceId.warmP95Ms",
+      "label": "traceId = \u2026 (Bloom filter): warm p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 1.0362,
+      "stdDev": 0.16272931512176894,
+      "cvPercent": 15.704431106134814,
+      "min": 0.8568,
+      "max": 1.1743,
+      "justification": "not gated: 3 runs, CV 15.7% \u2192 90% upper bound 48.4% (\u00D73.08) \u2192 3\u00D7 = 145.2%, rounded up to 150%; floor 15% \u2192 150% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        1.1743,
+        0.8568,
+        1.0775
+      ]
+    },
+    {
+      "key": "query.logs.range.coldMs",
+      "label": "durationMs \u003E 1990 (zone map): cold",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 102.44940000000001,
+      "stdDev": 4.474644174680262,
+      "cvPercent": 4.367662645833223,
+      "min": 99.4134,
+      "max": 107.5881,
+      "budgetPercent": 45,
+      "justification": "3 runs, CV 4.4% \u2192 90% upper bound 13.5% (\u00D73.08) \u2192 3\u00D7 = 40.4%, rounded up to 45%; floor 15% \u2192 45%",
+      "values": [
+        100.3467,
+        107.5881,
+        99.4134
+      ]
+    },
+    {
+      "key": "query.logs.range.warmP50Ms",
+      "label": "durationMs \u003E 1990 (zone map): warm p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 105.13446666666668,
+      "stdDev": 1.9797038423292823,
+      "cvPercent": 1.8830207686371947,
+      "min": 103.3315,
+      "max": 107.253,
+      "budgetPercent": 20,
+      "justification": "3 runs, CV 1.9% \u2192 90% upper bound 5.8% (\u00D73.08) \u2192 3\u00D7 = 17.4%, rounded up to 20%; floor 15% \u2192 20%",
+      "values": [
+        104.8189,
+        107.253,
+        103.3315
+      ]
+    },
+    {
+      "key": "query.logs.range.warmP95Ms",
+      "label": "durationMs \u003E 1990 (zone map): warm p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 108.27816666666666,
+      "stdDev": 2.097000191543468,
+      "cvPercent": 1.936678700886268,
+      "min": 106.0604,
+      "max": 110.2288,
+      "justification": "not gated: p95 from 20 samples in one run; at least 200 are needed for 10 beyond it",
+      "values": [
+        108.5453,
+        110.2288,
+        106.0604
+      ]
+    },
+    {
+      "key": "query.logs.count.coldMs",
+      "label": "count: level = Error: cold",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 5.3224,
+      "stdDev": 1.70743080679716,
+      "cvPercent": 32.08009181566887,
+      "min": 4.2958,
+      "max": 7.2934,
+      "justification": "not gated: 3 runs, CV 32.1% \u2192 90% upper bound 98.8% (\u00D73.08) \u2192 3\u00D7 = 296.5%, rounded up to 300%; floor 15% \u2192 300% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        7.2934,
+        4.378,
+        4.2958
+      ]
+    },
+    {
+      "key": "query.logs.count.warmP50Ms",
+      "label": "count: level = Error: warm p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 3.6328,
+      "stdDev": 0.12921427939666733,
+      "cvPercent": 3.5568784242641303,
+      "min": 3.5489,
+      "max": 3.7816,
+      "budgetPercent": 35,
+      "justification": "3 runs, CV 3.6% \u2192 90% upper bound 11.0% (\u00D73.08) \u2192 3\u00D7 = 32.9%, rounded up to 35%; floor 15% \u2192 35%",
+      "values": [
+        3.7816,
+        3.5489,
+        3.5679
+      ]
+    },
+    {
+      "key": "query.logs.count.warmP95Ms",
+      "label": "count: level = Error: warm p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 4.768566666666667,
+      "stdDev": 0.42498461540782095,
+      "cvPercent": 8.91220874353204,
+      "min": 4.2936,
+      "max": 5.1129,
+      "justification": "not gated: 3 runs, CV 8.9% \u2192 90% upper bound 27.5% (\u00D73.08) \u2192 3\u00D7 = 82.4%, rounded up to 85%; floor 15% \u2192 85% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        4.8992,
+        4.2936,
+        5.1129
+      ]
+    },
+    {
+      "key": "query.logs.scan.timedOut.coldMs",
+      "label": "message contains \u0022timed out\u0022 (scan): cold",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 50.69423333333333,
+      "stdDev": 13.70622825227033,
+      "cvPercent": 27.037055994410274,
+      "min": 42.3202,
+      "max": 66.5117,
+      "justification": "not gated: 3 runs, CV 27.0% \u2192 90% upper bound 83.3% (\u00D73.08) \u2192 3\u00D7 = 249.9%, rounded up to 250%; floor 15% \u2192 250% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        66.5117,
+        42.3202,
+        43.2508
+      ]
+    },
+    {
+      "key": "query.logs.scan.timedOut.warmP50Ms",
+      "label": "message contains \u0022timed out\u0022 (scan): warm p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 38.864133333333335,
+      "stdDev": 0.8073632412572014,
+      "cvPercent": 2.0773993191422457,
+      "min": 38.103,
+      "max": 39.7109,
+      "budgetPercent": 20,
+      "justification": "3 runs, CV 2.1% \u2192 90% upper bound 6.4% (\u00D73.08) \u2192 3\u00D7 = 19.2%, rounded up to 20%; floor 15% \u2192 20%",
+      "values": [
+        38.7785,
+        39.7109,
+        38.103
+      ]
+    },
+    {
+      "key": "query.logs.scan.timedOut.warmP95Ms",
+      "label": "message contains \u0022timed out\u0022 (scan): warm p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 40.95633333333333,
+      "stdDev": 0.37860066472912013,
+      "cvPercent": 0.9244007798446804,
+      "min": 40.6101,
+      "max": 41.3606,
+      "justification": "not gated: p95 from 20 samples in one run; at least 200 are needed for 10 beyond it",
+      "values": [
+        40.8983,
+        41.3606,
+        40.6101
+      ]
+    },
+    {
+      "key": "query.logs.scan.error.coldMs",
+      "label": "message contains \u0022error\u0022 (scan): cold",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 16.857,
+      "stdDev": 0.7082043772810216,
+      "cvPercent": 4.201248011395988,
+      "min": 16.0758,
+      "max": 17.457,
+      "budgetPercent": 40,
+      "justification": "3 runs, CV 4.2% \u2192 90% upper bound 12.9% (\u00D73.08) \u2192 3\u00D7 = 38.8%, rounded up to 40%; floor 15% \u2192 40%",
+      "values": [
+        17.457,
+        16.0758,
+        17.0382
+      ]
+    },
+    {
+      "key": "query.logs.scan.error.warmP50Ms",
+      "label": "message contains \u0022error\u0022 (scan): warm p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 15.988833333333332,
+      "stdDev": 0.33282872972947014,
+      "cvPercent": 2.0816323667318035,
+      "min": 15.6134,
+      "max": 16.2477,
+      "budgetPercent": 20,
+      "justification": "3 runs, CV 2.1% \u2192 90% upper bound 6.4% (\u00D73.08) \u2192 3\u00D7 = 19.2%, rounded up to 20%; floor 15% \u2192 20%",
+      "values": [
+        16.2477,
+        15.6134,
+        16.1054
+      ]
+    },
+    {
+      "key": "query.logs.scan.error.warmP95Ms",
+      "label": "message contains \u0022error\u0022 (scan): warm p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 18.451233333333334,
+      "stdDev": 0.3971839666116101,
+      "cvPercent": 2.152614730062905,
+      "min": 18.0652,
+      "max": 18.8587,
+      "justification": "not gated: p95 from 20 samples in one run; at least 200 are needed for 10 beyond it",
+      "values": [
+        18.4298,
+        18.8587,
+        18.0652
+      ]
+    },
+    {
+      "key": "query.logs.latest.coldMs",
+      "label": "latest logs (limit 200): cold",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 7.219566666666666,
+      "stdDev": 0.6372216673445226,
+      "cvPercent": 8.826314608141614,
+      "min": 6.5511,
+      "max": 7.8201,
+      "justification": "not gated: 3 runs, CV 8.8% \u2192 90% upper bound 27.2% (\u00D73.08) \u2192 3\u00D7 = 81.6%, rounded up to 85%; floor 15% \u2192 85% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        6.5511,
+        7.8201,
+        7.2875
+      ]
+    },
+    {
+      "key": "query.logs.latest.warmP50Ms",
+      "label": "latest logs (limit 200): warm p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 6.297899999999999,
+      "stdDev": 0.2084886327836605,
+      "cvPercent": 3.3104468598050225,
+      "min": 6.1193,
+      "max": 6.527,
+      "budgetPercent": 35,
+      "justification": "3 runs, CV 3.3% \u2192 90% upper bound 10.2% (\u00D73.08) \u2192 3\u00D7 = 30.6%, rounded up to 35%; floor 15% \u2192 35%",
+      "values": [
+        6.2474,
+        6.527,
+        6.1193
+      ]
+    },
+    {
+      "key": "query.logs.latest.warmP95Ms",
+      "label": "latest logs (limit 200): warm p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 7.990533333333334,
+      "stdDev": 0.30514397148449995,
+      "cvPercent": 3.818818578874584,
+      "min": 7.6402,
+      "max": 8.1983,
+      "justification": "not gated: p95 from 20 samples in one run; at least 200 are needed for 10 beyond it",
+      "values": [
+        8.1331,
+        7.6402,
+        8.1983
+      ]
+    },
+    {
+      "key": "query.logs.histogram.coldMs",
+      "label": "histogram, 60 buckets: cold",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 4.994433333333334,
+      "stdDev": 0.5822643758065001,
+      "cvPercent": 11.658267053449508,
+      "min": 4.3314,
+      "max": 5.4225,
+      "justification": "not gated: 3 runs, CV 11.7% \u2192 90% upper bound 35.9% (\u00D73.08) \u2192 3\u00D7 = 107.8%, rounded up to 110%; floor 15% \u2192 110% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        5.4225,
+        5.2294,
+        4.3314
+      ]
+    },
+    {
+      "key": "query.logs.histogram.warmP50Ms",
+      "label": "histogram, 60 buckets: warm p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 3.6381666666666668,
+      "stdDev": 0.14567739472318034,
+      "cvPercent": 4.004142967332823,
+      "min": 3.4891,
+      "max": 3.7802,
+      "budgetPercent": 40,
+      "justification": "3 runs, CV 4.0% \u2192 90% upper bound 12.3% (\u00D73.08) \u2192 3\u00D7 = 37.0%, rounded up to 40%; floor 15% \u2192 40%",
+      "values": [
+        3.4891,
+        3.7802,
+        3.6452
+      ]
+    },
+    {
+      "key": "query.logs.histogram.warmP95Ms",
+      "label": "histogram, 60 buckets: warm p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 4.3672,
+      "stdDev": 0.0895422246764063,
+      "cvPercent": 2.050334875352773,
+      "min": 4.2817,
+      "max": 4.4603,
+      "justification": "not gated: p95 from 20 samples in one run; at least 200 are needed for 10 beyond it",
+      "values": [
+        4.4603,
+        4.3596,
+        4.2817
+      ]
+    },
+    {
+      "key": "query.logs.facets.coldMs",
+      "label": "facets, 2000-event sample: cold",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 21.611333333333334,
+      "stdDev": 4.009298869295395,
+      "cvPercent": 18.551834851908232,
+      "min": 19.262,
+      "max": 26.2407,
+      "justification": "not gated: 3 runs, CV 18.6% \u2192 90% upper bound 57.2% (\u00D73.08) \u2192 3\u00D7 = 171.5%, rounded up to 175%; floor 15% \u2192 175% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        26.2407,
+        19.262,
+        19.3313
+      ]
+    },
+    {
+      "key": "query.logs.facets.warmP50Ms",
+      "label": "facets, 2000-event sample: warm p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 19.478933333333334,
+      "stdDev": 0.2614817456981134,
+      "cvPercent": 1.3423822609970775,
+      "min": 19.2377,
+      "max": 19.7568,
+      "budgetPercent": 15,
+      "justification": "3 runs, CV 1.3% \u2192 90% upper bound 4.1% (\u00D73.08) \u2192 3\u00D7 = 12.4%, rounded up to 15%; floor 15% \u2192 15%",
+      "values": [
+        19.2377,
+        19.4423,
+        19.7568
+      ]
+    },
+    {
+      "key": "query.logs.facets.warmP95Ms",
+      "label": "facets, 2000-event sample: warm p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 21.713399999999996,
+      "stdDev": 1.195049743734544,
+      "cvPercent": 5.503743051454605,
+      "min": 20.9434,
+      "max": 23.0901,
+      "justification": "not gated: 3 runs, CV 5.5% \u2192 90% upper bound 17.0% (\u00D73.08) \u2192 3\u00D7 = 50.9%, rounded up to 55%; floor 15% \u2192 55% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        20.9434,
+        21.1067,
+        23.0901
+      ]
+    },
+    {
+      "key": "query.traces.search.coldMs",
+      "label": "trace search (limit 50): cold",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 4.380366666666667,
+      "stdDev": 1.2756539904430721,
+      "cvPercent": 29.122082408087724,
+      "min": 3.4593,
+      "max": 5.8364,
+      "justification": "not gated: 3 runs, CV 29.1% \u2192 90% upper bound 89.7% (\u00D73.08) \u2192 3\u00D7 = 269.2%, rounded up to 270%; floor 15% \u2192 270% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        5.8364,
+        3.8454,
+        3.4593
+      ]
+    },
+    {
+      "key": "query.traces.search.warmP50Ms",
+      "label": "trace search (limit 50): warm p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 2.4790666666666668,
+      "stdDev": 0.24365667102161054,
+      "cvPercent": 9.828564689195284,
+      "min": 2.2546,
+      "max": 2.7382,
+      "justification": "not gated: 3 runs, CV 9.8% \u2192 90% upper bound 30.3% (\u00D73.08) \u2192 3\u00D7 = 90.8%, rounded up to 95%; floor 15% \u2192 95% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        2.4444,
+        2.7382,
+        2.2546
+      ]
+    },
+    {
+      "key": "query.traces.search.warmP95Ms",
+      "label": "trace search (limit 50): warm p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 3.2396666666666665,
+      "stdDev": 0.9585099182237674,
+      "cvPercent": 29.58668334881472,
+      "min": 2.6362,
+      "max": 4.3449,
+      "justification": "not gated: 3 runs, CV 29.6% \u2192 90% upper bound 91.2% (\u00D73.08) \u2192 3\u00D7 = 273.5%, rounded up to 275%; floor 15% \u2192 275% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        2.7379,
+        4.3449,
+        2.6362
+      ]
+    },
+    {
+      "key": "query.traces.get.coldMs",
+      "label": "trace by id: cold",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 1.038,
+      "stdDev": 0.4206260096570349,
+      "cvPercent": 40.522736961178694,
+      "min": 0.5632,
+      "max": 1.364,
+      "justification": "not gated: 3 runs, CV 40.5% \u2192 90% upper bound 124.8% (\u00D73.08) \u2192 3\u00D7 = 374.5%, rounded up to 375%; floor 15% \u2192 375% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        1.364,
+        1.1868,
+        0.5632
+      ]
+    },
+    {
+      "key": "query.traces.get.warmP50Ms",
+      "label": "trace by id: warm p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 0.3932,
+      "stdDev": 0.12800421868047945,
+      "cvPercent": 32.554480844475954,
+      "min": 0.2544,
+      "max": 0.5066,
+      "justification": "not gated: 3 runs, CV 32.6% \u2192 90% upper bound 100.3% (\u00D73.08) \u2192 3\u00D7 = 300.9%, rounded up to 305%; floor 15% \u2192 305% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        0.4186,
+        0.5066,
+        0.2544
+      ]
+    },
+    {
+      "key": "query.traces.get.warmP95Ms",
+      "label": "trace by id: warm p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 0.6341,
+      "stdDev": 0.04555666800809738,
+      "cvPercent": 7.184461127282351,
+      "min": 0.5881,
+      "max": 0.6792,
+      "justification": "not gated: 3 runs, CV 7.2% \u2192 90% upper bound 22.1% (\u00D73.08) \u2192 3\u00D7 = 66.4%, rounded up to 70%; floor 15% \u2192 70% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        0.6792,
+        0.635,
+        0.5881
+      ]
+    },
+    {
+      "key": "query.metrics.series.coldMs",
+      "label": "metric series: cold",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 1.098,
+      "stdDev": 0.5632013050411016,
+      "cvPercent": 51.29337932979067,
+      "min": 0.5874,
+      "max": 1.7021,
+      "justification": "not gated: 3 runs, CV 51.3% \u2192 90% upper bound 158.0% (\u00D73.08) \u2192 3\u00D7 = 474.1%, rounded up to 475%; floor 15% \u2192 475% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        1.7021,
+        1.0045,
+        0.5874
+      ]
+    },
+    {
+      "key": "query.metrics.series.warmP50Ms",
+      "label": "metric series: warm p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 0.37223333333333325,
+      "stdDev": 0.2070559425211779,
+      "cvPercent": 55.62530917556495,
+      "min": 0.2027,
+      "max": 0.603,
+      "justification": "not gated: 3 runs, CV 55.6% \u2192 90% upper bound 171.4% (\u00D73.08) \u2192 3\u00D7 = 514.1%, rounded up to 515%; floor 15% \u2192 515% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        0.311,
+        0.603,
+        0.2027
+      ]
+    },
+    {
+      "key": "query.metrics.series.warmP95Ms",
+      "label": "metric series: warm p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 0.5498,
+      "stdDev": 0.17113445006777564,
+      "cvPercent": 31.126673348085788,
+      "min": 0.3708,
+      "max": 0.7118,
+      "justification": "not gated: 3 runs, CV 31.1% \u2192 90% upper bound 95.9% (\u00D73.08) \u2192 3\u00D7 = 287.7%, rounded up to 290%; floor 15% \u2192 290% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        0.3708,
+        0.7118,
+        0.5668
+      ]
+    },
+    {
+      "key": "mixed.requestsPerSecond",
+      "label": "Mixed load throughput",
+      "unit": "req/s",
+      "better": "higher",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 217,
+      "stdDev": 5.932433870368687,
+      "cvPercent": 2.7338404932574596,
+      "min": 211.94117647058823,
+      "max": 223.52941176470588,
+      "budgetPercent": 30,
+      "justification": "3 runs, CV 2.7% \u2192 90% upper bound 8.4% (\u00D73.08) \u2192 3\u00D7 = 25.3%, rounded up to 30%; floor 15% \u2192 30%",
+      "values": [
+        211.94117647058823,
+        215.52941176470588,
+        223.52941176470588
+      ]
+    },
+    {
+      "key": "mixed.ingest.ndjson.p50Ms",
+      "label": "Mixed ingest NDJSON (800 events): p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 5.684533333333333,
+      "stdDev": 0.27324044966536953,
+      "cvPercent": 4.806734935709226,
+      "min": 5.3761,
+      "max": 5.8963,
+      "budgetPercent": 45,
+      "justification": "3 runs, CV 4.8% \u2192 90% upper bound 14.8% (\u00D73.08) \u2192 3\u00D7 = 44.4%, rounded up to 45%; floor 15% \u2192 45%",
+      "values": [
+        5.8963,
+        5.7812,
+        5.3761
+      ]
+    },
+    {
+      "key": "mixed.ingest.ndjson.p95Ms",
+      "label": "Mixed ingest NDJSON (800 events): p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 15.998533333333333,
+      "stdDev": 3.6535881272159463,
+      "cvPercent": 22.83701918852528,
+      "min": 13.0119,
+      "max": 20.0723,
+      "justification": "not gated: 3 runs, CV 22.8% \u2192 90% upper bound 70.4% (\u00D73.08) \u2192 3\u00D7 = 211.1%, rounded up to 215%; floor 15% \u2192 215% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        20.0723,
+        14.9114,
+        13.0119
+      ]
+    },
+    {
+      "key": "mixed.ingest.ndjson.p99Ms",
+      "label": "Mixed ingest NDJSON (800 events): p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 23.1698,
+      "stdDev": 4.189214395325214,
+      "cvPercent": 18.080494416547463,
+      "min": 19.9733,
+      "max": 27.9123,
+      "justification": "not gated: 3 runs, CV 18.1% \u2192 90% upper bound 55.7% (\u00D73.08) \u2192 3\u00D7 = 167.1%, rounded up to 170%; floor 15% \u2192 170% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        27.9123,
+        19.9733,
+        21.6238
+      ]
+    },
+    {
+      "key": "mixed.ingest.json.p50Ms",
+      "label": "Mixed ingest JSON array (800 events): p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 5.938466666666667,
+      "stdDev": 0.14691529305464868,
+      "cvPercent": 2.4739600523364396,
+      "min": 5.8101,
+      "max": 6.0987,
+      "budgetPercent": 25,
+      "justification": "3 runs, CV 2.5% \u2192 90% upper bound 7.6% (\u00D73.08) \u2192 3\u00D7 = 22.9%, rounded up to 25%; floor 15% \u2192 25%",
+      "values": [
+        6.0987,
+        5.9066,
+        5.8101
+      ]
+    },
+    {
+      "key": "mixed.ingest.json.p95Ms",
+      "label": "Mixed ingest JSON array (800 events): p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 16.65536666666667,
+      "stdDev": 2.9252200555399823,
+      "cvPercent": 17.563228201960822,
+      "min": 14.5315,
+      "max": 19.9919,
+      "justification": "not gated: 3 runs, CV 17.6% \u2192 90% upper bound 54.1% (\u00D73.08) \u2192 3\u00D7 = 162.3%, rounded up to 165%; floor 15% \u2192 165% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        15.4427,
+        19.9919,
+        14.5315
+      ]
+    },
+    {
+      "key": "mixed.ingest.json.p99Ms",
+      "label": "Mixed ingest JSON array (800 events): p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 26.581766666666667,
+      "stdDev": 4.197471858551683,
+      "cvPercent": 15.790793408081793,
+      "min": 23.0894,
+      "max": 31.2385,
+      "justification": "not gated: 3 runs, CV 15.8% \u2192 90% upper bound 48.7% (\u00D73.08) \u2192 3\u00D7 = 146.0%, rounded up to 150%; floor 15% \u2192 150% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        23.0894,
+        31.2385,
+        25.4174
+      ]
+    },
+    {
+      "key": "mixed.logs.latest.p50Ms",
+      "label": "Mixed latest logs (limit 200): p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 18.548466666666666,
+      "stdDev": 0.48071286994767776,
+      "cvPercent": 2.5916582679665043,
+      "min": 17.9954,
+      "max": 18.8659,
+      "budgetPercent": 25,
+      "justification": "3 runs, CV 2.6% \u2192 90% upper bound 8.0% (\u00D73.08) \u2192 3\u00D7 = 24.0%, rounded up to 25%; floor 15% \u2192 25%",
+      "values": [
+        18.7841,
+        18.8659,
+        17.9954
+      ]
+    },
+    {
+      "key": "mixed.logs.latest.p95Ms",
+      "label": "Mixed latest logs (limit 200): p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 25.5872,
+      "stdDev": 1.6217215513151455,
+      "cvPercent": 6.338018819234405,
+      "min": 23.7414,
+      "max": 26.7835,
+      "justification": "not gated: 3 runs, CV 6.3% \u2192 90% upper bound 19.5% (\u00D73.08) \u2192 3\u00D7 = 58.6%, rounded up to 60%; floor 15% \u2192 60% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        26.7835,
+        26.2367,
+        23.7414
+      ]
+    },
+    {
+      "key": "mixed.logs.latest.p99Ms",
+      "label": "Mixed latest logs (limit 200): p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 29.1761,
+      "stdDev": 1.044508166554959,
+      "cvPercent": 3.5800129782765993,
+      "min": 28.3647,
+      "max": 30.3546,
+      "justification": "not gated: p99 from 542 samples in one run; at least 1000 are needed for 10 beyond it",
+      "values": [
+        30.3546,
+        28.3647,
+        28.809
+      ]
+    },
+    {
+      "key": "mixed.logs.count.p50Ms",
+      "label": "Mixed count: level = Error: p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 18.7777,
+      "stdDev": 0.5471857180153729,
+      "cvPercent": 2.9140188522309596,
+      "min": 18.1533,
+      "max": 19.1736,
+      "budgetPercent": 30,
+      "justification": "3 runs, CV 2.9% \u2192 90% upper bound 9.0% (\u00D73.08) \u2192 3\u00D7 = 26.9%, rounded up to 30%; floor 15% \u2192 30%",
+      "values": [
+        19.1736,
+        19.0062,
+        18.1533
+      ]
+    },
+    {
+      "key": "mixed.logs.count.p95Ms",
+      "label": "Mixed count: level = Error: p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 27.94536666666667,
+      "stdDev": 0.12341998757629725,
+      "cvPercent": 0.44164740813192854,
+      "min": 27.8093,
+      "max": 28.0501,
+      "budgetPercent": 15,
+      "justification": "3 runs, CV 0.4% \u2192 90% upper bound 1.4% (\u00D73.08) \u2192 3\u00D7 = 4.1%, rounded up to 5%; floor 15% \u2192 15%",
+      "values": [
+        27.8093,
+        27.9767,
+        28.0501
+      ]
+    },
+    {
+      "key": "mixed.logs.count.p99Ms",
+      "label": "Mixed count: level = Error: p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 31.85626666666667,
+      "stdDev": 0.3214863345981188,
+      "cvPercent": 1.0091776853893282,
+      "min": 31.4895,
+      "max": 32.0893,
+      "justification": "not gated: p99 from 462 samples in one run; at least 1000 are needed for 10 beyond it",
+      "values": [
+        31.99,
+        32.0893,
+        31.4895
+      ]
+    },
+    {
+      "key": "mixed.logs.level.p50Ms",
+      "label": "Mixed level = Error: p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 43.7897,
+      "stdDev": 1.0981496755907165,
+      "cvPercent": 2.50778076942915,
+      "min": 42.5367,
+      "max": 44.5848,
+      "budgetPercent": 25,
+      "justification": "3 runs, CV 2.5% \u2192 90% upper bound 7.7% (\u00D73.08) \u2192 3\u00D7 = 23.2%, rounded up to 25%; floor 15% \u2192 25%",
+      "values": [
+        44.5848,
+        44.2476,
+        42.5367
+      ]
+    },
+    {
+      "key": "mixed.logs.level.p95Ms",
+      "label": "Mixed level = Error: p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 55.45453333333334,
+      "stdDev": 3.4666941923586694,
+      "cvPercent": 6.251417123142327,
+      "min": 51.9499,
+      "max": 58.882,
+      "justification": "not gated: 3 runs, CV 6.3% \u2192 90% upper bound 19.3% (\u00D73.08) \u2192 3\u00D7 = 57.8%, rounded up to 60%; floor 15% \u2192 60% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        58.882,
+        55.5317,
+        51.9499
+      ]
+    },
+    {
+      "key": "mixed.logs.level.p99Ms",
+      "label": "Mixed level = Error: p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 63.31630000000001,
+      "stdDev": 3.8788241272323787,
+      "cvPercent": 6.126106748550338,
+      "min": 61.0004,
+      "max": 67.7943,
+      "justification": "not gated: 3 runs, CV 6.1% \u2192 90% upper bound 18.9% (\u00D73.08) \u2192 3\u00D7 = 56.6%, rounded up to 60%; floor 15% \u2192 60% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        67.7943,
+        61.1542,
+        61.0004
+      ]
+    },
+    {
+      "key": "mixed.logs.service.p50Ms",
+      "label": "Mixed service = payments: p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 19.441066666666668,
+      "stdDev": 0.4704637534745195,
+      "cvPercent": 2.4199482545943267,
+      "min": 18.8995,
+      "max": 19.7488,
+      "budgetPercent": 25,
+      "justification": "3 runs, CV 2.4% \u2192 90% upper bound 7.5% (\u00D73.08) \u2192 3\u00D7 = 22.4%, rounded up to 25%; floor 15% \u2192 25%",
+      "values": [
+        19.7488,
+        19.6749,
+        18.8995
+      ]
+    },
+    {
+      "key": "mixed.logs.service.p95Ms",
+      "label": "Mixed service = payments: p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 26.827299999999997,
+      "stdDev": 1.9965694878966775,
+      "cvPercent": 7.442304994899515,
+      "min": 24.8731,
+      "max": 28.8637,
+      "justification": "not gated: 3 runs, CV 7.4% \u2192 90% upper bound 22.9% (\u00D73.08) \u2192 3\u00D7 = 68.8%, rounded up to 70%; floor 15% \u2192 70% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        28.8637,
+        26.7451,
+        24.8731
+      ]
+    },
+    {
+      "key": "mixed.logs.service.p99Ms",
+      "label": "Mixed service = payments: p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 30.542466666666666,
+      "stdDev": 2.1193298571325165,
+      "cvPercent": 6.938961021918716,
+      "min": 29.0213,
+      "max": 32.9632,
+      "justification": "not gated: 3 runs, CV 6.9% \u2192 90% upper bound 21.4% (\u00D73.08) \u2192 3\u00D7 = 64.1%, rounded up to 65%; floor 15% \u2192 65% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        32.9632,
+        29.6429,
+        29.0213
+      ]
+    },
+    {
+      "key": "mixed.logs.traceId.p50Ms",
+      "label": "Mixed traceId (Bloom filter): p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 1.0404333333333333,
+      "stdDev": 0.031961278656107164,
+      "cvPercent": 3.071919904152805,
+      "min": 1.0116,
+      "max": 1.0748,
+      "budgetPercent": 30,
+      "justification": "3 runs, CV 3.1% \u2192 90% upper bound 9.5% (\u00D73.08) \u2192 3\u00D7 = 28.4%, rounded up to 30%; floor 15% \u2192 30%",
+      "values": [
+        1.0748,
+        1.0116,
+        1.0349
+      ]
+    },
+    {
+      "key": "mixed.logs.traceId.p95Ms",
+      "label": "Mixed traceId (Bloom filter): p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 1.6566333333333334,
+      "stdDev": 0.040907252820659275,
+      "cvPercent": 2.4693003573910506,
+      "min": 1.6275,
+      "max": 1.7034,
+      "budgetPercent": 25,
+      "justification": "3 runs, CV 2.5% \u2192 90% upper bound 7.6% (\u00D73.08) \u2192 3\u00D7 = 22.8%, rounded up to 25%; floor 15% \u2192 25%",
+      "values": [
+        1.639,
+        1.7034,
+        1.6275
+      ]
+    },
+    {
+      "key": "mixed.logs.traceId.p99Ms",
+      "label": "Mixed traceId (Bloom filter): p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 2.4102,
+      "stdDev": 0.33141057617402603,
+      "cvPercent": 13.750335083147705,
+      "min": 2.051,
+      "max": 2.7041,
+      "justification": "not gated: 3 runs, CV 13.8% \u2192 90% upper bound 42.4% (\u00D73.08) \u2192 3\u00D7 = 127.1%, rounded up to 130%; floor 15% \u2192 130% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        2.7041,
+        2.051,
+        2.4755
+      ]
+    },
+    {
+      "key": "mixed.logs.scan.p50Ms",
+      "label": "Mixed message contains (scan): p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 72.3066,
+      "stdDev": 3.4826126672370536,
+      "cvPercent": 4.816451979815194,
+      "min": 68.4144,
+      "max": 75.1283,
+      "budgetPercent": 45,
+      "justification": "3 runs, CV 4.8% \u2192 90% upper bound 14.8% (\u00D73.08) \u2192 3\u00D7 = 44.5%, rounded up to 45%; floor 15% \u2192 45%",
+      "values": [
+        75.1283,
+        73.3771,
+        68.4144
+      ]
+    },
+    {
+      "key": "mixed.logs.scan.p95Ms",
+      "label": "Mixed message contains (scan): p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 96.07333333333334,
+      "stdDev": 2.2919039515942505,
+      "cvPercent": 2.3855776333296617,
+      "min": 93.5102,
+      "max": 97.9255,
+      "justification": "not gated: p95 from 159 samples in one run; at least 200 are needed for 10 beyond it",
+      "values": [
+        96.7843,
+        93.5102,
+        97.9255
+      ]
+    },
+    {
+      "key": "mixed.logs.scan.p99Ms",
+      "label": "Mixed message contains (scan): p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 102.9713,
+      "stdDev": 4.213357958920649,
+      "cvPercent": 4.091778931528153,
+      "min": 98.1098,
+      "max": 105.5656,
+      "justification": "not gated: p99 from 159 samples in one run; at least 1000 are needed for 10 beyond it",
+      "values": [
+        105.5656,
+        98.1098,
+        105.2385
+      ]
+    },
+    {
+      "key": "mixed.logs.histogram.p50Ms",
+      "label": "Mixed histogram, 60 buckets: p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 18.351866666666666,
+      "stdDev": 0.15735696150260706,
+      "cvPercent": 0.8574439012703907,
+      "min": 18.2146,
+      "max": 18.5236,
+      "budgetPercent": 15,
+      "justification": "3 runs, CV 0.9% \u2192 90% upper bound 2.6% (\u00D73.08) \u2192 3\u00D7 = 7.9%, rounded up to 10%; floor 15% \u2192 15%",
+      "values": [
+        18.3174,
+        18.5236,
+        18.2146
+      ]
+    },
+    {
+      "key": "mixed.logs.histogram.p95Ms",
+      "label": "Mixed histogram, 60 buckets: p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 27.594333333333335,
+      "stdDev": 0.254482736808085,
+      "cvPercent": 0.9222282478579598,
+      "min": 27.3014,
+      "max": 27.7609,
+      "justification": "not gated: p95 from 159 samples in one run; at least 200 are needed for 10 beyond it",
+      "values": [
+        27.3014,
+        27.7207,
+        27.7609
+      ]
+    },
+    {
+      "key": "mixed.logs.histogram.p99Ms",
+      "label": "Mixed histogram, 60 buckets: p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 32.201033333333335,
+      "stdDev": 1.4990954650499535,
+      "cvPercent": 4.655426580668592,
+      "min": 31.2049,
+      "max": 33.9251,
+      "justification": "not gated: p99 from 159 samples in one run; at least 1000 are needed for 10 beyond it",
+      "values": [
+        31.4731,
+        31.2049,
+        33.9251
+      ]
+    },
+    {
+      "key": "mixed.logs.facets.p50Ms",
+      "label": "Mixed facets: p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 47.644600000000004,
+      "stdDev": 1.3584242194542897,
+      "cvPercent": 2.851160927900097,
+      "min": 46.0902,
+      "max": 48.604,
+      "budgetPercent": 30,
+      "justification": "3 runs, CV 2.9% \u2192 90% upper bound 8.8% (\u00D73.08) \u2192 3\u00D7 = 26.4%, rounded up to 30%; floor 15% \u2192 30%",
+      "values": [
+        48.2396,
+        48.604,
+        46.0902
+      ]
+    },
+    {
+      "key": "mixed.logs.facets.p95Ms",
+      "label": "Mixed facets: p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 68.05083333333333,
+      "stdDev": 4.691178118909291,
+      "cvPercent": 6.893638018994562,
+      "min": 62.7231,
+      "max": 71.5624,
+      "justification": "not gated: 3 runs, CV 6.9% \u2192 90% upper bound 21.2% (\u00D73.08) \u2192 3\u00D7 = 63.7%, rounded up to 65%; floor 15% \u2192 65% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        71.5624,
+        69.867,
+        62.7231
+      ]
+    },
+    {
+      "key": "mixed.logs.facets.p99Ms",
+      "label": "Mixed facets: p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 79.83653333333332,
+      "stdDev": 1.0635026766930677,
+      "cvPercent": 1.3321002707529066,
+      "min": 78.9223,
+      "max": 81.0037,
+      "justification": "not gated: p99 from 147 samples in one run; at least 1000 are needed for 10 beyond it",
+      "values": [
+        81.0037,
+        78.9223,
+        79.5836
+      ]
+    },
+    {
+      "key": "mixed.traces.search.p50Ms",
+      "label": "Mixed trace search (limit 50): p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 3.6438666666666664,
+      "stdDev": 0.18590678667905944,
+      "cvPercent": 5.10190969334021,
+      "min": 3.4752,
+      "max": 3.8432,
+      "budgetPercent": 50,
+      "justification": "3 runs, CV 5.1% \u2192 90% upper bound 15.7% (\u00D73.08) \u2192 3\u00D7 = 47.2%, rounded up to 50%; floor 15% \u2192 50%",
+      "values": [
+        3.8432,
+        3.6132,
+        3.4752
+      ]
+    },
+    {
+      "key": "mixed.traces.search.p95Ms",
+      "label": "Mixed trace search (limit 50): p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 6.720933333333334,
+      "stdDev": 0.1690281140323507,
+      "cvPercent": 2.5149500173440797,
+      "min": 6.5424,
+      "max": 6.8785,
+      "budgetPercent": 25,
+      "justification": "3 runs, CV 2.5% \u2192 90% upper bound 7.7% (\u00D73.08) \u2192 3\u00D7 = 23.2%, rounded up to 25%; floor 15% \u2192 25%",
+      "values": [
+        6.8785,
+        6.7419,
+        6.5424
+      ]
+    },
+    {
+      "key": "mixed.traces.search.p99Ms",
+      "label": "Mixed trace search (limit 50): p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 8.119733333333334,
+      "stdDev": 0.43877527657484655,
+      "cvPercent": 5.403813876172204,
+      "min": 7.628,
+      "max": 8.4713,
+      "justification": "not gated: p99 from 305 samples in one run; at least 1000 are needed for 10 beyond it",
+      "values": [
+        8.4713,
+        7.628,
+        8.2599
+      ]
+    },
+    {
+      "key": "mixed.traces.get.p50Ms",
+      "label": "Mixed trace by id: p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 0.4933666666666667,
+      "stdDev": 0.04170099918866854,
+      "cvPercent": 8.4523341372884,
+      "min": 0.4515,
+      "max": 0.5349,
+      "justification": "not gated: 3 runs, CV 8.5% \u2192 90% upper bound 26.0% (\u00D73.08) \u2192 3\u00D7 = 78.1%, rounded up to 80%; floor 15% \u2192 80% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        0.5349,
+        0.4937,
+        0.4515
+      ]
+    },
+    {
+      "key": "mixed.traces.get.p95Ms",
+      "label": "Mixed trace by id: p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 0.8637333333333332,
+      "stdDev": 0.058831312524312555,
+      "cvPercent": 6.811281937825628,
+      "min": 0.8247,
+      "max": 0.9314,
+      "justification": "not gated: 3 runs, CV 6.8% \u2192 90% upper bound 21.0% (\u00D73.08) \u2192 3\u00D7 = 63.0%, rounded up to 65%; floor 15% \u2192 65% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        0.9314,
+        0.8351,
+        0.8247
+      ]
+    },
+    {
+      "key": "mixed.traces.get.p99Ms",
+      "label": "Mixed trace by id: p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 1.5902666666666665,
+      "stdDev": 0.9437943649616337,
+      "cvPercent": 59.34818258750947,
+      "min": 0.965,
+      "max": 2.6759,
+      "justification": "not gated: 3 runs, CV 59.3% \u2192 90% upper bound 182.8% (\u00D73.08) \u2192 3\u00D7 = 548.5%, rounded up to 550%; floor 15% \u2192 550% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        2.6759,
+        0.965,
+        1.1299
+      ]
+    },
+    {
+      "key": "mixed.metrics.names.p50Ms",
+      "label": "Mixed list metric names: p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 0.27720000000000006,
+      "stdDev": 0.015853075411414643,
+      "cvPercent": 5.719002673670505,
+      "min": 0.2594,
+      "max": 0.2898,
+      "justification": "not gated: 3 runs, CV 5.7% \u2192 90% upper bound 17.6% (\u00D73.08) \u2192 3\u00D7 = 52.9%, rounded up to 55%; floor 15% \u2192 55% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        0.2824,
+        0.2898,
+        0.2594
+      ]
+    },
+    {
+      "key": "mixed.metrics.names.p95Ms",
+      "label": "Mixed list metric names: p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 0.5651333333333334,
+      "stdDev": 0.05932430642943358,
+      "cvPercent": 10.497399981615,
+      "min": 0.529,
+      "max": 0.6336,
+      "justification": "not gated: 3 runs, CV 10.5% \u2192 90% upper bound 32.3% (\u00D73.08) \u2192 3\u00D7 = 97.0%, rounded up to 100%; floor 15% \u2192 100% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        0.529,
+        0.6336,
+        0.5328
+      ]
+    },
+    {
+      "key": "mixed.metrics.names.p99Ms",
+      "label": "Mixed list metric names: p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 0.9135,
+      "stdDev": 0.1545705987566847,
+      "cvPercent": 16.920700465975337,
+      "min": 0.7686,
+      "max": 1.0762,
+      "justification": "not gated: 3 runs, CV 16.9% \u2192 90% upper bound 52.1% (\u00D73.08) \u2192 3\u00D7 = 156.4%, rounded up to 160%; floor 15% \u2192 160% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        0.7686,
+        0.8957,
+        1.0762
+      ]
+    },
+    {
+      "key": "mixed.metrics.series.p50Ms",
+      "label": "Mixed metric series: p50",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 0.42850000000000005,
+      "stdDev": 0.01227721466783081,
+      "cvPercent": 2.8651609493187418,
+      "min": 0.4152,
+      "max": 0.4394,
+      "budgetPercent": 30,
+      "justification": "3 runs, CV 2.9% \u2192 90% upper bound 8.8% (\u00D73.08) \u2192 3\u00D7 = 26.5%, rounded up to 30%; floor 15% \u2192 30%",
+      "values": [
+        0.4309,
+        0.4394,
+        0.4152
+      ]
+    },
+    {
+      "key": "mixed.metrics.series.p95Ms",
+      "label": "Mixed metric series: p95",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 0.7586333333333334,
+      "stdDev": 0.06488923896404807,
+      "cvPercent": 8.553438942490626,
+      "min": 0.7129,
+      "max": 0.8329,
+      "justification": "not gated: 3 runs, CV 8.6% \u2192 90% upper bound 26.4% (\u00D73.08) \u2192 3\u00D7 = 79.1%, rounded up to 80%; floor 15% \u2192 80% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        0.8329,
+        0.7301,
+        0.7129
+      ]
+    },
+    {
+      "key": "mixed.metrics.series.p99Ms",
+      "label": "Mixed metric series: p99",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 1.1829,
+      "stdDev": 0.19821392483879632,
+      "cvPercent": 16.756608744508945,
+      "min": 0.9943,
+      "max": 1.3895,
+      "justification": "not gated: 3 runs, CV 16.8% \u2192 90% upper bound 51.6% (\u00D73.08) \u2192 3\u00D7 = 154.9%, rounded up to 155%; floor 15% \u2192 155% exceeds 50%; too noisy to gate with this many runs on this host",
+      "values": [
+        0.9943,
+        1.3895,
+        1.1649
+      ]
+    },
+    {
+      "key": "memory.peakRssBytes",
+      "label": "Peak RSS",
+      "unit": "bytes",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 57262080,
+      "stdDev": 1428494.3139067793,
+      "cvPercent": 2.4946601903157886,
+      "min": 56209408,
+      "max": 58888192,
+      "budgetPercent": 25,
+      "justification": "3 runs, CV 2.5% \u2192 90% upper bound 7.7% (\u00D73.08) \u2192 3\u00D7 = 23.1%, rounded up to 25%; floor 15% \u2192 25%",
+      "values": [
+        58888192,
+        56688640,
+        56209408
+      ]
+    },
+    {
+      "key": "server.restartMs",
+      "label": "Restart to healthy (mean)",
+      "unit": "ms",
+      "better": "lower",
+      "kind": "timing",
+      "runs": 3,
+      "mean": 518.5160153846153,
+      "stdDev": 0.9453007882657167,
+      "cvPercent": 0.18230888925668548,
+      "min": 517.874676923077,
+      "max": 519.6016076923077,
+      "budgetPercent": 15,
+      "justification": "3 runs, CV 0.2% \u2192 90% upper bound 0.6% (\u00D73.08) \u2192 3\u00D7 = 1.7%, rounded up to 5%; floor 15% \u2192 15%",
+      "values": [
+        517.874676923077,
+        518.0717615384615,
+        519.6016076923077
+      ]
+    },
+    {
+      "key": "storage.dataDirBytes",
+      "label": "Data directory after seeding",
+      "unit": "bytes",
+      "better": "lower",
+      "kind": "size",
+      "runs": 3,
+      "mean": 7526276.333333333,
+      "stdDev": 9905.10324697998,
+      "cvPercent": 0.1316069568574169,
+      "min": 7519814,
+      "max": 7537680,
+      "budgetPercent": 2,
+      "justification": "3 runs, CV 0.1% \u2192 90% upper bound 0.4% (\u00D73.08) \u2192 3\u00D7 = 1.2%, rounded up to 2%; floor 2% \u2192 2%",
+      "values": [
+        7537680,
+        7521335,
+        7519814
+      ]
+    },
+    {
+      "key": "storage.bytesPerEvent",
+      "label": "Stored bytes per event",
+      "unit": "bytes",
+      "better": "lower",
+      "kind": "size",
+      "runs": 3,
+      "mean": 72.99936307791788,
+      "stdDev": 0.09607277640136459,
+      "cvPercent": 0.13160769128741392,
+      "min": 72.93668283220174,
+      "max": 73.10997090203686,
+      "budgetPercent": 2,
+      "justification": "3 runs, CV 0.1% \u2192 90% upper bound 0.4% (\u00D73.08) \u2192 3\u00D7 = 1.2%, rounded up to 2%; floor 2% \u2192 2%",
+      "values": [
+        73.10997090203686,
+        72.95143549951503,
+        72.93668283220174
+      ]
+    },
+    {
+      "key": "build.executableBytes",
+      "label": "Binary size",
+      "unit": "bytes",
+      "better": "lower",
+      "kind": "size",
+      "runs": 3,
+      "mean": 12385280,
+      "stdDev": 0,
+      "cvPercent": 0,
+      "min": 12385280,
+      "max": 12385280,
+      "budgetPercent": 2,
+      "justification": "3 runs, CV 0.0% \u2192 90% upper bound 0.0% (\u00D73.08) \u2192 3\u00D7 = 0.0%, rounded up to 0%; floor 2% \u2192 2%",
+      "values": [
+        12385280,
+        12385280,
+        12385280
+      ]
+    }
+  ],
+  "comparison": {
+    "baselineLabel": "0.1.1 reference",
+    "baselineGeneratedAt": "2026-10-15T11:59:47.1075442+00:00",
+    "baselineVersion": "0.1.1",
+    "warnings": [],
+    "metrics": [
+      {
+        "key": "seed.itemsPerSecond",
+        "label": "Seeding throughput",
+        "unit": "items/s",
+        "baselineMean": 70920.67768921496,
+        "currentMean": 65543.3636025919,
+        "worsePercent": 7.582152711776478,
+        "verdict": "notGated"
+      },
+      {
+        "key": "seed.p95Ms",
+        "label": "Seeding request p95",
+        "unit": "ms",
+        "baselineMean": 3.5639600000000002,
+        "currentMean": 3.7628,
+        "worsePercent": 5.57918719626482,
+        "budgetPercent": 20,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "query.logs.level.coldMs",
+        "label": "level = Error (bitmap): cold",
+        "unit": "ms",
+        "baselineMean": 29.934400000000004,
+        "currentMean": 23.07953333333333,
+        "worsePercent": -22.89962941186953,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.level.warmP50Ms",
+        "label": "level = Error (bitmap): warm p50",
+        "unit": "ms",
+        "baselineMean": 19.98996,
+        "currentMean": 20.13886666666667,
+        "worsePercent": 0.7449072767862904,
+        "budgetPercent": 15,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "query.logs.level.warmP95Ms",
+        "label": "level = Error (bitmap): warm p95",
+        "unit": "ms",
+        "baselineMean": 24.7145,
+        "currentMean": 22.705666666666662,
+        "worsePercent": -8.128156884959594,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.service.coldMs",
+        "label": "service = payments: cold",
+        "unit": "ms",
+        "baselineMean": 8.96902,
+        "currentMean": 15.4232,
+        "worsePercent": 71.96081623187371,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.service.warmP50Ms",
+        "label": "service = payments: warm p50",
+        "unit": "ms",
+        "baselineMean": 7.15016,
+        "currentMean": 7.4636,
+        "worsePercent": 4.383678127482462,
+        "budgetPercent": 35,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "query.logs.service.warmP95Ms",
+        "label": "service = payments: warm p95",
+        "unit": "ms",
+        "baselineMean": 8.78238,
+        "currentMean": 8.882033333333334,
+        "worsePercent": 1.1346962137066974,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.traceId.coldMs",
+        "label": "traceId = \u2026 (Bloom filter): cold",
+        "unit": "ms",
+        "baselineMean": 2.39704,
+        "currentMean": 1.9643666666666666,
+        "worsePercent": -18.050317613946092,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.traceId.warmP50Ms",
+        "label": "traceId = \u2026 (Bloom filter): warm p50",
+        "unit": "ms",
+        "baselineMean": 0.61122,
+        "currentMean": 0.5081333333333333,
+        "worsePercent": -16.865722107697174,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.traceId.warmP95Ms",
+        "label": "traceId = \u2026 (Bloom filter): warm p95",
+        "unit": "ms",
+        "baselineMean": 0.9626199999999999,
+        "currentMean": 1.0362,
+        "worsePercent": 7.6437223411107285,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.range.coldMs",
+        "label": "durationMs \u003E 1990 (zone map): cold",
+        "unit": "ms",
+        "baselineMean": 104.30783999999998,
+        "currentMean": 102.44940000000001,
+        "worsePercent": -1.7816877427429938,
+        "budgetPercent": 15,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "query.logs.range.warmP50Ms",
+        "label": "durationMs \u003E 1990 (zone map): warm p50",
+        "unit": "ms",
+        "baselineMean": 104.31346,
+        "currentMean": 105.13446666666668,
+        "worsePercent": 0.7870572663074125,
+        "budgetPercent": 15,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "query.logs.range.warmP95Ms",
+        "label": "durationMs \u003E 1990 (zone map): warm p95",
+        "unit": "ms",
+        "baselineMean": 111.16702000000001,
+        "currentMean": 108.27816666666666,
+        "worsePercent": -2.5986604060568896,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.count.coldMs",
+        "label": "count: level = Error: cold",
+        "unit": "ms",
+        "baselineMean": 6.2390799999999995,
+        "currentMean": 5.3224,
+        "worsePercent": -14.692550824801085,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.count.warmP50Ms",
+        "label": "count: level = Error: warm p50",
+        "unit": "ms",
+        "baselineMean": 3.6088,
+        "currentMean": 3.6328,
+        "worsePercent": 0.6650410108623371,
+        "budgetPercent": 15,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "query.logs.count.warmP95Ms",
+        "label": "count: level = Error: warm p95",
+        "unit": "ms",
+        "baselineMean": 4.58752,
+        "currentMean": 4.768566666666667,
+        "worsePercent": 3.9465041387648894,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.scan.timedOut.coldMs",
+        "label": "message contains \u0022timed out\u0022 (scan): cold",
+        "unit": "ms",
+        "baselineMean": 42.92366,
+        "currentMean": 50.69423333333333,
+        "worsePercent": 18.10324034188448,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.scan.timedOut.warmP50Ms",
+        "label": "message contains \u0022timed out\u0022 (scan): warm p50",
+        "unit": "ms",
+        "baselineMean": 37.90035999999999,
+        "currentMean": 38.864133333333335,
+        "worsePercent": 2.542913400646704,
+        "budgetPercent": 15,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "query.logs.scan.timedOut.warmP95Ms",
+        "label": "message contains \u0022timed out\u0022 (scan): warm p95",
+        "unit": "ms",
+        "baselineMean": 40.517939999999996,
+        "currentMean": 40.95633333333333,
+        "worsePercent": 1.0819734007536845,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.scan.error.coldMs",
+        "label": "message contains \u0022error\u0022 (scan): cold",
+        "unit": "ms",
+        "baselineMean": 16.3674,
+        "currentMean": 16.857,
+        "worsePercent": 2.9913119982404006,
+        "budgetPercent": 45,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "query.logs.scan.error.warmP50Ms",
+        "label": "message contains \u0022error\u0022 (scan): warm p50",
+        "unit": "ms",
+        "baselineMean": 15.044140000000002,
+        "currentMean": 15.988833333333332,
+        "worsePercent": 6.279477147469577,
+        "budgetPercent": 30,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "query.logs.scan.error.warmP95Ms",
+        "label": "message contains \u0022error\u0022 (scan): warm p95",
+        "unit": "ms",
+        "baselineMean": 17.32602,
+        "currentMean": 18.451233333333334,
+        "worsePercent": 6.494355503071882,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.latest.coldMs",
+        "label": "latest logs (limit 200): cold",
+        "unit": "ms",
+        "baselineMean": 7.321159999999999,
+        "currentMean": 7.219566666666666,
+        "worsePercent": -1.387667163855629,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.latest.warmP50Ms",
+        "label": "latest logs (limit 200): warm p50",
+        "unit": "ms",
+        "baselineMean": 6.15632,
+        "currentMean": 6.297899999999999,
+        "worsePercent": 2.29975050029887,
+        "budgetPercent": 30,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "query.logs.latest.warmP95Ms",
+        "label": "latest logs (limit 200): warm p95",
+        "unit": "ms",
+        "baselineMean": 7.4422,
+        "currentMean": 7.990533333333334,
+        "worsePercent": 7.367893006548261,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.histogram.coldMs",
+        "label": "histogram, 60 buckets: cold",
+        "unit": "ms",
+        "baselineMean": 5.96954,
+        "currentMean": 4.994433333333334,
+        "worsePercent": -16.3347036231714,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.histogram.warmP50Ms",
+        "label": "histogram, 60 buckets: warm p50",
+        "unit": "ms",
+        "baselineMean": 3.7215,
+        "currentMean": 3.6381666666666668,
+        "worsePercent": -2.2392404496394747,
+        "budgetPercent": 15,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "query.logs.histogram.warmP95Ms",
+        "label": "histogram, 60 buckets: warm p95",
+        "unit": "ms",
+        "baselineMean": 4.80262,
+        "currentMean": 4.3672,
+        "worsePercent": -9.066301310534659,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.facets.coldMs",
+        "label": "facets, 2000-event sample: cold",
+        "unit": "ms",
+        "baselineMean": 21.15128,
+        "currentMean": 21.611333333333334,
+        "worsePercent": 2.1750614304823848,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.logs.facets.warmP50Ms",
+        "label": "facets, 2000-event sample: warm p50",
+        "unit": "ms",
+        "baselineMean": 19.488459999999996,
+        "currentMean": 19.478933333333334,
+        "worsePercent": -0.04888362993619026,
+        "budgetPercent": 25,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "query.logs.facets.warmP95Ms",
+        "label": "facets, 2000-event sample: warm p95",
+        "unit": "ms",
+        "baselineMean": 22.046879999999998,
+        "currentMean": 21.713399999999996,
+        "worsePercent": -1.5125949794256675,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.traces.search.coldMs",
+        "label": "trace search (limit 50): cold",
+        "unit": "ms",
+        "baselineMean": 4.22546,
+        "currentMean": 4.380366666666667,
+        "worsePercent": 3.6660308384570484,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.traces.search.warmP50Ms",
+        "label": "trace search (limit 50): warm p50",
+        "unit": "ms",
+        "baselineMean": 2.36428,
+        "currentMean": 2.4790666666666668,
+        "worsePercent": 4.855036910461824,
+        "budgetPercent": 45,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "query.traces.search.warmP95Ms",
+        "label": "trace search (limit 50): warm p95",
+        "unit": "ms",
+        "baselineMean": 3.4055,
+        "currentMean": 3.2396666666666665,
+        "worsePercent": -4.869573728772089,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.traces.get.coldMs",
+        "label": "trace by id: cold",
+        "unit": "ms",
+        "baselineMean": 0.8825800000000001,
+        "currentMean": 1.038,
+        "worsePercent": 17.609735094835578,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.traces.get.warmP50Ms",
+        "label": "trace by id: warm p50",
+        "unit": "ms",
+        "baselineMean": 0.29634,
+        "currentMean": 0.3932,
+        "worsePercent": 32.685428899237365,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.traces.get.warmP95Ms",
+        "label": "trace by id: warm p95",
+        "unit": "ms",
+        "baselineMean": 0.55392,
+        "currentMean": 0.6341,
+        "worsePercent": 14.475014442518782,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.metrics.series.coldMs",
+        "label": "metric series: cold",
+        "unit": "ms",
+        "baselineMean": 1.06532,
+        "currentMean": 1.098,
+        "worsePercent": 3.067622873878275,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.metrics.series.warmP50Ms",
+        "label": "metric series: warm p50",
+        "unit": "ms",
+        "baselineMean": 0.39488,
+        "currentMean": 0.37223333333333325,
+        "worsePercent": -5.735075634792028,
+        "verdict": "notGated"
+      },
+      {
+        "key": "query.metrics.series.warmP95Ms",
+        "label": "metric series: warm p95",
+        "unit": "ms",
+        "baselineMean": 0.64056,
+        "currentMean": 0.5498,
+        "worsePercent": -14.168852254277517,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.requestsPerSecond",
+        "label": "Mixed load throughput",
+        "unit": "req/s",
+        "baselineMean": 220.78823529411767,
+        "currentMean": 217,
+        "worsePercent": 1.7157776948899763,
+        "budgetPercent": 20,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.ingest.ndjson.p50Ms",
+        "label": "Mixed ingest NDJSON (800 events): p50",
+        "unit": "ms",
+        "baselineMean": 5.2391,
+        "currentMean": 5.684533333333333,
+        "worsePercent": 8.502096416051112,
+        "budgetPercent": 35,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.ingest.ndjson.p95Ms",
+        "label": "Mixed ingest NDJSON (800 events): p95",
+        "unit": "ms",
+        "baselineMean": 15.148359999999997,
+        "currentMean": 15.998533333333333,
+        "worsePercent": 5.612312707998331,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.ingest.ndjson.p99Ms",
+        "label": "Mixed ingest NDJSON (800 events): p99",
+        "unit": "ms",
+        "baselineMean": 26.02688,
+        "currentMean": 23.1698,
+        "worsePercent": -10.977420267046991,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.ingest.json.p50Ms",
+        "label": "Mixed ingest JSON array (800 events): p50",
+        "unit": "ms",
+        "baselineMean": 5.7236199999999995,
+        "currentMean": 5.938466666666667,
+        "worsePercent": 3.753685022182942,
+        "budgetPercent": 40,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.ingest.json.p95Ms",
+        "label": "Mixed ingest JSON array (800 events): p95",
+        "unit": "ms",
+        "baselineMean": 18.71646,
+        "currentMean": 16.65536666666667,
+        "worsePercent": -11.012196394688589,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.ingest.json.p99Ms",
+        "label": "Mixed ingest JSON array (800 events): p99",
+        "unit": "ms",
+        "baselineMean": 28.032400000000003,
+        "currentMean": 26.581766666666667,
+        "worsePercent": -5.174845298059873,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.logs.latest.p50Ms",
+        "label": "Mixed latest logs (limit 200): p50",
+        "unit": "ms",
+        "baselineMean": 17.82056,
+        "currentMean": 18.548466666666666,
+        "worsePercent": 4.084645301082939,
+        "budgetPercent": 30,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.logs.latest.p95Ms",
+        "label": "Mixed latest logs (limit 200): p95",
+        "unit": "ms",
+        "baselineMean": 25.87262,
+        "currentMean": 25.5872,
+        "worsePercent": -1.1031739344527225,
+        "budgetPercent": 40,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.logs.latest.p99Ms",
+        "label": "Mixed latest logs (limit 200): p99",
+        "unit": "ms",
+        "baselineMean": 29.039320000000004,
+        "currentMean": 29.1761,
+        "worsePercent": 0.47101653895476236,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.logs.count.p50Ms",
+        "label": "Mixed count: level = Error: p50",
+        "unit": "ms",
+        "baselineMean": 18.21302,
+        "currentMean": 18.7777,
+        "worsePercent": 3.100419370318592,
+        "budgetPercent": 35,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.logs.count.p95Ms",
+        "label": "Mixed count: level = Error: p95",
+        "unit": "ms",
+        "baselineMean": 28.649160000000002,
+        "currentMean": 27.94536666666667,
+        "worsePercent": -2.456593259046106,
+        "budgetPercent": 35,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.logs.count.p99Ms",
+        "label": "Mixed count: level = Error: p99",
+        "unit": "ms",
+        "baselineMean": 40.15826,
+        "currentMean": 31.85626666666667,
+        "worsePercent": -20.673189857661484,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.logs.level.p50Ms",
+        "label": "Mixed level = Error: p50",
+        "unit": "ms",
+        "baselineMean": 42.845659999999995,
+        "currentMean": 43.7897,
+        "worsePercent": 2.2033503510040653,
+        "budgetPercent": 20,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.logs.level.p95Ms",
+        "label": "Mixed level = Error: p95",
+        "unit": "ms",
+        "baselineMean": 55.5778,
+        "currentMean": 55.45453333333334,
+        "worsePercent": -0.22179119480559856,
+        "budgetPercent": 30,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.logs.level.p99Ms",
+        "label": "Mixed level = Error: p99",
+        "unit": "ms",
+        "baselineMean": 63.74434,
+        "currentMean": 63.31630000000001,
+        "worsePercent": -0.6714949123325908,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.logs.service.p50Ms",
+        "label": "Mixed service = payments: p50",
+        "unit": "ms",
+        "baselineMean": 18.616120000000002,
+        "currentMean": 19.441066666666668,
+        "worsePercent": 4.431356623542744,
+        "budgetPercent": 30,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.logs.service.p95Ms",
+        "label": "Mixed service = payments: p95",
+        "unit": "ms",
+        "baselineMean": 27.245839999999998,
+        "currentMean": 26.827299999999997,
+        "worsePercent": -1.5361611167062574,
+        "budgetPercent": 45,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.logs.service.p99Ms",
+        "label": "Mixed service = payments: p99",
+        "unit": "ms",
+        "baselineMean": 31.427860000000003,
+        "currentMean": 30.542466666666666,
+        "worsePercent": -2.817224377776077,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.logs.traceId.p50Ms",
+        "label": "Mixed traceId (Bloom filter): p50",
+        "unit": "ms",
+        "baselineMean": 1.03524,
+        "currentMean": 1.0404333333333333,
+        "worsePercent": 0.5016550107543548,
+        "budgetPercent": 40,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.logs.traceId.p95Ms",
+        "label": "Mixed traceId (Bloom filter): p95",
+        "unit": "ms",
+        "baselineMean": 1.6922599999999999,
+        "currentMean": 1.6566333333333334,
+        "worsePercent": -2.105271451589382,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.logs.traceId.p99Ms",
+        "label": "Mixed traceId (Bloom filter): p99",
+        "unit": "ms",
+        "baselineMean": 2.18234,
+        "currentMean": 2.4102,
+        "worsePercent": 10.441086173556831,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.logs.scan.p50Ms",
+        "label": "Mixed message contains (scan): p50",
+        "unit": "ms",
+        "baselineMean": 69.12632,
+        "currentMean": 72.3066,
+        "worsePercent": 4.60067887311229,
+        "budgetPercent": 20,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.logs.scan.p95Ms",
+        "label": "Mixed message contains (scan): p95",
+        "unit": "ms",
+        "baselineMean": 95.18234,
+        "currentMean": 96.07333333333334,
+        "worsePercent": 0.9360910157633666,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.logs.scan.p99Ms",
+        "label": "Mixed message contains (scan): p99",
+        "unit": "ms",
+        "baselineMean": 128.78552,
+        "currentMean": 102.9713,
+        "worsePercent": -20.044349706395558,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.logs.histogram.p50Ms",
+        "label": "Mixed histogram, 60 buckets: p50",
+        "unit": "ms",
+        "baselineMean": 17.71812,
+        "currentMean": 18.351866666666666,
+        "worsePercent": 3.576827940360869,
+        "budgetPercent": 30,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.logs.histogram.p95Ms",
+        "label": "Mixed histogram, 60 buckets: p95",
+        "unit": "ms",
+        "baselineMean": 30.026760000000003,
+        "currentMean": 27.594333333333335,
+        "worsePercent": -8.100862919164998,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.logs.histogram.p99Ms",
+        "label": "Mixed histogram, 60 buckets: p99",
+        "unit": "ms",
+        "baselineMean": 51.50788,
+        "currentMean": 32.201033333333335,
+        "worsePercent": -37.483287346842204,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.logs.facets.p50Ms",
+        "label": "Mixed facets: p50",
+        "unit": "ms",
+        "baselineMean": 44.707660000000004,
+        "currentMean": 47.644600000000004,
+        "worsePercent": 6.569209840103463,
+        "budgetPercent": 25,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.logs.facets.p95Ms",
+        "label": "Mixed facets: p95",
+        "unit": "ms",
+        "baselineMean": 66.42638,
+        "currentMean": 68.05083333333333,
+        "worsePercent": 2.4454942950877876,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.logs.facets.p99Ms",
+        "label": "Mixed facets: p99",
+        "unit": "ms",
+        "baselineMean": 97.30354000000001,
+        "currentMean": 79.83653333333332,
+        "worsePercent": -17.951049537012416,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.traces.search.p50Ms",
+        "label": "Mixed trace search (limit 50): p50",
+        "unit": "ms",
+        "baselineMean": 3.47898,
+        "currentMean": 3.6438666666666664,
+        "worsePercent": 4.739511772607672,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.traces.search.p95Ms",
+        "label": "Mixed trace search (limit 50): p95",
+        "unit": "ms",
+        "baselineMean": 6.52296,
+        "currentMean": 6.720933333333334,
+        "worsePercent": 3.035022954813973,
+        "budgetPercent": 40,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.traces.search.p99Ms",
+        "label": "Mixed trace search (limit 50): p99",
+        "unit": "ms",
+        "baselineMean": 7.547540000000001,
+        "currentMean": 8.119733333333334,
+        "worsePercent": 7.581189809306525,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.traces.get.p50Ms",
+        "label": "Mixed trace by id: p50",
+        "unit": "ms",
+        "baselineMean": 0.47704,
+        "currentMean": 0.4933666666666667,
+        "worsePercent": 3.4224942702219217,
+        "budgetPercent": 30,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.traces.get.p95Ms",
+        "label": "Mixed trace by id: p95",
+        "unit": "ms",
+        "baselineMean": 0.83474,
+        "currentMean": 0.8637333333333332,
+        "worsePercent": 3.4733370071319456,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.traces.get.p99Ms",
+        "label": "Mixed trace by id: p99",
+        "unit": "ms",
+        "baselineMean": 2.97388,
+        "currentMean": 1.5902666666666665,
+        "worsePercent": -46.52552669688533,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.metrics.names.p50Ms",
+        "label": "Mixed list metric names: p50",
+        "unit": "ms",
+        "baselineMean": 0.28102,
+        "currentMean": 0.27720000000000006,
+        "worsePercent": -1.3593338552415966,
+        "budgetPercent": 40,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.metrics.names.p95Ms",
+        "label": "Mixed list metric names: p95",
+        "unit": "ms",
+        "baselineMean": 0.57486,
+        "currentMean": 0.5651333333333334,
+        "worsePercent": -1.6920061696181088,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.metrics.names.p99Ms",
+        "label": "Mixed list metric names: p99",
+        "unit": "ms",
+        "baselineMean": 1.14028,
+        "currentMean": 0.9135,
+        "worsePercent": -19.888097660223803,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.metrics.series.p50Ms",
+        "label": "Mixed metric series: p50",
+        "unit": "ms",
+        "baselineMean": 0.43323999999999996,
+        "currentMean": 0.42850000000000005,
+        "worsePercent": -1.094081802234307,
+        "budgetPercent": 25,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "mixed.metrics.series.p95Ms",
+        "label": "Mixed metric series: p95",
+        "unit": "ms",
+        "baselineMean": 0.7156999999999999,
+        "currentMean": 0.7586333333333334,
+        "worsePercent": 5.998789064319337,
+        "verdict": "notGated"
+      },
+      {
+        "key": "mixed.metrics.series.p99Ms",
+        "label": "Mixed metric series: p99",
+        "unit": "ms",
+        "baselineMean": 0.9425399999999999,
+        "currentMean": 1.1829,
+        "worsePercent": 25.50130498440386,
+        "verdict": "notGated"
+      },
+      {
+        "key": "memory.peakRssBytes",
+        "label": "Peak RSS",
+        "unit": "bytes",
+        "baselineMean": 57064652.8,
+        "currentMean": 57262080,
+        "worsePercent": 0.3459710877273628,
+        "budgetPercent": 20,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "server.restartMs",
+        "label": "Restart to healthy (mean)",
+        "unit": "ms",
+        "baselineMean": 518.705876923077,
+        "currentMean": 518.5160153846153,
+        "worsePercent": -0.03660292796138569,
+        "budgetPercent": 15,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "storage.dataDirBytes",
+        "label": "Data directory after seeding",
+        "unit": "bytes",
+        "baselineMean": 7517294.6,
+        "currentMean": 7526276.333333333,
+        "worsePercent": 0.11948092779726094,
+        "budgetPercent": 2,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "storage.bytesPerEvent",
+        "label": "Stored bytes per event",
+        "unit": "bytes",
+        "baselineMean": 72.9122463627546,
+        "currentMean": 72.99936307791788,
+        "worsePercent": 0.11948159535484773,
+        "budgetPercent": 2,
+        "verdict": "withinBudget"
+      },
+      {
+        "key": "build.executableBytes",
+        "label": "Binary size",
+        "unit": "bytes",
+        "baselineMean": 12385280,
+        "currentMean": 12385280,
+        "worsePercent": 0,
+        "budgetPercent": 2,
+        "verdict": "withinBudget"
+      }
+    ],
+    "regressions": 0
+  }
+}
