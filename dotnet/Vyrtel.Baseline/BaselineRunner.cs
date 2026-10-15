@@ -156,7 +156,7 @@ public sealed class BaselineRunner(BaselineOptions options, string configPath)
             for (var attempt = 1; ; attempt++)
             {
                 var sw = Stopwatch.StartNew();
-                var response = await TrySend(() => api.IngestRaw(path, payload, mediaType, ct));
+                var response = await QueryMeasurer.TrySend(() => api.IngestRaw(path, payload, mediaType, ct));
                 var ms = sw.Elapsed.TotalMilliseconds;
                 tally.Add(response.Status);
                 samples.Add(new RawSample(run, phase, path, ms, response.Status));
@@ -258,43 +258,7 @@ public sealed class BaselineRunner(BaselineOptions options, string configPath)
         using var api = new ApiClient(BaseUrl.ToString());
         // Open the connection first, so the cold timing is the query and not the TCP handshake.
         await api.GetString("health", ct);
-
-        var failures = 0;
-        var sw = Stopwatch.StartNew();
-        var cold = await TrySend(() => query.Run(api));
-        var coldMs = sw.Elapsed.TotalMilliseconds;
-        samples.Add(new RawSample(run, "query.cold", query.Name, coldMs, cold.Status));
-        if (!cold.IsSuccess) failures++;
-
-        var warm = new LatencyRecorder();
-        RawResponse? last = null;
-        for (var i = 0; i < options.WarmIterations; i++)
-        {
-            sw.Restart();
-            var response = await TrySend(() => query.Run(api));
-            var ms = sw.Elapsed.TotalMilliseconds;
-            samples.Add(new RawSample(run, "query.warm", query.Name, ms, response.Status));
-            if (response.IsSuccess)
-            {
-                warm.Record(ms);
-                last = response;
-            }
-            else
-            {
-                failures++;
-            }
-        }
-
-        return new QueryMeasurement(
-            query.Name,
-            query.Label,
-            query.Category,
-            coldMs,
-            cold.IsSuccess ? Workload.ParseDiagnostics(cold.Body) : null,
-            warm.Snapshot(),
-            last is null ? null : Workload.ParseDiagnostics(last.Body),
-            restart.TotalMilliseconds,
-            failures);
+        return await QueryMeasurer.MeasureAsync(query, () => query.Run(api), options.WarmIterations, restart.TotalMilliseconds, run, samples);
     }
 
     private async Task<MixedPhase> RunMixedAsync(WorkloadContext context, int run, List<RawSample> samples, CancellationToken ct)
@@ -318,7 +282,7 @@ public sealed class BaselineRunner(BaselineOptions options, string configPath)
             {
                 var op = sequence.Current;
                 var sw = Stopwatch.StartNew();
-                var response = await TrySend(() => op.Run(api));
+                var response = await QueryMeasurer.TrySend(() => op.Run(api));
                 var ms = sw.Elapsed.TotalMilliseconds;
                 if (DateTime.UtcNow < recordFrom)
                 {
@@ -348,19 +312,6 @@ public sealed class BaselineRunner(BaselineOptions options, string configPath)
             .ToList();
         var requests = RequestTally.Sum(operations.Select(o => o.Requests));
         return new MixedPhase(measured, options.Concurrency, requests.Total / measured, eventsAccepted, requests, operations);
-    }
-
-    /// <summary>Runs a request; a transport failure becomes status 0 instead of an exception.</summary>
-    private static async Task<RawResponse> TrySend(Func<Task<RawResponse>> send)
-    {
-        try
-        {
-            return await send();
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
-        {
-            return new RawResponse(RequestTally.TransportErrorStatus, Encoding.UTF8.GetBytes(ex.Message));
-        }
     }
 
     private static void TryDelete(string dir)

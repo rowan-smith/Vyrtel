@@ -158,12 +158,6 @@ public static class BaselineReportWriter
                     $" {cd.SegmentsSkipped}/{cd.SegmentsConsidered} | {cd.BlocksRead} ({cd.BlocksSkipped}) | {cd.EventsExamined:N0} → {cd.EventsMatched:N0} | {ByteFormat.Format(cd.BytesRead)} → {(wd is null ? "–" : ByteFormat.Format(wd.BytesRead))} | {(cd.Indexes.Count == 0 ? "none" : string.Join(", ", cd.Indexes))} |");
             Line(timings + diagnostics);
         }
-        var failed = r.Runs.SelectMany(x => x.Queries).Sum(q => q.Failures);
-        if (failed > 0)
-        {
-            Line();
-            Line($"**{failed} query request(s) failed**; see `{csvName}` (status column).");
-        }
         Line();
 
         Line("## Run-to-run variance and proposed regression budgets");

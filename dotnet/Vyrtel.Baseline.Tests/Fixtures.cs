@@ -37,8 +37,8 @@ internal static class Fixtures
     {
         var queries = new List<QueryMeasurement>
         {
-            new("logs.traceId", "traceId = … (Bloom filter)", "selective", 1.6 * scale, Diagnostics(), Latency(0.4 * scale, 0.5 * scale, 0.6 * scale), Diagnostics(), 510, 0),
-            new("logs.scan.timedOut", "message contains \"timed out\" (scan)", "scan", 11 * scale, Diagnostics(1 << 20), Latency(10 * scale, 11 * scale), Diagnostics(1 << 20), 515, 0),
+            new("logs.traceId", "traceId = … (Bloom filter)", "selective", 1.6 * scale, Diagnostics(), Latency(0.4 * scale, 0.5 * scale, 0.6 * scale), Diagnostics(), 510),
+            new("logs.scan.timedOut", "message contains \"timed out\" (scan)", "scan", 11 * scale, Diagnostics(1 << 20), Latency(10 * scale, 11 * scale), Diagnostics(1 << 20), 515),
         };
         var mixedOps = new List<MixedOperationResult>
         {

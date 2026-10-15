@@ -90,7 +90,10 @@ configuration (use `--port` to choose another).
    same data directory, the connection is opened with `GET /health`, and the query is timed
    once (**cold**: a new process with an empty index cache and nothing decoded) and then 20
    more times (**warm**). The server's own `diagnostics` are kept for the cold request and the
-   last warm one.
+   last warm one. Every one of these requests must succeed: an HTTP error or no response (a
+   timeout, a refused connection) stops the run. A failed request has no latency worth
+   comparing, and timing only the successes would let a broken endpoint record nothing, or 0 ms,
+   and look like an improvement.
 3. **Mixed load.** 4 workers send a weighted mix of NDJSON and JSON ingest (800 events per
    request) and queries for 20 s; the first 3 s are discarded. Each worker's sequence comes from
    its own seed, so every run sends the same requests in the same order; only how many fit in
@@ -325,6 +328,7 @@ that hardware; compare two artifacts from the same runner type, not a runner aga
 | `seeding … failed with status 413` (or 400) | A seeding request was refused for a reason other than backpressure. With `--batch` raised, requests can exceed `ingest.max_request_size` (1 MB). |
 | `seeding … failed with status 429 after 200 attempt(s)` | Backpressure never cleared for 40 s; the server is stuck or the host overloaded. |
 | `the server did not finish writing the seeded data` | Queues did not drain within 120 s. |
+| `query … failed with HTTP 500: … on warm request 7 of 20; … no baseline was recorded` (or `got no HTTP response`) | A cold or warm query was not answered successfully. The message names the query, the request, the status and the start of the response body. Like an incomplete dataset, this is a bug in the build under test. |
 | `the seeded dataset is incomplete, so no baseline was recorded: …` | The server acknowledged or stored a different number of log events, spans or metric points than the fixture holds; the message names each signal and both counts. Treat it as a bug in the build under test, not a measurement problem. |
 | `has report schema …` | The report was written by an incompatible version of the tool; re-record the baseline. |
 

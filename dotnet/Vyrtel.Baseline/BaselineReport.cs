@@ -139,8 +139,7 @@ public sealed record QueryMeasurement(
     QueryDiagnostics? ColdDiagnostics,
     LatencyStats Warm,
     QueryDiagnostics? WarmDiagnostics,
-    double RestartMs,
-    int Failures);
+    double RestartMs);
 
 /// <summary>The server's own execution statistics for a query (the <c>diagnostics</c> object).</summary>
 public sealed record QueryDiagnostics(
