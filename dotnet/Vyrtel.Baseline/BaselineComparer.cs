@@ -1,12 +1,17 @@
 namespace Vyrtel.Baseline;
 
 /// <summary>
-/// Compares a new report against a baseline using the baseline's proposed budgets. Differences
-/// in what was measured (configuration, workload, host, build profile) are reported as
-/// warnings, since a regression across different setups says nothing about the code.
+/// Compares a new report against a baseline using the baseline's proposed budgets. A comparison
+/// passes only when it could actually judge something: no metric regressed, no metric the
+/// baseline gated is missing, at least one metric was gated, and both reports measured the same
+/// thing (configuration, workload, host, build profile, report schema). Anything else fails, so
+/// a broken or incomparable run can never look like a pass.
 /// </summary>
 public static class BaselineComparer
 {
+    public const int ExitPassed = 0;
+    public const int ExitFailed = 2;
+
     public static ComparisonResult Compare(BaselineReport baseline, BaselineReport current)
     {
         var currentByKey = current.Summary.ToDictionary(m => m.Key);
@@ -18,35 +23,54 @@ public static class BaselineComparer
                 metrics.Add(new MetricComparison(b.Key, b.Label, b.Unit, b.Mean, null, null, b.BudgetPercent, Verdict.Missing));
                 continue;
             }
-            double? worse = b.Mean == 0
-                ? null
-                : (b.Better == Better.Lower ? c.Mean - b.Mean : b.Mean - c.Mean) / Math.Abs(b.Mean) * 100;
+            var worse = Worse(b, c.Mean);
             metrics.Add(new MetricComparison(b.Key, b.Label, b.Unit, b.Mean, c.Mean, worse, b.BudgetPercent, Judge(worse, b.BudgetPercent)));
         }
 
-        return new ComparisonResult(baseline.Label, baseline.GeneratedAt, baseline.VyrtelVersion, Warnings(baseline, current), metrics);
+        return new ComparisonResult(baseline.Label, baseline.GeneratedAt, baseline.VyrtelVersion, Incompatibilities(baseline, current), metrics);
+    }
+
+    /// <summary>
+    /// How much worse the current mean is: percent of the baseline mean, or for a
+    /// <see cref="MetricKind.Ratio"/> the difference in percentage points (so a 0% baseline
+    /// still compares). Null when a relative change is undefined.
+    /// </summary>
+    public static double? Worse(MetricSummary baseline, double current)
+    {
+        var delta = baseline.Better == Better.Lower ? current - baseline.Mean : baseline.Mean - current;
+        if (baseline.Kind == MetricKind.Ratio)
+        {
+            return delta;
+        }
+        return baseline.Mean == 0 ? null : delta / Math.Abs(baseline.Mean) * 100;
     }
 
     public static Verdict Judge(double? worsePercent, double? budgetPercent) =>
         (worsePercent, budgetPercent) switch
         {
-            (null, _) or (_, null) => Verdict.NotGated,
+            (_, null) => Verdict.NotGated,
+            (null, _) => Verdict.Regression, // gated, but the change cannot be measured
             var (w, b) when w > b => Verdict.Regression,
             var (w, b) when -w > b => Verdict.Improvement,
             _ => Verdict.WithinBudget,
         };
 
-    public static IReadOnlyList<string> Warnings(BaselineReport baseline, BaselineReport current)
+    /// <summary>Differences that make the two reports measure different things. Any one fails the comparison.</summary>
+    public static IReadOnlyList<string> Incompatibilities(BaselineReport baseline, BaselineReport current)
     {
-        var warnings = new List<string>();
+        var found = new List<string>();
         void Check<T>(string what, T before, T after)
         {
             if (!EqualityComparer<T>.Default.Equals(before, after))
             {
-                warnings.Add($"{what} differs: baseline {before}, current {after}");
+                found.Add($"{what} differs: baseline {before}, current {after}");
             }
         }
 
+        if (baseline.SchemaVersion != current.SchemaVersion)
+        {
+            found.Add($"report schema differs: baseline {baseline.SchemaVersion}, current {current.SchemaVersion}");
+        }
         Check("pinned configuration (SHA-256)", baseline.Config.Sha256, current.Config.Sha256);
         // The number of runs may differ: a quick check against a longer baseline is legitimate.
         Check("workload", baseline.Workload with { Runs = 0 }, current.Workload with { Runs = 0 });
@@ -55,14 +79,9 @@ public static class BaselineComparer
         Check("operating system", baseline.Host.Os, current.Host.Os);
         Check("architecture", baseline.Host.Architecture, current.Host.Architecture);
         Check("build profile", baseline.Build.Profile, current.Build.Profile);
-        if (baseline.SchemaVersion != current.SchemaVersion)
-        {
-            warnings.Add($"report schema differs: baseline {baseline.SchemaVersion}, current {current.SchemaVersion}");
-        }
-        if (baseline.Runs.Count < BaselineStatistics.MinRunsForBudget)
-        {
-            warnings.Add($"the baseline has {baseline.Runs.Count} run(s), so no metric is gated; record at least {BaselineStatistics.MinRunsForBudget}");
-        }
-        return warnings;
+        return found;
     }
+
+    /// <summary>The process exit status for a comparison: 0 only when it passed.</summary>
+    public static int ExitCode(ComparisonResult result) => result.Passed ? ExitPassed : ExitFailed;
 }

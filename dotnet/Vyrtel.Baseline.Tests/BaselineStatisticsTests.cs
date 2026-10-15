@@ -71,6 +71,43 @@ public class BaselineStatisticsTests
     }
 
     [Fact]
+    public void Successful_throughput_counts_only_accepted_requests()
+    {
+        var run = Fixtures.Run(1, mixed: Fixtures.Mixed(accepted: 160, backpressure: 1640));
+
+        var s = BaselineStatistics.Flatten(run, 1).ToDictionary(x => x.Key);
+
+        Assert.Equal(450, s["mixed.requestsPerSecond"].Value);  // every response
+        Assert.Equal(40, s["mixed.acceptedPerSecond"].Value);   // only 2xx
+        Assert.Equal(8_800, s["mixed.ingestEventsPerSecond"].Value);
+        Assert.Equal(91.11, s["mixed.unsuccessfulPercent"].Value, 2);
+        Assert.Equal(Better.Lower, s["mixed.unsuccessfulPercent"].Better);
+        Assert.Equal(MetricKind.Ratio, s["mixed.unsuccessfulPercent"].Kind);
+    }
+
+    [Fact]
+    public void Attempted_throughput_is_informational_and_never_gated()
+    {
+        var summary = BaselineStatistics.Summarize([Fixtures.Run(1), Fixtures.Run(2), Fixtures.Run(3)], 1);
+
+        var attempted = summary.Single(m => m.Key == "mixed.requestsPerSecond");
+        Assert.Null(attempted.BudgetPercent);
+        Assert.StartsWith("informational", attempted.Justification);
+        Assert.NotNull(summary.Single(m => m.Key == "mixed.acceptedPerSecond").BudgetPercent);
+    }
+
+    [Theory]
+    [InlineData(0.0, 1.0)] // no failures in any run: the 1-point floor
+    [InlineData(0.5, 5.0)] // 0.5 × 3.08 × 3 = 4.6 → 5 points
+    [InlineData(6.0, null)] // 55.5 points: too noisy
+    public void Ratio_budgets_are_absolute_points(double stdDevPoints, double? expected) =>
+        Assert.Equal(expected, BaselineStatistics.ProposeRatioBudget(3, stdDevPoints).Budget);
+
+    [Fact]
+    public void Ratio_budget_needs_three_runs() =>
+        Assert.Null(BaselineStatistics.ProposeRatioBudget(2, 0).Budget);
+
+    [Fact]
     public void Quiet_timings_get_the_timing_floor()
     {
         var (budget, why) = BaselineStatistics.ProposeBudget(3, 100, 1.0, MetricKind.Timing);
@@ -171,6 +208,10 @@ public class BaselineStatisticsTests
         Assert.Contains("query.logs.traceId.warmP50Ms", keys);
         Assert.Contains("query.logs.scan.timedOut.warmP95Ms", keys);
         Assert.Contains("mixed.requestsPerSecond", keys);
+        Assert.Contains("mixed.acceptedPerSecond", keys);
+        Assert.Contains("mixed.ingestEventsPerSecond", keys);
+        Assert.Contains("mixed.unsuccessfulPercent", keys);
+        Assert.Contains("seed.unsuccessfulPercent", keys);
         Assert.Contains("mixed.ingest.ndjson.p95Ms", keys);
         Assert.Contains("mixed.ingest.ndjson.p99Ms", keys);
         Assert.Contains("memory.peakRssBytes", keys);

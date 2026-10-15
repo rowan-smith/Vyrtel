@@ -34,7 +34,7 @@ public sealed class BaselineReportWriterTests : IDisposable
         var md = BaselineReportWriter.ToMarkdown(_report);
 
         // seeding: 241 accepted + 2 × 429; mixed: 345 accepted + 5 × 429
-        Assert.Contains("| 1 | seeding | 243 | 241 | 2 | 0 | 0 | 0 | 20,250 |", md);
+        Assert.Contains("| 1 | seeding | 243 | 241 | 2 | 0 | 0 | 0 | 20,650 |", md);
         Assert.Contains("| 1 | mixed | 350 | 345 | 5 | 0 | 0 | 0 | 76,000 |", md);
         Assert.Contains("| ingest NDJSON (800 events) | 100 | 15 |", md); // 5 rejected per run × 3
     }
@@ -69,7 +69,22 @@ public sealed class BaselineReportWriterTests : IDisposable
         var md = BaselineReportWriter.ToMarkdown(withComparison);
 
         Assert.Contains("## Comparison with test (0.1.1, 2026-10-15)", md);
+        Assert.Contains("**Failed**:", md);
+        Assert.Contains("metric(s) regressed beyond their budget", md);
         Assert.Contains("| **regression** |", md);
+    }
+
+    [Fact]
+    public void A_passing_comparison_says_how_much_it_gated()
+    {
+        var current = Fixtures.Report([Fixtures.Run(1, 1.02), Fixtures.Run(2, 1.02), Fixtures.Run(3, 1.02)]);
+        var cmp = BaselineComparer.Compare(_report, current);
+
+        var md = BaselineReportWriter.ToMarkdown(current with { Comparison = cmp });
+
+        Assert.Contains($"**Passed**: {cmp.Gated} gated metric(s), none regressed.", md);
+        // Ratios are reported in percentage points, not relative percent.
+        Assert.Contains("| Mixed load requests not accepted | 1.43% | 1.43% | 0.00 pt | 1 pt | within budget |", md);
     }
 
     [Fact]
@@ -81,7 +96,7 @@ public sealed class BaselineReportWriterTests : IDisposable
         var read = BaselineReportWriter.Read(paths[0]);
         Assert.Equal(_report.Summary.Select(m => (m.Key, m.Mean, m.BudgetPercent)), read.Summary.Select(m => (m.Key, m.Mean, m.BudgetPercent)));
         Assert.Equal(_report.Runs[0].Mixed.Requests.RejectedBackpressure, read.Runs[0].Mixed.Requests.RejectedBackpressure);
-        Assert.Equal(_report.Runs[0].Queries[0].ColdDiagnostics, read.Runs[0].Queries[0].ColdDiagnostics with { Indexes = _report.Runs[0].Queries[0].ColdDiagnostics!.Indexes });
+        Assert.Equal(_report.Runs[0].Queries[0].ColdDiagnostics, read.Runs[0].Queries[0].ColdDiagnostics! with { Indexes = _report.Runs[0].Queries[0].ColdDiagnostics!.Indexes });
         Assert.DoesNotContain("\"samples\"", File.ReadAllText(paths[0]));
         Assert.Contains("\"better\": \"lower\"", File.ReadAllText(paths[0]));
 

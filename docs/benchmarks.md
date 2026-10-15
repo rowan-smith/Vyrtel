@@ -80,8 +80,12 @@ configuration (use `--port` to choose another).
    points from the same `EventFactory` as the benchmark and profiler (seed 42), sent one request
    at a time. A 429 or 503 counts as backpressure and is retried after 200 ms, so the dataset
    always arrives complete. Any other rejection stops the run: an incomplete dataset would make
-   every later number wrong. The run then waits until every queue is empty and the event count
-   has stopped changing, and records the storage counters and data directory size.
+   every later number wrong. The run then waits until every queue is empty and checks the
+   dataset: the log events, spans and metric points counted from the fixture payloads must equal
+   both what the server acknowledged and what `GET /api/v1/system/info` reports storing, per
+   signal. Any shortfall or surplus stops the run, because a server that loses acknowledged events
+   would leave a smaller dataset and every query would look faster. It then records the storage
+   counters and data directory size.
 2. **Cold and warm queries.** For each of the 13 queries below, the server is restarted on the
    same data directory, the connection is opened with `GET /health`, and the query is timed
    once (**cold**: a new process with an empty index cache and nothing decoded) and then 20
@@ -111,7 +115,7 @@ configuration (use `--port` to choose another).
 Options: `--runs`, `--seed`, `--events`, `--batch`, `--warm-iterations`, `--duration`, `--warmup`,
 `--concurrency`, `--port`, `--server`, `--config`, `--label`, `--notes`, `--out`, `--compare`,
 `--log-level`, `--keep-data` (`--help` describes each). Changing any workload option makes the
-report incomparable with earlier ones; the comparison says so.
+report incomparable with earlier ones, and a comparison between them fails.
 
 ### Pinned configuration
 
@@ -137,7 +141,7 @@ file starts a new baseline: re-record it before comparing.
 | Header | Generation time, label, Vyrtel version and commit (flagged if the tree had uncommitted changes), total and per-run **duration**, the workload |
 | Host and build | **CPU** model and logical cores, memory available, OS and architecture, the volume holding the data directories (file system, free space), harness runtime, your `--notes`, **binary size**, profile and SHA-256, `rustc` version, configuration SHA-256, ingest admission, and the **compression method** (zstd level, ratio, index overhead, bytes per event, segment count) |
 | Memory | **Peak RSS** per run and per phase (seeding, queries, mixed load), idle RSS after start, and whether the peak came from the OS or sampling |
-| Accepted and rejected requests | Per run and phase: requests, accepted, backpressure, too large, other rejections, transport errors, items accepted, throughput and latency percentiles |
+| Accepted and rejected requests | Per run and phase: requests, accepted, backpressure, too large, other rejections, transport errors, items accepted, throughput and latency percentiles. The JSON also holds the seeded dataset's expected, acknowledged and stored counts per signal |
 | Mixed load by operation | p50/p95/p99 per operation, averaged across runs with the run-to-run spread, and rejections |
 | Queries: cold and warm | Cold and warm p50/p95, their ratio, and diagnostics: segments skipped of considered, blocks read (skipped), events examined → matched, bytes read cold → warm, the indexes used |
 | Variance and budgets | For every metric: runs, mean, standard deviation, coefficient of variation (CV), min, max, the proposed budget and the arithmetic behind it |
@@ -177,6 +181,15 @@ k(n)   = √((n − 1) ÷ χ²₀.₁₀(n − 1))     3 runs: 3.08   5 runs: 1.
   decided by its top four, and the p95 of 20 warm repetitions is effectively the second largest,
   so one scheduler stall would decide the verdict. Such metrics are still reported; raise
   `--warm-iterations` or `--duration` to gate them.
+- **Only successful work is throughput.** The gated throughput metrics are successful requests
+  per second and accepted ingest events per second. A server that answers 429 quickly sends
+  *more* responses per second while doing less work, so attempted requests per second is
+  reported but never gated.
+- **Failure shares are absolute.** The share of requests not accepted (backpressure, rejections
+  and transport errors), for seeding and the mixed load, is budgeted in percentage points:
+  `max(1 point, 3 × standard deviation × k(n))`. A relative budget would be undefined for a
+  baseline with no failures, which is the normal case. The 1-point floor is a policy choice: the
+  reference laptop rejected nothing in its runs, so there was no spread to measure.
 - **Not gated** when there are fewer than 3 runs (no spread to estimate), the mean is zero, the
   percentile has too few samples, or the budget would exceed 50% (too noisy to tell a regression
   from a bad run with that many runs). The report says which, with the arithmetic.
@@ -190,16 +203,24 @@ metrics.
 Compare a new run against an earlier report, or two existing reports:
 
 ```shell
-dotnet run --project dotnet/Vyrtel.Baseline -c Release -- --runs 3 --compare docs/benchmarks/baselines/2026-10-15-windows-laptop.json
+dotnet run --project dotnet/Vyrtel.Baseline -c Release -- --runs 3 --compare target/baseline/reference.json
 dotnet run --project dotnet/Vyrtel.Baseline -c Release -- compare old/report.json new/report.json
 ```
 
 Each metric gets a verdict from the **baseline's** budget: *regression* (worse by more than the
 budget), *improvement* (better by more than the budget), *within budget*, *not gated* or
-*missing*. The comparison warns when the pinned configuration, workload, CPU, core count, OS,
-architecture or build profile differ, because then a difference says nothing about the code.
-The number of runs may differ. Exit status is 0 with no regressions, 2 with at least one, and 1
-on an error, so a script can act on it.
+*missing*. The comparison **passes** only when all of these hold:
+
+- no metric regressed;
+- no metric the baseline gated is missing from the current report (a mixed-load operation with
+  no successful request has no latency, so its metrics go missing);
+- at least one metric was gated (a baseline with fewer than 3 runs gates nothing);
+- both reports measured the same thing: pinned configuration, workload, CPU, core count, OS,
+  architecture, build profile and report schema. Otherwise a difference says nothing about the
+  code. The number of runs may differ.
+
+The report and console list every reason a comparison failed. Exit status is 0 when it passed,
+2 when it did not, and 1 on an error, so a script can act on it.
 
 ### Checking a host with a same-commit comparison
 
@@ -230,6 +251,13 @@ NVMe SSD, Windows 11, on AC power with desktop applications open). The server wa
 `b61cd28`; the working tree differed only in this tool, its tests and docs, which the report
 flags as uncommitted changes. It is evidence of what the tool reports and how noisy that machine
 is, not a performance promise for other hardware.
+
+These files are **report schema 1**, recorded before successful-throughput and failure-share
+metrics, the dataset check and pass/fail comparisons were added. The current tool (schema 2)
+refuses them rather than reinterpreting them: a schema-1 baseline gated attempted throughput,
+which counts 429 responses as work. They remain the evidence for the budget rule below. Record
+a schema-2 reference on your own machine before comparing (see
+[Checking a host](#checking-a-host-with-a-same-commit-comparison)).
 
 | What | Measured (mean of 5 runs, run-to-run CV) |
 |---|---|
@@ -274,6 +302,14 @@ the 15% timing floor comes from, and the last is the check on fresh sessions the
 tuned on. TC-02's "identical workloads twice with variance" is rows E and F: both reports hold
 every run's values, and the comparison tables show the differences.
 
+Two later sessions on the same laptop (with schema 2) show what the gate does when the host
+itself changes. With the battery at 18% and charging, mixed-load throughput fell from 221 to
+about 100 successful requests/s and `level = Error` p50 rose from 20 ms to 100 ms on the same
+commit. The tool gated only 17–18 of 93 metrics, because within-session spread was too large to
+trust, and one comparison failed with four regressions of 39–104%. That is a real 2× slowdown of
+the host, correctly reported; it is also why a reference must be recorded on a quiet machine on
+AC power, and why a failure on a laptop should be confirmed by re-recording both reports.
+
 The `baseline` job in `.github/workflows/benchmark.yml` records a 3-run baseline on each `main`
 change and `v*` tag and uploads it as the `baseline-<ref>-<sha>` workflow artifact (kept 90
 days), with the Markdown in the job summary. Shared runners are noisy, so their budgets describe
@@ -289,6 +325,7 @@ that hardware; compare two artifacts from the same runner type, not a runner aga
 | `seeding … failed with status 413` (or 400) | A seeding request was refused for a reason other than backpressure. With `--batch` raised, requests can exceed `ingest.max_request_size` (1 MB). |
 | `seeding … failed with status 429 after 200 attempt(s)` | Backpressure never cleared for 40 s; the server is stuck or the host overloaded. |
 | `the server did not finish writing the seeded data` | Queues did not drain within 120 s. |
+| `the seeded dataset is incomplete, so no baseline was recorded: …` | The server acknowledged or stored a different number of log events, spans or metric points than the fixture holds; the message names each signal and both counts. Treat it as a bug in the build under test, not a measurement problem. |
 | `has report schema …` | The report was written by an incompatible version of the tool; re-record the baseline. |
 
 The tool deletes each run's data directory (`%TEMP%` or `$TMPDIR`, named `vyrtel-baseline-*`)
@@ -299,7 +336,7 @@ that directory can be left behind: stop the process and delete the directory.
 
 - **One host at a time.** Budgets hold for the host and configuration in the report. There is no
   universal guarantee across hardware, and comparing reports from different hosts is not
-  meaningful (the comparison warns).
+  meaningful (such a comparison fails as incompatible).
 - **Cold means a cold server process, not a cold disk.** The OS page cache is not dropped (that
   needs root and differs per OS), so the data files are usually still cached in memory.
 - **Compaction is off**, unlike production defaults; its cost is not measured here.

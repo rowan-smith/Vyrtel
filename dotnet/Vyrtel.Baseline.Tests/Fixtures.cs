@@ -18,8 +18,22 @@ internal static class Fixtures
     public static QueryDiagnostics Diagnostics(long bytesRead = 4096) =>
         new(1.5, 4, 3, 21, 19, 2, 2404, 1, bytesRead, 0, ["timestamp:time", "traceId:bloom"]);
 
+    /// <summary>The fixture's seeded dataset: what was sent, acknowledged and stored.</summary>
+    public static readonly SignalCounts Dataset = new(20_000, 600, 50);
+
+    /// <summary>
+    /// A mixed phase measured over 4 s with the given outcomes, e.g. a server that turns most
+    /// requests away with 429. <paramref name="accepted"/> successful requests carry 220 ingest events each.
+    /// </summary>
+    public static MixedPhase Mixed(long accepted, long backpressure)
+    {
+        var requests = Counts((200, accepted), (429, backpressure));
+        var ops = new List<MixedOperationResult> { new("logs.latest", "latest logs (limit 200)", requests, Latency(9, 10, 17)) };
+        return new MixedPhase(4, 4, requests.Total / 4.0, accepted * 220, requests, ops);
+    }
+
     /// <summary>A run whose timings are all scaled by <paramref name="scale"/>.</summary>
-    public static RunResult Run(int run, double scale = 1, long peakRss = 50 << 20)
+    public static RunResult Run(int run, double scale = 1, long peakRss = 50 << 20, MixedPhase? mixed = null)
     {
         var queries = new List<QueryMeasurement>
         {
@@ -34,9 +48,14 @@ internal static class Fixtures
         return new RunResult(
             run,
             45,
-            new IngestPhase(0.5, 20_250, 20_250, Counts((200, 241), (429, 2)), 40_000 / scale, Latency(0.3 * scale, 4 * scale, 9 * scale)),
+            new IngestPhase(0.5, 20_650, 20_650, Counts((200, 241), (429, 2)), 40_000 / scale, Latency(0.3 * scale, 4 * scale, 9 * scale))
+            {
+                Expected = Dataset,
+                Acknowledged = Dataset,
+                Stored = Dataset,
+            },
             queries,
-            new MixedPhase(4, 4, 396 / scale, 76_000, RequestTally.Sum(mixedOps.Select(o => o.Requests)), mixedOps),
+            mixed ?? new MixedPhase(4, 4, 396 / scale, 76_000, RequestTally.Sum(mixedOps.Select(o => o.Requests)), mixedOps),
             new MemoryFacts(peakRss, RssMonitor.OsPeakSource, 12 << 20, 36 << 20, 20 << 20, peakRss),
             new StorageProfile(8_000_000, 1_980_000, 20_250, 4, 4.0, 0.076, 9_000_000),
             2_000_000,

@@ -136,8 +136,9 @@ give the `ingestion`, `queries`, `backpressure`, `footprint` and `storage` rows 
    recorded for it on that machine. Its proposed budgets are the limits, fixed before the
    candidate is measured (`budgetsDeclaredAt`), and its means are the `baseline` values.
 2. On the candidate, run the same command with `--label v<version>-rc --compare <prior report>`.
-   Exit status 2, or a comparison warning about the configuration, workload or host, means the
-   evidence is not ready: fix the regression or re-record on matching terms.
+   Exit status 2 means the evidence is not ready. The output says why: fix a regression or a
+   missing metric, or re-record both reports on matching terms if they are incompatible
+   (configuration, workload or host).
 3. Link both reports' `.json`, `.md` and `.samples.csv` from `reports`, and copy the compared
    metrics into `metrics` with their `baseline` and `delta`. A metric the baseline did not gate
    (too noisy or fewer than 3 runs) needs a `noBaseline` reason or a quieter re-run, not an

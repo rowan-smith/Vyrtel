@@ -51,7 +51,13 @@ public sealed class BaselineRunner(BaselineOptions options, string configPath)
                 using var api = new ApiClient(BaseUrl.ToString());
                 Console.WriteLine($"run {run}: seeding {options.Events:N0} logs, {TraceCount(options.Events):N0} traces, {MetricPointCount(options.Events):N0} metric points");
                 seed = await SeedAsync(api, factory, run, samples, ct);
-                await WaitForQuiescenceAsync(api, ct);
+                var stored = await WaitForQuiescenceAsync(api, seed.Expected, ct);
+                seed = seed with { Stored = stored };
+                if (DatasetCheck.Verify(seed.Expected, seed.Acknowledged, stored) is { } problem)
+                {
+                    throw new InvalidOperationException($"run {run}: {problem}");
+                }
+                Console.WriteLine($"run {run}: dataset verified: {stored}");
                 storage = await api.GetStorageStatsAsync(ct);
                 dataDirBytes = server.MeasureDataDirBytes();
                 facts = await ReadFactsAsync(api, server, ct);
@@ -136,11 +142,17 @@ public sealed class BaselineRunner(BaselineOptions options, string configPath)
         var tally = new RequestTally();
         var latency = new LatencyRecorder();
         long eventsSent = 0, eventsAccepted = 0;
+        var expected = SignalCounts.Zero;
+        var acknowledged = SignalCounts.Zero;
         var clock = Stopwatch.StartNew();
 
-        async Task Send(string phase, string path, byte[] payload, string mediaType, int events)
+        // `items` is what the fixture contains, counted from the payload itself, never from the
+        // server's reply: a server that loses events must not lower its own bar.
+        async Task Send(string phase, string path, byte[] payload, string mediaType, SignalCounts items)
         {
+            var events = items.Logs + items.Traces + items.Metrics;
             eventsSent += events;
+            expected = expected.Add(items);
             for (var attempt = 1; ; attempt++)
             {
                 var sw = Stopwatch.StartNew();
@@ -152,7 +164,10 @@ public sealed class BaselineRunner(BaselineOptions options, string configPath)
                 {
                     case Outcome.Accepted:
                         latency.Record(ms);
-                        eventsAccepted += path == "api/v1/events" ? Workload.ParseAccepted(response.Body) : events;
+                        // Only native ingest reports a count; OTLP replies carry none.
+                        var acked = items.Logs > 0 ? items with { Logs = Workload.ParseAccepted(response.Body) } : items;
+                        acknowledged = acknowledged.Add(acked);
+                        eventsAccepted += acked.Logs + acked.Traces + acked.Metrics;
                         return;
                     case Outcome.Backpressure or Outcome.TransportError when attempt < MaxSeedAttempts:
                         // The dataset must arrive complete, so retry as a well-behaved client would.
@@ -168,41 +183,49 @@ public sealed class BaselineRunner(BaselineOptions options, string configPath)
         for (var sent = 0; sent < options.Events;)
         {
             var count = Math.Min(options.Batch, options.Events - sent);
-            await Send("seed.logs", "api/v1/events", factory.Ndjson(count), "application/x-ndjson", count);
+            await Send("seed.logs", "api/v1/events", factory.Ndjson(count), "application/x-ndjson", new SignalCounts(count, 0, 0));
             sent += count;
         }
         for (var i = 0; i < TraceCount(options.Events); i++)
         {
-            await Send("seed.traces", "v1/traces", factory.TracePayload(), "application/json", 1);
+            var trace = factory.TracePayload();
+            await Send("seed.traces", "v1/traces", trace, "application/json", new SignalCounts(0, DatasetCheck.CountItems(trace, "spans"), 0));
         }
         var points = MetricPointCount(options.Events);
         for (var sent = 0; sent < points;)
         {
             var count = Math.Min(options.Batch, points - sent);
-            await Send("seed.metrics", "v1/metrics", factory.OtlpMetrics(count), "application/json", count);
+            var metrics = factory.OtlpMetrics(count);
+            await Send("seed.metrics", "v1/metrics", metrics, "application/json", new SignalCounts(0, 0, DatasetCheck.CountItems(metrics, "dataPoints")));
             sent += count;
         }
 
         var seconds = clock.Elapsed.TotalSeconds;
-        return new IngestPhase(seconds, eventsSent, eventsAccepted, tally.Snapshot(), eventsAccepted / Math.Max(seconds, 0.001), latency.Snapshot());
+        return new IngestPhase(seconds, eventsSent, eventsAccepted, tally.Snapshot(), eventsAccepted / Math.Max(seconds, 0.001), latency.Snapshot())
+        {
+            Expected = expected,
+            Acknowledged = acknowledged,
+        };
     }
 
-    /// <summary>Waits until every queue is empty and the event count has stopped changing.</summary>
-    private static async Task WaitForQuiescenceAsync(ApiClient api, CancellationToken ct)
+    /// <summary>
+    /// Waits until every queue is empty and the per-signal counts either match the fixture or
+    /// have stopped changing, and returns what is stored. The caller decides whether it is complete.
+    /// </summary>
+    private static async Task<SignalCounts> WaitForQuiescenceAsync(ApiClient api, SignalCounts expected, CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + QuiescenceTimeout;
-        long previous = -1;
+        SignalCounts? previous = null;
         while (DateTime.UtcNow < deadline)
         {
             using var doc = JsonDocument.Parse(await api.GetString("api/v1/system/storage", ct));
-            var root = doc.RootElement;
-            var events = root.GetProperty("eventCount").GetInt64();
-            var queued = root.GetProperty("signals").EnumerateObject().Sum(s => s.Value.GetProperty("queueDepth").GetInt64());
-            if (queued == 0 && events == previous)
+            var queued = doc.RootElement.GetProperty("signals").EnumerateObject().Sum(s => s.Value.GetProperty("queueDepth").GetInt64());
+            var stored = DatasetCheck.ParseStored(await api.GetString("api/v1/system/info", ct));
+            if (queued == 0 && (stored == expected || stored == previous))
             {
-                return;
+                return stored;
             }
-            previous = events;
+            previous = stored;
             await Task.Delay(250, ct);
         }
         throw new TimeoutException($"the server did not finish writing the seeded data within {QuiescenceTimeout}");

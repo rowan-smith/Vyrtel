@@ -137,7 +137,8 @@ public sealed record BaselineOptions
               --keep-data            Keep each run's data directory
               -h, --help             Show this help
 
-            Exit status: 0 success, 1 error, 2 a gated metric regressed beyond its budget.
+            Exit status: 0 success, 1 error, 2 the comparison did not pass (a regression, a
+            missing gated metric, nothing gated, or incompatible reports).
             """);
     }
 }

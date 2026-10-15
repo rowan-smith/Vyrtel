@@ -23,7 +23,9 @@ public sealed record BaselineReport(
     IReadOnlyList<MetricSummary> Summary,
     ComparisonResult? Comparison = null)
 {
-    public const int CurrentSchemaVersion = 1;
+    // 2: successful-throughput and failure-share metrics, dataset counts, pass/fail comparisons.
+    // A schema-1 baseline gated attempted throughput (429s included), so it is refused, not reinterpreted.
+    public const int CurrentSchemaVersion = 2;
 }
 
 /// <summary>The fixed workload. Two reports are comparable only when these match.</summary>
@@ -104,7 +106,17 @@ public sealed record IngestPhase(
     long ItemsAccepted,
     RequestCounts Requests,
     double ItemsPerSecond,
-    LatencyStats Latency);
+    LatencyStats Latency)
+{
+    /// <summary>Events per signal in the fixture, counted from the payloads.</summary>
+    public SignalCounts Expected { get; init; } = SignalCounts.Zero;
+
+    /// <summary>What the server acknowledged (native ingest reports a count; OTLP is counted from accepted payloads).</summary>
+    public SignalCounts Acknowledged { get; init; } = SignalCounts.Zero;
+
+    /// <summary>What the server reported storing once its queues drained. A run only proceeds when all three match.</summary>
+    public SignalCounts Stored { get; init; } = SignalCounts.Zero;
+}
 
 /// <summary>Requests by outcome. Backpressure is 429/503 (retryable); 413 is a request over the size limit.</summary>
 public sealed record RequestCounts(
@@ -176,6 +188,9 @@ public enum MetricKind
 
     /// <summary>On-disk sizes: close to deterministic for a fixed dataset and build.</summary>
     Size,
+
+    /// <summary>A percentage of requests; budgets are absolute percentage points, not relative to the mean.</summary>
+    Ratio,
 }
 
 /// <summary>A metric across runs, with its proposed regression budget.</summary>
@@ -218,8 +233,30 @@ public sealed record ComparisonResult(
     string BaselineLabel,
     DateTimeOffset BaselineGeneratedAt,
     string BaselineVersion,
-    IReadOnlyList<string> Warnings,
+    IReadOnlyList<string> Incompatibilities,
     IReadOnlyList<MetricComparison> Metrics)
 {
     public int Regressions => Metrics.Count(m => m.Verdict == Verdict.Regression);
+
+    /// <summary>Metrics the baseline gated that the current report does not have.</summary>
+    public int MissingGated => Metrics.Count(m => m.Verdict == Verdict.Missing && m.BudgetPercent is not null);
+
+    /// <summary>Metrics actually judged against a budget.</summary>
+    public int Gated => Metrics.Count(m => m.Verdict is Verdict.WithinBudget or Verdict.Regression or Verdict.Improvement);
+
+    /// <summary>Why the comparison did not pass; empty when it passed.</summary>
+    public IReadOnlyList<string> FailureReasons
+    {
+        get
+        {
+            var reasons = new List<string>();
+            if (Regressions > 0) reasons.Add($"{Regressions} metric(s) regressed beyond their budget");
+            if (MissingGated > 0) reasons.Add($"{MissingGated} gated metric(s) missing from the current report");
+            if (Gated == 0) reasons.Add("no metric was gated, so nothing was actually compared");
+            reasons.AddRange(Incompatibilities.Select(i => $"incompatible reports: {i}"));
+            return reasons;
+        }
+    }
+
+    public bool Passed => FailureReasons.Count == 0;
 }

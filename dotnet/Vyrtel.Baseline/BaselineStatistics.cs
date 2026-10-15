@@ -7,7 +7,8 @@ namespace Vyrtel.Baseline;
 /// it was taken from, because a tail estimated from a few samples is too fragile to gate on.
 /// </summary>
 public sealed record MetricSample(
-    string Key, string Label, string Unit, Better Better, MetricKind Kind, double Value, double? Quantile = null, int? Samples = null);
+    string Key, string Label, string Unit, Better Better, MetricKind Kind, double Value, double? Quantile = null, int? Samples = null,
+    bool Informational = false);
 
 /// <summary>
 /// Turns repeated runs into per-metric spread and proposed regression budgets.
@@ -37,6 +38,13 @@ public static class BaselineStatistics
 
     /// <summary>Size floor: data-directory size varied 0.55% across 16 runs of the same commit; binaries not at all.</summary>
     public const double SizeFloorPercent = 2;
+
+    /// <summary>
+    /// Ratio floor, in percentage points: a share of unsuccessful requests may rise by this much
+    /// before it is a regression. A policy choice: the reference laptop rejected nothing in 16 runs,
+    /// so there was no spread to measure; one request in a hundred failing is already a change.
+    /// </summary>
+    public const double RatioFloorPoints = 1;
 
     /// <summary>A percentile is gated only when every run had at least this many samples beyond it.</summary>
     public const int TailSamples = 10;
@@ -80,6 +88,7 @@ public static class BaselineStatistics
     public static IEnumerable<MetricSample> Flatten(RunResult run, long executableBytes)
     {
         var s = run.Seed;
+        yield return new("seed.unsuccessfulPercent", "Seeding requests not accepted (retried)", "%", Better.Lower, MetricKind.Ratio, Share(s.Requests));
         yield return new("seed.itemsPerSecond", "Seeding throughput", "items/s", Better.Higher, MetricKind.Timing, s.ItemsPerSecond);
         yield return new("seed.p95Ms", "Seeding request p95", "ms", Better.Lower, MetricKind.Timing, s.Latency.P95, 0.95, s.Latency.Count);
 
@@ -91,7 +100,12 @@ public static class BaselineStatistics
         }
 
         var m = run.Mixed;
-        yield return new("mixed.requestsPerSecond", "Mixed load throughput", "req/s", Better.Higher, MetricKind.Timing, m.RequestsPerSecond);
+        var measured = Math.Max(m.MeasuredSeconds, 0.001);
+        // Only successful work counts as throughput: a server answering 429 quickly must not look faster.
+        yield return new("mixed.acceptedPerSecond", "Mixed load successful requests", "req/s", Better.Higher, MetricKind.Timing, m.Requests.Accepted / measured);
+        yield return new("mixed.ingestEventsPerSecond", "Mixed load accepted ingest events", "events/s", Better.Higher, MetricKind.Timing, m.EventsAccepted / measured);
+        yield return new("mixed.unsuccessfulPercent", "Mixed load requests not accepted", "%", Better.Lower, MetricKind.Ratio, Share(m.Requests));
+        yield return new("mixed.requestsPerSecond", "Mixed load attempted requests", "req/s", Better.Higher, MetricKind.Timing, m.RequestsPerSecond, Informational: true);
         foreach (var op in m.Operations.Where(o => o.Latency.Count > 0))
         {
             var n = op.Latency.Count;
@@ -113,6 +127,9 @@ public static class BaselineStatistics
         }
     }
 
+    /// <summary>Backpressure, rejections and transport errors as a percentage of all requests.</summary>
+    public static double Share(RequestCounts c) => c.Total > 0 ? (c.Total - c.Accepted) * 100.0 / c.Total : 0;
+
     public static IReadOnlyList<MetricSummary> Summarize(IReadOnlyList<RunResult> runs, long executableBytes) =>
         Summarize(runs.SelectMany(r => Flatten(r, executableBytes)));
 
@@ -123,19 +140,23 @@ public static class BaselineStatistics
             {
                 var first = g.First();
                 var fewest = g.Any(s => s.Samples is null) ? (int?)null : g.Min(s => s.Samples!.Value);
-                return Summarize(first.Key, first.Label, first.Unit, first.Better, first.Kind, g.Select(s => s.Value).ToList(), first.Quantile, fewest);
+                return Summarize(first.Key, first.Label, first.Unit, first.Better, first.Kind, g.Select(s => s.Value).ToList(), first.Quantile, fewest, first.Informational);
             })
             .ToList();
 
     public static MetricSummary Summarize(
         string key, string label, string unit, Better better, MetricKind kind, IReadOnlyList<double> values,
-        double? quantile = null, int? fewestSamples = null)
+        double? quantile = null, int? fewestSamples = null, bool informational = false)
     {
         var n = values.Count;
         var mean = n > 0 ? values.Average() : 0;
         var stdDev = n > 1 ? Math.Sqrt(values.Sum(v => (v - mean) * (v - mean)) / (n - 1)) : 0;
         double? cv = mean != 0 && n > 1 ? stdDev / Math.Abs(mean) * 100 : null;
-        var (budget, why) = ProposeBudget(n, mean, cv, kind);
+        var (budget, why) = informational
+            ? (null, "informational: counts rejected responses too, so it is never gated (see successful requests)")
+            : kind == MetricKind.Ratio
+                ? ProposeRatioBudget(n, stdDev)
+                : ProposeBudget(n, mean, cv, kind);
         if (budget is not null && quantile is { } q && fewestSamples is { } fewest && fewest < RequiredSamples(q))
         {
             (budget, why) = (null, string.Create(CultureInfo.InvariantCulture,
@@ -150,6 +171,30 @@ public static class BaselineStatistics
 
     /// <summary>Samples a run needs for <see cref="TailSamples"/> of them to lie beyond quantile <paramref name="q"/>: 20 for p50, 200 for p95, 1,000 for p99.</summary>
     public static int RequiredSamples(double q) => (int)Math.Ceiling(TailSamples / (1 - q) - 1e-9);
+
+    /// <summary>
+    /// Budget for a <see cref="MetricKind.Ratio"/>, in percentage points rather than relative to the
+    /// mean, so a baseline with no failures (mean 0) is still gated: 3 × the upper-bound standard
+    /// deviation, rounded up to a whole point, at least <see cref="RatioFloorPoints"/>.
+    /// </summary>
+    public static (double? Budget, string Justification) ProposeRatioBudget(int runs, double stdDevPoints)
+    {
+        if (runs < MinRunsForBudget)
+        {
+            return (null, $"not gated: {runs} run(s); at least {MinRunsForBudget} are needed to estimate run-to-run variance");
+        }
+        var k = UpperBoundFactor(runs);
+        var scaled = Sigmas * stdDevPoints * k;
+        var rounded = Math.Ceiling(scaled - 1e-9);
+        var budget = Math.Max(RatioFloorPoints, rounded);
+        var arithmetic = string.Create(CultureInfo.InvariantCulture,
+            $"{runs} runs, std dev {stdDevPoints:0.00} points → 3 × upper bound (×{k:0.00}) = {scaled:0.0} points, rounded up to {rounded:0}; floor {RatioFloorPoints:0} point");
+        if (budget > MaxBudgetPercent)
+        {
+            return (null, $"not gated: {arithmetic} → {budget:0} points exceeds {MaxBudgetPercent:0}; too noisy to gate");
+        }
+        return (budget, $"{arithmetic} → {budget:0} points");
+    }
 
     /// <summary>The proposed budget in percent (null = not gated) and the arithmetic behind it.</summary>
     public static (double? Budget, string Justification) ProposeBudget(int runs, double mean, double? cvPercent, MetricKind kind)

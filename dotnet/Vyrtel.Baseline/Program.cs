@@ -3,7 +3,14 @@ using System.Text.Json;
 using Vyrtel.Baseline;
 using Vyrtel.Harness;
 
-const int ExitRegression = 2;
+
+// Every failure (an unreadable or incompatible report, an incomplete dataset, a server that will
+// not start) is one line on stderr and exit status 1, never a stack trace that looks like a crash.
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+{
+    Console.Error.WriteLine($"vyrtel-baseline: {(e.ExceptionObject as Exception)?.Message ?? e.ExceptionObject}");
+    Environment.Exit(1);
+};
 
 BaselineOptions options;
 try
@@ -26,7 +33,7 @@ if (options.CompareOnly is var (baselinePath, currentPath))
 {
     var comparison = BaselineComparer.Compare(BaselineReportWriter.Read(baselinePath), BaselineReportWriter.Read(currentPath));
     PrintComparison(comparison);
-    return comparison.Regressions > 0 ? ExitRegression : 0;
+    return BaselineComparer.ExitCode(comparison);
 }
 
 // Read the earlier report first so a bad path fails before minutes of measuring.
@@ -93,7 +100,7 @@ PrintSummary(report);
 if (report.Comparison is { } cmp)
 {
     PrintComparison(cmp);
-    return cmp.Regressions > 0 ? ExitRegression : 0;
+    return BaselineComparer.ExitCode(cmp);
 }
 return 0;
 
@@ -142,13 +149,15 @@ static void PrintSummary(BaselineReport report)
 static void PrintComparison(ComparisonResult cmp)
 {
     Console.WriteLine();
-    Console.WriteLine($"comparison with {(cmp.BaselineLabel.Length > 0 ? cmp.BaselineLabel : "baseline")} ({cmp.BaselineVersion}): {cmp.Regressions} regression(s)");
-    foreach (var warning in cmp.Warnings)
+    var name = cmp.BaselineLabel.Length > 0 ? cmp.BaselineLabel : "baseline";
+    Console.WriteLine($"comparison with {name} ({cmp.BaselineVersion}): {(cmp.Passed ? "PASSED" : "FAILED")}, {cmp.Gated} gated metric(s)");
+    foreach (var reason in cmp.FailureReasons)
     {
-        Console.WriteLine($"  warning: {warning}");
+        Console.WriteLine($"  {reason}");
     }
-    foreach (var m in cmp.Metrics.Where(m => m.Verdict is Verdict.Regression or Verdict.Improvement or Verdict.Missing))
+    foreach (var m in cmp.Metrics.Where(m => m.Verdict is Verdict.Regression or Verdict.Improvement || m is { Verdict: Verdict.Missing, BudgetPercent: not null }))
     {
-        Console.WriteLine($"  {BaselineReportWriter.Label(m.Verdict).Trim('*'),-18} {m.Label}: {m.WorsePercent:+0.0;-0.0;0.0}% worse (budget {m.BudgetPercent:0}%)");
+        var change = m.WorsePercent is { } w ? BaselineReportWriter.Change(w, m.Unit) : "–";
+        Console.WriteLine($"  {BaselineReportWriter.Label(m.Verdict).Trim('*'),-18} {m.Label}: {change} worse (budget {BaselineReportWriter.Budget(m.BudgetPercent, m.Unit)})");
     }
 }

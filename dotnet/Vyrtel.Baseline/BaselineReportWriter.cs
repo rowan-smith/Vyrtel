@@ -175,7 +175,7 @@ public static class BaselineReportWriter
         foreach (var m in r.Summary)
         {
             Line(string.Create(Inv,
-                $"| {m.Label} | {m.Better.ToString().ToLowerInvariant()} | {m.Runs} | {Value(m.Mean, m.Unit)} | {Value(m.StdDev, m.Unit)} | {Num(m.CvPercent, "0.0")}% | {Value(m.Min, m.Unit)} | {Value(m.Max, m.Unit)} | {(m.BudgetPercent is { } b ? $"{b:0}%" : "–")} | {m.Justification} |"));
+                $"| {m.Label} | {m.Better.ToString().ToLowerInvariant()} | {m.Runs} | {Value(m.Mean, m.Unit)} | {Value(m.StdDev, m.Unit)} | {Num(m.CvPercent, "0.0")}% | {Value(m.Min, m.Unit)} | {Value(m.Max, m.Unit)} | {Budget(m.BudgetPercent, m.Unit)} | {m.Justification} |"));
         }
         Line();
 
@@ -183,13 +183,14 @@ public static class BaselineReportWriter
         {
             Line($"## Comparison with {(cmp.BaselineLabel.Length > 0 ? cmp.BaselineLabel : "baseline")} ({cmp.BaselineVersion}, {cmp.BaselineGeneratedAt.ToString("yyyy-MM-dd", Inv)})");
             Line();
-            Line($"{cmp.Regressions} regression(s) beyond budget.");
-            Line();
-            foreach (var warning in cmp.Warnings)
+            Line(cmp.Passed
+                ? $"**Passed**: {cmp.Gated} gated metric(s), none regressed."
+                : "**Failed**:");
+            foreach (var reason in cmp.FailureReasons)
             {
-                Line($"- ⚠ {warning}");
+                Line($"- {reason}");
             }
-            if (cmp.Warnings.Count > 0) Line();
+            Line();
             Line(ComparisonTable(cmp));
         }
 
@@ -208,7 +209,7 @@ public static class BaselineReportWriter
         foreach (var m in cmp.Metrics.OrderBy(m => m.Verdict == Verdict.Regression ? 0 : m.Verdict == Verdict.Improvement ? 1 : 2))
         {
             sb.Append(Inv,
-                $"| {m.Label} | {Value(m.BaselineMean, m.Unit)} | {(m.CurrentMean is { } c ? Value(c, m.Unit) : "–")} | {(m.WorsePercent is { } w ? $"{w:+0.0;-0.0;0.0}%" : "–")} | {(m.BudgetPercent is { } b ? $"{b:0}%" : "–")} | {Label(m.Verdict)} |\n");
+                $"| {m.Label} | {Value(m.BaselineMean, m.Unit)} | {(m.CurrentMean is { } c ? Value(c, m.Unit) : "–")} | {(m.WorsePercent is { } w ? Change(w, m.Unit) : "–")} | {Budget(m.BudgetPercent, m.Unit)} | {Label(m.Verdict)} |\n");
         }
         return sb.ToString();
     }
@@ -236,9 +237,17 @@ public static class BaselineReportWriter
     private static string Value(double v, string unit) => unit switch
     {
         "ms" => Ms(v),
+        "%" => string.Create(Inv, $"{v:0.00}%"),
         "bytes" => ByteFormat.Format(v, v < 10240 ? 1 : 2),
         _ => string.Create(Inv, $"{v:N0} {unit}"),
     };
+
+    /// <summary>A ratio's budget and change are percentage points; everything else is relative percent.</summary>
+    public static string Budget(double? budget, string unit) =>
+        budget is not { } b ? "–" : unit == "%" ? string.Create(Inv, $"{b:0} pt") : string.Create(Inv, $"{b:0}%");
+
+    public static string Change(double worse, string unit) =>
+        unit == "%" ? string.Create(Inv, $"{worse:+0.00;-0.00;0.00} pt") : string.Create(Inv, $"{worse:+0.0;-0.0;0.0}%");
 
     private static string Ms(double ms) => ms.ToString(ms < 1 ? "0.000" : "0.00", Inv) + " ms";
 
