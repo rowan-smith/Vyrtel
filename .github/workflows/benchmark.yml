@@ -9,6 +9,8 @@ name: Benchmarks
 #   - push of a version tag (v*): snapshot the tagged commit at versions/<tag>.json so the
 #     site can chart progress between releases. Path filters don't apply to tag pushes.
 #
+# The baseline job runs alongside in both modes and uploads its report as an artifact.
+#
 # main only accepts changes through pull requests, so results are committed to the
 # benchmark-results branch instead (laid out like docs/benchmarks/). The Deploy site workflow
 # overlays that branch onto docs/benchmarks/ before building. Commits pushed with
@@ -107,3 +109,37 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh workflow run pages.yml --ref main
+
+  # Reproducible baseline (docs/benchmarks.md#reproducible-baselines): repeated runs of the
+  # seeded workload with the pinned configuration, cold/warm queries with diagnostics, accepted
+  # and rejected counts, peak RSS and proposed regression budgets. Kept as a workflow artifact
+  # rather than committed: shared runners are noisy, so their budgets are evidence about that
+  # hardware, not a gate for laptops. Download two artifacts and run `Vyrtel.Baseline compare`.
+  baseline:
+    name: Record a reproducible baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build server (release)
+        run: cargo build --release --locked -p server
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run the baseline
+        run: |
+          dotnet run --project dotnet/Vyrtel.Baseline -c Release --             --runs 3             --label "${{ github.ref_name }}@${GITHUB_SHA::7}"             --notes "GitHub-hosted ${{ runner.os }} ${{ runner.arch }} runner (shared, noisy)"             --out target/baseline/report.json
+
+      - name: Show the report
+        run: cat target/baseline/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baseline-${{ github.ref_name }}-${{ github.sha }}
+          path: target/baseline/
+          retention-days: 90

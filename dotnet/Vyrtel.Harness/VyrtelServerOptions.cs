@@ -25,4 +25,13 @@ public sealed record VyrtelServerOptions
 
     /// <summary>Keep the temporary data directory after the run (useful when debugging).</summary>
     public bool KeepData { get; init; }
+
+    /// <summary>
+    /// When false, fail if a server is already listening at <see cref="BaseUrl"/> instead of
+    /// reusing it. Runs that pin the server's configuration must launch their own.
+    /// </summary>
+    public bool AllowExisting { get; init; } = true;
+
+    /// <summary>Extra command-line arguments for a launched server, e.g. <c>--config &lt;file&gt;</c>.</summary>
+    public IReadOnlyList<string> ExtraArguments { get; init; } = [];
 }

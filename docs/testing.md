@@ -720,6 +720,30 @@ dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short
 dotnet run --project dotnet/Vyrtel.Profiling -c Release -- --duration 30 --concurrency 4
 ```
 
+### Reproducible baselines
+
+`dotnet/Vyrtel.Baseline` records repeated runs of a seeded workload against a server with a
+pinned configuration and proposes regression budgets from the run-to-run variance (see
+[Reproducible baselines](benchmarks.md#reproducible-baselines)):
+
+```bash
+cargo build --release -p server
+dotnet run --project dotnet/Vyrtel.Baseline -c Release -- --runs 5
+dotnet run --project dotnet/Vyrtel.Baseline -c Release -- compare old.json target/baseline/report.json
+```
+
+Its logic is unit-tested without a server in `dotnet/Vyrtel.Baseline.Tests` (xUnit;
+`dotnet test dotnet/Vyrtel.slnx -c Release`, CI job **.NET**). The tests check arithmetic, report
+contents and determinism; they never assert a machine-specific timing. Measured runs keep their
+raw numbers in the report instead.
+
+| Acceptance criterion (REL-10) | Tests and evidence |
+|---|---|
+| AC1: a seeded workload with a pinned configuration records accepted/rejected counts and latency percentiles | `RequestTallyTests` (each status classified: 2xx accepted, 429/503 backpressure, 413 too large, other rejected, 0 transport error; counts by outcome and status, exact under concurrency, summed across operations); `BaselineReportWriterTests.States_accepted_and_rejected_counts_and_percentiles`; `WorkloadTests.Each_worker_issues_the_same_sequence_every_run`, `The_sequence_is_fixed_across_processes`, `Seeded_events_are_identical_apart_from_timestamps`; `HostAndOptionsTests.Finds_the_checked_in_pinned_configuration`; Rust `config::tests::baseline_config_file_is_valid_and_pins_the_derived_ingest_concurrency` (the pinned file loads, keeps compaction off, and its ingest concurrency equals the derived value); measured: the reference baseline's accepted/rejected table |
+| AC2: selective queries and message scans include cold/warm behaviour and diagnostics | `WorkloadTests.Queries_cover_selective_lookups_and_message_scans`, `Reads_the_servers_diagnostics` (every diagnostics field, including indexes), `Missing_or_malformed_diagnostics_are_null`; `BaselineReportWriterTests.States_cold_and_warm_timings_with_diagnostics`; measured: the reference baseline's cold/warm table |
+| AC3: the report states hardware, duration, peak RSS, binary size and compression method | `BaselineReportWriterTests.States_hardware_duration_peak_rss_binary_size_and_compression`; `HostAndOptionsTests` (`/proc/cpuinfo` on x86 and arm64, this host's CPU, memory and disk, peak RSS source: OS peak vs sampling, never under-reporting) |
+| AC4: budgets are justified by measured variance | `BaselineStatisticsTests` (sample standard deviation and CV; the 90% upper-bound factor k(n) for 3, 5, 10, 31 and 41 runs; `3 × CV × k(n)` rounded up, wider for fewer runs; timing and size floors; `Same_commit_noise_measured_on_the_reference_laptop_is_not_a_regression` replays the false regression two same-commit baselines produced before k(n); fewer than 3 runs, zero mean and a budget over 50% are not gated, with the reason); `BaselineComparerTests` (regression, improvement and within-budget verdicts in both directions; throughput is higher-is-better; peak RSS growth; missing metrics; a 2-run baseline gates nothing; configuration, CPU and seed changes warn, a different number of runs does not); `BaselineReportWriterTests.States_budgets_with_their_justification`, `Json_round_trips_and_samples_go_to_csv`, `Refuses_a_report_with_another_schema`; measured: two independent baselines compared in [Run-to-run evidence](benchmarks.md#run-to-run-evidence) |
+
 ## Load generator
 
 `tools/loadgen` sends realistic structured logs (services, error rate,

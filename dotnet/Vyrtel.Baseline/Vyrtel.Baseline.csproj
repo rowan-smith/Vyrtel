@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Vyrtel.Baseline</RootNamespace>
+    <AssemblyName>Vyrtel.Baseline</AssemblyName>
+    <Description>Reproducible performance baseline: repeated runs of a seeded workload against a server with a pinned configuration, recording accepted/rejected counts, cold and warm query latency with diagnostics, peak RSS and run-to-run variance, and comparing reports against variance-derived regression budgets.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Vyrtel.Harness\Vyrtel.Harness.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="baseline.toml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

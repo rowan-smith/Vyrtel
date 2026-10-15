@@ -1,0 +1,62 @@
+# Pinned server configuration for performance baselines (docs/benchmarks.md#reproducible-baselines).
+#
+# Every key that affects throughput, latency or memory is written out, even when it equals
+# the default, so a change to Vyrtel's defaults cannot silently move a baseline. The baseline
+# tool records this file's SHA-256 and the server's effective configuration in its report and
+# warns when two reports were produced with different files.
+#
+# The harness passes --data-dir, --bind and --log-level itself; those flags take precedence
+# over the values below. Changing anything here starts a new baseline: re-run the repeated
+# baseline before comparing against older reports.
+
+[server]
+bind = "127.0.0.1:18480"
+shutdown_timeout = "8s"
+
+[storage]
+path = "./data"
+max_memory = "512MB"
+# Smaller than the 64MB default so the seeded dataset is sealed into several segments: the
+# cold/warm queries then exercise segment pruning, index loading and block decompression
+# instead of only the in-memory active segment.
+segment_target_size = "4MB"
+segment_max_age = "5m"
+segment_max_events = 2000000
+durability = "normal"
+fsync_interval = "1s"
+# Off so background merges cannot start partway through a measurement and make repeated
+# runs disagree. Production defaults to true; see the limitations in docs/benchmarks.md.
+compaction = false
+zstd_level = 3
+block_events = 1024
+
+[retention]
+logs = "30d"
+traces = "14d"
+metrics = "30d"
+
+[ingest]
+max_request_size = "1MB"
+queue_capacity = 10000
+ack_timeout = "30s"
+# The value Vyrtel derives from max_memory and max_request_size (docs/configuration.md#ingest),
+# written out so a change to the derivation is a visible config change, not a silent one.
+max_concurrent = 3
+
+[query]
+timeout = "30s"
+max_concurrent = 4
+max_scan_bytes = "4GB"
+max_results = 1000
+max_live_streams = 64
+
+[auth]
+enabled = false
+
+[alerts]
+# No rule evaluation in the background during measurements.
+enabled = false
+
+[log]
+level = "warn"
+format = "text"

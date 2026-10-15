@@ -184,6 +184,7 @@ cd web && npm run build && cd .. && cargo build -p server && cd web && npx playw
 cargo bench -p storage -p query        # Criterion benchmarks
 dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short   # ingest + query over HTTP
 dotnet run --project dotnet/Vyrtel.Profiling -c Release -- --duration 30 --concurrency 4   # latency profile
+dotnet run --project dotnet/Vyrtel.Baseline -c Release -- --runs 5   # reproducible baseline + regression budgets
 ```
 
 Details: [docs/testing.md](docs/testing.md).
@@ -212,7 +213,7 @@ shape; see [docs/testing.md](docs/testing.md) for method):
 * [Configuration](docs/configuration.md)
 * [Development](docs/development.md)
 * [Testing](docs/testing.md)
-* [Benchmarks](docs/benchmarks.md) — live results and how they are measured
+* [Benchmarks](docs/benchmarks.md) — live results, how they are measured, and reproducible baselines
 * [Roadmap](docs/roadmap.md)
 * [Brand guide](docs/brand/README.md) — name, voice, logo, Aurora palette, typography, motion
 
