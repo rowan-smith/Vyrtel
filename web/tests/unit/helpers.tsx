@@ -58,8 +58,9 @@ export class FakeEventSource {
   }
 
   emit(type: string, data: unknown) {
-    for (const fn of this.listeners.get(type) ?? [])
+    for (const fn of this.listeners.get(type) ?? []) {
       fn(new MessageEvent(type, { data: typeof data === 'string' ? data : JSON.stringify(data) }));
+    }
   }
 
   close() {
@@ -84,8 +85,9 @@ export function mockFetch(routes: Record<string, Handler>) {
     calls.push({ url, body });
     const path = url.split('?')[0];
     const h = routes[path];
-    if (!h)
+    if (!h) {
       return new Response(JSON.stringify({ error: { code: 'not_found', message: 'not found' } }), { status: 404 });
+    }
     const out = h(body, url);
     if (out instanceof Response) return out;
     return new Response(JSON.stringify(out), { status: 200, headers: { 'content-type': 'application/json' } });

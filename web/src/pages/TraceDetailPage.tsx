@@ -48,7 +48,7 @@ export function spanTree(spans: TelemetryEvent[]): Row[] {
  */
 export function nanosSince(iso: string, baseSecs: number): number {
   const m = /\.(\d+)Z$/.exec(iso);
-  const frac = m ? Number((m[1] + '000000000').slice(0, 9)) : 0;
+  const frac = m ? Number(`${m[1]}000000000`.slice(0, 9)) : 0;
   return (Math.floor(Date.parse(iso) / 1000) - baseSecs) * 1e9 + frac;
 }
 
@@ -70,18 +70,20 @@ export function TraceDetailPage({ traceId }: { traceId: string }) {
   }, [traceId]);
 
   const rows = useMemo(() => (trace ? spanTree(trace.spans) : []), [trace]);
-  if (error)
+  if (error) {
     return (
       <div className="page">
         <ErrorBanner error={error} />
       </div>
     );
-  if (!trace)
+  }
+  if (!trace) {
     return (
       <div className="page">
         <Spinner />
       </div>
     );
+  }
 
   const base = Math.floor(Date.parse(trace.spans[0].timestamp) / 1000);
   const nanos = (iso: string) => nanosSince(iso, base);

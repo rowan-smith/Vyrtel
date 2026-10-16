@@ -171,12 +171,13 @@ export function App() {
       </div>
     );
   }
-  if (!auth)
+  if (!auth) {
     return (
       <div className="center">
         <Spinner />
       </div>
     );
+  }
   if (auth.authEnabled && !auth.user) return <LoginPage onLogin={setAuth} />;
 
   const active = (p: string) => location.path === p || location.path.startsWith(`${p}/`);

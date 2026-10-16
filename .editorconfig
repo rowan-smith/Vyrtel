@@ -1,0 +1,30 @@
+# Editor defaults; the formatters (cargo fmt, Prettier) are the source of truth.
+root = true
+
+[*]
+charset = utf-8
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{rs,cs}]
+indent_size = 4
+
+[*.{rs,ts,tsx,js,mjs}]
+max_line_length = 120
+
+# Trailing double spaces are hard line breaks in Markdown.
+[*.md]
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
+
+# Byte-exact upgrade fixtures (see .gitattributes).
+[tests/fixtures/datadir/**]
+charset = unset
+indent_style = unset
+indent_size = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset

@@ -99,7 +99,7 @@ const KIND_LABELS: Record<PanelKind, string> = {
   saved_query: 'Saved log query',
 };
 
-type Draft = {
+interface Draft {
   title: string;
   kind: PanelKind;
   query: string;
@@ -107,7 +107,7 @@ type Draft = {
   agg: Agg;
   groupBy: string;
   width: number;
-};
+}
 
 function draftOf(p?: Panel): Draft {
   const c = p?.config ?? {};
@@ -356,18 +356,20 @@ export function DashboardPage({ id }: { id: number }) {
     return () => window.clearInterval(t);
   }, []);
 
-  if (error)
+  if (error) {
     return (
       <div className="page">
         <ErrorBanner error={error} />
       </div>
     );
-  if (!dash)
+  }
+  if (!dash) {
     return (
       <div className="page">
         <Spinner />
       </div>
     );
+  }
 
   const save = async (d: Draft) => {
     const body = { title: d.title, kind: d.kind, config: configOf(d), width: d.width };

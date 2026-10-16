@@ -29,8 +29,9 @@ const ROW_STATUS: Record<RecoveryStatus, string> = {
 
 function inQuarantine(r: SignalRecovery) {
   const d = r.quarantineDir;
-  if (d.error || d.files == null || d.bytes == null)
+  if (d.error || d.files == null || d.bytes == null) {
     return `unreadable (${d.error?.reason ?? 'unknown'}: ${d.error?.message ?? 'no details'})`;
+  }
   return `${d.files} ${d.files === 1 ? 'file' : 'files'} (${formatBytes(d.bytes)})`;
 }
 

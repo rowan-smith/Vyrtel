@@ -117,6 +117,19 @@ Don't hand-align code or fight the formatter; if a line reads badly once wrapped
 named local instead. Generated files (`src/lib/wordmark.ts`) are listed in
 `web/.prettierignore` and stay as their generator writes them.
 
+Beyond layout, a few style rules are enforced so they don't come up in review:
+
+* **Rust** (`rustfmt.toml`): field-init shorthand (`Foo { bar }`, not `Foo { bar: bar }`)
+  and `?` instead of `try!`, on top of the 120-column width.
+* **TypeScript** (`web/eslint.config.js`): `import type` for type-only imports, `interface`
+  rather than `type` for object shapes (`type` stays for unions and aliases), `T[]` rather
+  than `Array<T>`, `===` (`== null` is allowed for null-or-undefined), braces on any `if`
+  or loop whose body spans lines, object shorthand and template literals instead of string
+  concatenation. `npx eslint . --fix` fixes all of these.
+* **Every file** (`.editorconfig`): UTF-8, spaces, final newline, no trailing whitespace;
+  4-space indents for Rust and C#, 2 for everything else. Most editors pick this up
+  automatically.
+
 ## Benchmarks and profiling
 
 The .NET projects under `dotnet/` drive a running `--release` server over HTTP and
