@@ -343,31 +343,42 @@ fn batches_queued_as_a_failing_seal_blocks_rotation_fail_fast_too() {
     // they wait behind a seal that keeps failing. They must be answered
     // like a new submission would be, not after their acknowledgement
     // timeout (the seal is retried every 5 s and fails every time).
-    let mut waiting = Vec::new();
+    //
+    // The writer appends everything queued as one group, so when it wakes
+    // late a whole burst can be accepted before it next tries to rotate.
+    // That rotation cannot succeed, so a following burst always reaches
+    // the stalled writer: repeat until one does.
     let mut accepted = vec!["first".to_string()];
-    let mut failed_fast = 0;
-    for i in 0..200 {
-        let msg = format!("burst {i}");
-        let (tx, rx) = mpsc::sync_channel(1);
-        match s.submit(Signal::Logs, vec![log(i, &msg)], Box::new(move |r| drop(tx.send(r)))) {
-            Ok(()) => waiting.push((msg, rx)),
-            Err(StorageError::WriteFailed(_)) => failed_fast += 1,
-            Err(e) => panic!("unexpected error: {e}"),
-        }
-    }
-    let mut failed_queued = 0;
-    for (msg, rx) in waiting {
-        match rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(Ok(_)) => accepted.push(msg),
-            Ok(Err(StorageError::WriteFailed(f))) => {
-                assert_eq!((f.op, f.reason), (FaultOp::SegmentWrite, FaultReason::NoSpace));
-                failed_queued += 1;
+    let (mut failed_fast, mut failed_queued) = (0, 0);
+    let mut i = 0;
+    for _burst in 0..20 {
+        let mut waiting = Vec::new();
+        for _ in 0..200 {
+            let msg = format!("burst {i}");
+            let (tx, rx) = mpsc::sync_channel(1);
+            match s.submit(Signal::Logs, vec![log(i, &msg)], Box::new(move |r| drop(tx.send(r)))) {
+                Ok(()) => waiting.push((msg, rx)),
+                Err(StorageError::WriteFailed(_)) => failed_fast += 1,
+                Err(e) => panic!("unexpected error: {e}"),
             }
-            Ok(Err(e)) => panic!("{msg}: unexpected error: {e}"),
-            Err(_) => panic!("{msg} was queued behind the failing seal and never answered"),
+            i += 1;
+        }
+        for (msg, rx) in waiting {
+            match rx.recv_timeout(Duration::from_secs(2)) {
+                Ok(Ok(_)) => accepted.push(msg),
+                Ok(Err(StorageError::WriteFailed(f))) => {
+                    assert_eq!((f.op, f.reason), (FaultOp::SegmentWrite, FaultReason::NoSpace));
+                    failed_queued += 1;
+                }
+                Ok(Err(e)) => panic!("{msg}: unexpected error: {e}"),
+                Err(_) => panic!("{msg} was queued behind the failing seal and never answered"),
+            }
+        }
+        if failed_fast + failed_queued > 0 {
+            break;
         }
     }
-    assert!(failed_fast + failed_queued > 0, "the burst ran into the stalled writer");
+    assert!(failed_fast + failed_queued > 0, "a burst ran into the stalled writer");
     assert_eq!(s.stats().logs.queue_depth, 0, "failed batches release their queue reservation");
     assert_eq!(messages(&s), accepted);
 
