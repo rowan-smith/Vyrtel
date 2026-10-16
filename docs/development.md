@@ -107,8 +107,15 @@ The OTLP fixtures contain `{{now-…}}` placeholders; see
 ```bash
 cargo fmt --all
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cd web && npm run lint && npm run typecheck
+cd web && npm run format && npm run lint && npm run typecheck
 ```
+
+The web UI is formatted with [Prettier](https://prettier.io) (`web/.prettierrc.json`: 120
+columns to match `rustfmt.toml`, single quotes, trailing commas). `npm run format` rewrites
+files in place; `npm run format:check` is what CI runs and fails on any unformatted file.
+Don't hand-align code or fight the formatter; if a line reads badly once wrapped, extract a
+named local instead. Generated files (`src/lib/wordmark.ts`) are listed in
+`web/.prettierignore` and stay as their generator writes them.
 
 ## Benchmarks and profiling
 
