@@ -229,8 +229,11 @@ export interface SignalStorage {
   recovery: SignalRecovery;
 }
 
-/** `damaged`: this start quarantined files or discarded WAL bytes. `quarantineRetained`: files from an earlier start are still in quarantine. */
-export type RecoveryStatus = 'clean' | 'damaged' | 'quarantineRetained';
+/**
+ * `damaged`: this start quarantined files or discarded WAL bytes. `unknown`: the quarantine directory could not be read.
+ * `quarantineRetained`: files from an earlier start are still in quarantine.
+ */
+export type RecoveryStatus = 'clean' | 'damaged' | 'unknown' | 'quarantineRetained';
 
 export interface RecoverySummary {
   status: RecoveryStatus;
@@ -260,7 +263,8 @@ export interface SignalRecovery {
   walFilesQuarantined: number;
   walTailsQuarantined: number;
   quarantinedBytes: number;
-  quarantineDir: { files: number; bytes: number };
+  /** `files` and `bytes` are null when the directory could not be read; `error` says why. */
+  quarantineDir: { files: number | null; bytes: number | null; error: { reason: string; message: string } | null };
   quarantined: QuarantinedItem[];
 }
 

@@ -129,7 +129,10 @@ the admin password, the API key or the data directory, while `/health` and
 `/ready` are unchanged; the next start is `quarantineRetained`; and after the
 quarantine directory is deleted it is `clean` again. A segment left in
 quarantine by an interrupted recovery is reported as `quarantineRetained`
-for the right signal. `web/tests/unit/recovery-health.test.tsx` checks the
+for the right signal. A quarantine directory that cannot be listed (a file
+in its place everywhere; mode `000` on Unix, skipped as root) is `unknown`
+with the reason, never `clean`, and is reported again once readable.
+`web/tests/unit/recovery-health.test.tsx` checks the
 Settings → Storage warning, and `web/tests/e2e/storage.spec.ts` that a clean
 start shows none.
 

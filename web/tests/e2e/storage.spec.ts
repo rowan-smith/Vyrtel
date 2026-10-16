@@ -33,7 +33,7 @@ test('a clean start reports clean recovery and shows no quarantine warning', asy
       status: 'clean',
       walBytesDiscarded: 0,
       quarantined: [],
-      quarantineDir: { files: 0, bytes: 0 },
+      quarantineDir: { files: 0, bytes: 0, error: null },
     });
   }
   expect((await (await request.get('/api/v1/system/info')).json()).recovery).toEqual({ status: 'clean', signals: [] });

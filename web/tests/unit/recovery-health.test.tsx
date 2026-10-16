@@ -19,7 +19,7 @@ function recovery(overrides: Partial<SignalRecovery> = {}): SignalRecovery {
     walFilesQuarantined: 0,
     walTailsQuarantined: 0,
     quarantinedBytes: 0,
-    quarantineDir: { files: 0, bytes: 0 },
+    quarantineDir: { files: 0, bytes: 0, error: null },
     quarantined: [],
     ...overrides,
   };
@@ -29,7 +29,8 @@ function storage(signals: Partial<Record<'logs' | 'traces' | 'metrics', SignalRe
   const sig = (r: SignalRecovery) => ({ recovery: r }) as StorageStats['signals']['logs'];
   const all = { logs: recovery(), traces: recovery(), metrics: recovery(), ...signals };
   const affected = (['logs', 'traces', 'metrics'] as const).filter((k) => all[k].status !== 'clean');
-  const status = affected.some((k) => all[k].status === 'damaged') ? 'damaged' : affected.length ? 'quarantineRetained' : 'clean';
+  const worst = (['damaged', 'unknown', 'quarantineRetained'] as const).find((st) => affected.some((k) => all[k].status === st));
+  const status = worst ?? 'clean';
   return {
     recovery: { status, signals: affected },
     signals: { logs: sig(all.logs), traces: sig(all.traces), metrics: sig(all.metrics) },
@@ -41,7 +42,7 @@ const tornTail = recovery({
   walBytesDiscarded: 61,
   walTailsQuarantined: 1,
   quarantinedBytes: 61,
-  quarantineDir: { files: 1, bytes: 61 },
+  quarantineDir: { files: 1, bytes: 61, error: null },
   quarantined: [
     {
       signal: 'logs',
@@ -80,7 +81,7 @@ describe('RecoveryHealth', () => {
   });
 
   it('warns about files left in quarantine by an earlier or interrupted recovery', () => {
-    const retained = recovery({ status: 'quarantineRetained', quarantineDir: { files: 2, bytes: 4096 } });
+    const retained = recovery({ status: 'quarantineRetained', quarantineDir: { files: 2, bytes: 4096, error: null } });
     render(<RecoveryHealth storage={storage({ traces: retained })} />);
     const alert = screen.getByRole('alert');
     expect(alert).toHaveTextContent('Quarantined files from an earlier start');
@@ -88,5 +89,19 @@ describe('RecoveryHealth', () => {
     const rows = within(alert).getAllByRole('row');
     expect(rows[1]).toHaveTextContent('quarantine retained');
     expect(rows[1]).toHaveTextContent('2 files');
+  });
+
+  it('never treats an unreadable quarantine directory as clean', () => {
+    const unreadable = recovery({
+      status: 'unknown',
+      quarantineDir: { files: null, bytes: null, error: { reason: 'permissionDenied', message: 'Permission denied (os error 13)' } },
+    });
+    render(<RecoveryHealth storage={storage({ logs: unreadable })} />);
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('The quarantine directory could not be checked');
+    expect(alert).toHaveTextContent('data for logs may be incomplete');
+    const rows = within(alert).getAllByRole('row');
+    expect(rows[1]).toHaveTextContent('quarantine unreadable');
+    expect(rows[1]).toHaveTextContent('unreadable (permissionDenied: Permission denied (os error 13))');
   });
 });

@@ -525,7 +525,7 @@ quarantine directory now.
   "walBytesDiscarded": 61,
   "segmentsQuarantined": 0, "walFilesQuarantined": 0, "walTailsQuarantined": 1,
   "quarantinedBytes": 61,
-  "quarantineDir": { "files": 1, "bytes": 61 },
+  "quarantineDir": { "files": 1, "bytes": 61, "error": null },
   "quarantined": [
     { "signal": "logs", "kind": "walTail", "source": "000000000014.wal",
       "file": "quarantine/logs/000000000014.wal.tail-48213.1791622413000",
@@ -540,15 +540,27 @@ directory and `reason` never contains host paths. See
 was lost. An empty `quarantined` list means this start found no damage.
 
 `status` is `damaged` when this start quarantined something or discarded
-WAL bytes, `quarantineRetained` when it did not but `quarantine/<signal>/`
-still holds files (from an earlier start, or a recovery that was
-interrupted after setting a file aside), and otherwise `clean`. Replaying
-the WAL is normal and leaves it `clean`. The `*Quarantined` counts and
-`quarantinedBytes` cover this start; `quarantineDir` counts the files on
-disk now, whichever start put them there.
+WAL bytes. Otherwise it is `unknown` when `quarantine/<signal>/` could not
+be read, `quarantineRetained` when it still holds files (from an earlier
+start, or a recovery that was interrupted after setting a file aside), and
+`clean` when it is empty or missing. Replaying the WAL is normal and leaves
+it `clean`. The `*Quarantined` counts and `quarantinedBytes` cover this
+start; `quarantineDir` counts the files on disk now, whichever start put
+them there. When the directory or anything in it cannot be listed or
+examined, `files` and `bytes` are `null` and `error` says why (`message` is
+the OS error text, without a path):
+
+```json
+"quarantineDir": { "files": null, "bytes": null,
+  "error": { "reason": "permissionDenied", "message": "Permission denied (os error 13)" } }
+```
+
+`quarantineBytes` at the top level is the sum of the readable
+`quarantine/<signal>/` directories.
 
 The response, and `/api/v1/system/info`, also carry a summary: the worst
-status of the three signals and the signals that are not `clean`.
+status of the three signals (`damaged`, `unknown`, `quarantineRetained`,
+`clean`, in that order) and the signals that are not `clean`.
 
 ```json
 "recovery": { "status": "damaged", "signals": ["logs"] }

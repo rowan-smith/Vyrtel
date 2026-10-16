@@ -61,6 +61,8 @@ pub struct StorageStats {
     pub metrics: StreamStats,
     pub cache: CacheStats,
     pub tmp_bytes: u64,
+    /// Total size of every readable `quarantine/<signal>/`; a signal whose
+    /// directory cannot be read is left out (its scan says why).
     pub quarantine_bytes: u64,
 }
 
@@ -161,13 +163,22 @@ impl Storage {
     }
 
     pub fn stats(&self) -> StorageStats {
+        let (logs, traces, metrics) = (
+            self.stream(Signal::Logs).stats(),
+            self.stream(Signal::Traces).stats(),
+            self.stream(Signal::Metrics).stats(),
+        );
+        // Each stream has just scanned its own quarantine directory; reuse
+        // that rather than walking the files a second time.
+        let quarantine_bytes =
+            [&logs, &traces, &metrics].iter().filter_map(|s| s.quarantine.usage()).map(|u| u.bytes).sum();
         StorageStats {
-            logs: self.stream(Signal::Logs).stats(),
-            traces: self.stream(Signal::Traces).stats(),
-            metrics: self.stream(Signal::Metrics).stats(),
+            logs,
+            traces,
+            metrics,
             cache: self.cache.stats(),
             tmp_bytes: fsutil::dir_size(&self.config.data_dir.join("tmp")),
-            quarantine_bytes: fsutil::dir_size(&self.config.data_dir.join("quarantine")),
+            quarantine_bytes,
         }
     }
 

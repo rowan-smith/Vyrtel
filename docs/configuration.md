@@ -633,8 +633,9 @@ quarantine. Signed-in users see it in three places:
 * **Settings → Storage** shows a warning above the storage totals when any
   signal is not `clean`: which signals may be incomplete, how many bytes of
   WAL were discarded, how many items were quarantined this start and how
-  many files are in `quarantine/<signal>/` now, with each item's kind,
-  reason and quarantine file name. After a clean start nothing is shown.
+  many files are in `quarantine/<signal>/` now (or why it could not be
+  read), with each item's kind, reason and quarantine file name. After a
+  clean start nothing is shown.
 * `GET /api/v1/system/storage` → top-level `recovery` (overall status and
   the affected signals) and `signals.<signal>.recovery` (counts, discarded
   and quarantined bytes, the quarantine directory and each item). See
@@ -645,10 +646,13 @@ quarantine. Signed-in users see it in three places:
 |----------------------|-----------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------|
 | `clean`              | Nothing was discarded or quarantined, and `quarantine/<signal>/` is empty. Replaying the WAL is normal and does not change this. | Nothing.                                                      |
 | `damaged`            | This start quarantined a segment, a WAL file or a WAL tail, or discarded WAL bytes.                       | Read the reasons; see [Quarantine](storage-format.md#quarantine) for what each kind lost. |
+| `unknown`            | This start found nothing new, but `quarantine/<signal>/` (or something in it) could not be read, so whether earlier evidence is there is not known. `quarantineDir.error` gives the reason. | Make the directory readable by the user Vyrtel runs as; the status updates on the next request, no restart needed. |
 | `quarantineRetained` | This start found nothing new, but `quarantine/<signal>/` still holds files from an earlier start, including one whose recovery was itself interrupted after setting a file aside. | Copy the files off if you need them, then delete them.                     |
 
 The overall status is the worst of the three signals (`damaged`, then
-`quarantineRetained`, then `clean`).
+`unknown`, then `quarantineRetained`, then `clean`). Not being able to look
+is never reported as `clean`. A missing `quarantine/<signal>/` is `clean`:
+it is created only when recovery first sets something aside.
 
 **Limitations.** Vyrtel does not repair quarantined data or guess what it
 held. Events in a quarantined segment come back only if the WAL it was
@@ -698,6 +702,11 @@ again, and it is `clean`. With authentication enabled, sign in first as in
   `quarantineRetained`.
 * Files left in quarantine by an earlier or interrupted recovery are now
   reported. Before, only items quarantined by the current start were listed.
+* A quarantine directory that cannot be read is reported as `unknown`, with
+  the reason, never as `clean`.
+* `quarantineBytes` is now the sum of the `quarantine/<signal>/`
+  directories (one scan per request instead of two); files placed directly
+  in `quarantine/` by hand are no longer counted.
 
 ## Backup and restore
 

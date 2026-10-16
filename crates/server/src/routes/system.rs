@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
-use storage::{QuarantineKind, StorageFault, StorageStats, StreamStats};
+use storage::{QuarantineKind, QuarantineScan, StorageFault, StorageStats, StreamStats};
 use telemetry::Signal;
 
 use crate::error::ApiResult;
@@ -94,6 +94,10 @@ fn stream_json(s: &StreamStats) -> Value {
 enum RecoveryStatus {
     /// This start quarantined files or dropped WAL bytes for the signal.
     Damaged,
+    /// This start found nothing, but `quarantine/<signal>/` could not be
+    /// read, so whether earlier evidence is there is not known. Never
+    /// reported as `clean`: not being able to look is not proof.
+    Unknown,
     /// This start found nothing, but `quarantine/<signal>/` still holds
     /// files from an earlier start (or a recovery that was interrupted
     /// after moving them there).
@@ -107,16 +111,19 @@ impl RecoveryStatus {
     fn of(s: &StreamStats) -> Self {
         if s.recovery.found_damage() {
             RecoveryStatus::Damaged
-        } else if s.quarantine.files > 0 {
-            RecoveryStatus::QuarantineRetained
         } else {
-            RecoveryStatus::Clean
+            match s.quarantine.usage() {
+                None => RecoveryStatus::Unknown,
+                Some(u) if u.files > 0 => RecoveryStatus::QuarantineRetained,
+                Some(_) => RecoveryStatus::Clean,
+            }
         }
     }
 
     fn as_str(self) -> &'static str {
         match self {
             RecoveryStatus::Damaged => "damaged",
+            RecoveryStatus::Unknown => "unknown",
             RecoveryStatus::QuarantineRetained => "quarantineRetained",
             RecoveryStatus::Clean => "clean",
         }
@@ -155,7 +162,7 @@ fn recovery_json(s: &StreamStats) -> Value {
         "walFilesQuarantined": r.quarantined_count(QuarantineKind::Wal),
         "walTailsQuarantined": r.quarantined_count(QuarantineKind::WalTail),
         "quarantinedBytes": r.quarantined_bytes(),
-        "quarantineDir": { "files": s.quarantine.files, "bytes": s.quarantine.bytes },
+        "quarantineDir": quarantine_dir_json(&s.quarantine),
         "quarantined": r.quarantined.iter().map(|q| json!({
             "signal": q.signal.as_str(),
             "kind": q.kind.as_str(),
@@ -165,6 +172,19 @@ fn recovery_json(s: &StreamStats) -> Value {
             "reason": q.reason,
         })).collect::<Vec<_>>(),
     })
+}
+
+/// `files` and `bytes` in `quarantine/<signal>/`, or `null` for both with
+/// the reason the directory could not be read. The OS message has no path.
+fn quarantine_dir_json(q: &QuarantineScan) -> Value {
+    match q {
+        QuarantineScan::Read(u) => json!({ "files": u.files, "bytes": u.bytes, "error": null }),
+        QuarantineScan::Unreadable { reason, message } => json!({
+            "files": null,
+            "bytes": null,
+            "error": { "reason": reason.as_str(), "message": message },
+        }),
+    }
 }
 
 fn ratio(raw: u64, stored: u64) -> Option<f64> {
@@ -321,11 +341,19 @@ pub async fn config(State(state): State<SharedState>) -> Json<Value> {
 #[cfg(test)]
 mod tests {
     use storage::fsutil::DirUsage;
-    use storage::{QuarantinedFile, RecoveryReport};
+    use storage::{FaultReason, QuarantinedFile, RecoveryReport};
 
     use super::*;
 
     fn stream(recovery: RecoveryReport, quarantine: DirUsage) -> StreamStats {
+        StreamStats { recovery, quarantine: QuarantineScan::Read(quarantine), ..Default::default() }
+    }
+
+    fn unreadable(recovery: RecoveryReport) -> StreamStats {
+        let quarantine = QuarantineScan::Unreadable {
+            reason: FaultReason::PermissionDenied,
+            message: "Permission denied (os error 13)".into(),
+        };
         StreamStats { recovery, quarantine, ..Default::default() }
     }
 
@@ -360,7 +388,7 @@ mod tests {
         assert_eq!(v["status"], "clean");
         assert_eq!(v["walBytesDiscarded"], 0);
         assert_eq!(v["quarantined"], json!([]));
-        assert_eq!(v["quarantineDir"], json!({ "files": 0, "bytes": 0 }));
+        assert_eq!(v["quarantineDir"], json!({ "files": 0, "bytes": 0, "error": null }));
     }
 
     #[test]
@@ -384,7 +412,23 @@ mod tests {
         let v = recovery_json(&s);
         assert_eq!(v["status"], "quarantineRetained");
         assert_eq!(v["quarantined"], json!([]));
-        assert_eq!(v["quarantineDir"], json!({ "files": 2, "bytes": 4096 }));
+        assert_eq!(v["quarantineDir"], json!({ "files": 2, "bytes": 4096, "error": null }));
+    }
+
+    #[test]
+    fn an_unreadable_quarantine_directory_is_unknown_not_clean() {
+        let v = recovery_json(&unreadable(RecoveryReport::default()));
+        assert_eq!(v["status"], "unknown");
+        assert_eq!(
+            v["quarantineDir"],
+            json!({
+                "files": null,
+                "bytes": null,
+                "error": { "reason": "permissionDenied", "message": "Permission denied (os error 13)" },
+            })
+        );
+        // Damage found this start is still the more specific answer.
+        assert_eq!(recovery_json(&unreadable(torn_tail()))["status"], "damaged");
     }
 
     #[test]
@@ -393,7 +437,9 @@ mod tests {
         assert_eq!(recovery_summary(&stats), json!({ "status": "clean", "signals": [] }));
         stats.metrics = stream(RecoveryReport::default(), DirUsage { files: 1, bytes: 10 });
         assert_eq!(recovery_summary(&stats), json!({ "status": "quarantineRetained", "signals": ["metrics"] }));
+        stats.traces = unreadable(RecoveryReport::default());
+        assert_eq!(recovery_summary(&stats), json!({ "status": "unknown", "signals": ["traces", "metrics"] }));
         stats.logs = stream(torn_tail(), DirUsage { files: 1, bytes: 61 });
-        assert_eq!(recovery_summary(&stats), json!({ "status": "damaged", "signals": ["logs", "metrics"] }));
+        assert_eq!(recovery_summary(&stats), json!({ "status": "damaged", "signals": ["logs", "traces", "metrics"] }));
     }
 }

@@ -46,7 +46,7 @@ async fn clean_restart_does_not_suggest_damage() {
         assert_eq!(r["status"], "clean", "{signal}: {r}");
         assert_eq!(r["walBytesDiscarded"], 0, "{signal}");
         assert_eq!(r["quarantinedBytes"], 0, "{signal}");
-        assert_eq!(r["quarantineDir"], json!({ "files": 0, "bytes": 0 }), "{signal}");
+        assert_eq!(r["quarantineDir"], json!({ "files": 0, "bytes": 0, "error": null }), "{signal}");
         assert_eq!(r["quarantined"], json!([]), "{signal}");
     }
     // The WAL was replayed, which is normal and not reported as damage.
@@ -91,7 +91,7 @@ async fn torn_wal_tail_is_reported_until_the_quarantine_is_cleared() {
     let discarded = logs["walBytesDiscarded"].as_u64().unwrap();
     assert!(discarded > 0, "{logs}");
     assert_eq!(logs["quarantinedBytes"], discarded);
-    assert_eq!(logs["quarantineDir"], json!({ "files": 1, "bytes": discarded }));
+    assert_eq!(logs["quarantineDir"], json!({ "files": 1, "bytes": discarded, "error": null }));
     assert_eq!(logs["quarantined"][0]["source"], wal);
     assert!(logs["quarantined"][0]["reason"].as_str().unwrap().starts_with("incomplete record"));
     for signal in ["traces", "metrics"] {
@@ -125,7 +125,7 @@ async fn torn_wal_tail_is_reported_until_the_quarantine_is_cleared() {
     assert_eq!(logs["status"], "quarantineRetained", "{logs}");
     assert_eq!(logs["walBytesDiscarded"], 0);
     assert_eq!(logs["quarantined"], json!([]));
-    assert_eq!(logs["quarantineDir"], json!({ "files": 1, "bytes": discarded }));
+    assert_eq!(logs["quarantineDir"], json!({ "files": 1, "bytes": discarded, "error": null }));
     assert_eq!(storage["recovery"], json!({ "status": "quarantineRetained", "signals": ["logs"] }));
     assert_eq!(public_probes(&s).await, clean_probes);
 
@@ -169,7 +169,7 @@ async fn evidence_from_an_interrupted_recovery_is_reported() {
     let storage = s.get_ok("/api/v1/system/storage").await;
     let traces = &storage["signals"]["traces"]["recovery"];
     assert_eq!(traces["status"], "quarantineRetained", "{traces}");
-    assert_eq!(traces["quarantineDir"], json!({ "files": 1, "bytes": bytes }));
+    assert_eq!(traces["quarantineDir"], json!({ "files": 1, "bytes": bytes, "error": null }));
     assert_eq!(traces["quarantined"], json!([]), "this start moved nothing");
     assert_eq!(storage["recovery"], json!({ "status": "quarantineRetained", "signals": ["traces"] }));
     assert_eq!(signal_status(&storage, "logs"), "clean");
@@ -186,4 +186,85 @@ async fn messages(admin: &Admin) -> Vec<String> {
         v["events"].as_array().unwrap().iter().map(|e| e["message"].as_str().unwrap().to_string()).collect();
     m.sort();
     m
+}
+
+/// A data directory whose previous start quarantined a torn logs WAL tail,
+/// stopped cleanly afterwards. Returns it with the quarantine directory.
+async fn after_prior_quarantine() -> (server::config::Config, Option<tempfile::TempDir>, std::path::PathBuf) {
+    let s = TestServer::start().await;
+    for message in ["committed", "torn"] {
+        s.ingest(json!({ "message": message })).await;
+    }
+    let (config, dir) = s.stop().await;
+    as_after_crash(&config.storage.path);
+    truncate_wal(&config.storage.path, "logs", 5);
+    let s = TestServer::launch(config, dir).await;
+    assert_eq!(signal_status(&s.get_ok("/api/v1/system/storage").await, "logs"), "damaged");
+    let (config, dir) = s.stop().await;
+    let quarantine = config.storage.path.join("quarantine").join("logs");
+    assert_eq!(std::fs::read_dir(&quarantine).unwrap().count(), 1);
+    (config, dir, quarantine)
+}
+
+/// Not being able to list the quarantine is never reported as `clean`.
+/// Something in the way of the directory is the portable way to make it
+/// unlistable; Unix permissions are covered below.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_quarantine_that_cannot_be_listed_is_unknown_not_clean() {
+    let (config, dir, quarantine) = after_prior_quarantine().await;
+    let evidence = std::fs::read_dir(&quarantine).unwrap().flatten().next().unwrap().path();
+    let kept = quarantine.with_file_name("logs-kept");
+    std::fs::rename(&quarantine, &kept).unwrap();
+    std::fs::write(&quarantine, b"not a directory").unwrap();
+
+    let s = TestServer::launch(config, dir).await;
+    let storage = s.get_ok("/api/v1/system/storage").await;
+    let logs = &storage["signals"]["logs"]["recovery"];
+    assert_eq!(logs["status"], "unknown", "{logs}");
+    assert_eq!(logs["quarantineDir"]["files"], Value::Null);
+    assert_eq!(logs["quarantineDir"]["bytes"], Value::Null);
+    assert!(logs["quarantineDir"]["error"]["reason"].is_string(), "{logs}");
+    let message = logs["quarantineDir"]["error"]["message"].as_str().unwrap();
+    assert!(!message.contains(&*s.data_dir().to_string_lossy()), "no host path: {message}");
+    assert_eq!(storage["recovery"], json!({ "status": "unknown", "signals": ["logs"] }));
+    assert_eq!(s.get_ok("/api/v1/system/info").await["recovery"], json!({ "status": "unknown", "signals": ["logs"] }));
+    assert_eq!(signal_status(&storage, "traces"), "clean");
+
+    // Once it can be read again the evidence is reported, without a restart.
+    std::fs::remove_file(&quarantine).unwrap();
+    std::fs::rename(&kept, &quarantine).unwrap();
+    let storage = s.get_ok("/api/v1/system/storage").await;
+    let bytes = std::fs::metadata(&evidence).unwrap().len();
+    assert_eq!(signal_status(&storage, "logs"), "quarantineRetained");
+    assert_eq!(
+        storage["signals"]["logs"]["recovery"]["quarantineDir"],
+        json!({ "files": 1, "bytes": bytes, "error": null })
+    );
+    assert_eq!(storage["quarantineBytes"], bytes, "the total reuses the per-signal scans");
+    s.stop().await;
+}
+
+/// The review's scenario: an earlier recovery quarantined a WAL tail, then
+/// the directory's permissions changed so Vyrtel cannot list it.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_quarantine_without_permission_is_unknown_not_clean() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let (config, dir, quarantine) = after_prior_quarantine().await;
+    if std::fs::metadata(&quarantine).unwrap().uid() == 0 {
+        eprintln!("skipped: root ignores directory permissions");
+        return;
+    }
+    std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let s = TestServer::launch(config, dir).await;
+    let storage = s.get_ok("/api/v1/system/storage").await;
+    std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let logs = &storage["signals"]["logs"]["recovery"];
+    assert_eq!(logs["status"], "unknown", "{logs}");
+    assert_eq!(logs["quarantineDir"]["error"]["reason"], "permissionDenied", "{logs}");
+    assert_eq!(storage["recovery"], json!({ "status": "unknown", "signals": ["logs"] }));
+    assert_eq!(signal_status(&s.get_ok("/api/v1/system/storage").await, "logs"), "quarantineRetained");
+    s.stop().await;
 }
