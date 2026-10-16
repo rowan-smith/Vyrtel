@@ -1,5 +1,6 @@
 //! Aggregations: counts, histograms, facets (filter panel) and metrics.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
@@ -7,6 +8,8 @@ use serde::Serialize;
 use storage::segment::{Column, ColumnSet};
 use telemetry::*;
 
+use crate::budget::{Budget, Checkpoint};
+use crate::error::QueryError;
 use crate::eval::Row;
 use crate::exec::{Sink, TimeRange};
 
@@ -48,6 +51,14 @@ const NICE_STEPS_MS: &[i64] = &[
     172_800_000,
     604_800_000,
 ];
+
+/// Buckets of `step_ms` needed to cover a bounded `range`, aligned as
+/// [`HistogramSink`] and [`MetricSink`] align them.
+pub fn bucket_count(range: &TimeRange, step_ms: i64) -> u64 {
+    let step = step_ms.max(1) as i128 * NANOS_PER_MILLI as i128;
+    let start = (range.from.0 as i128).div_euclid(step) * step;
+    ((range.to.0 as i128 - start + step - 1) / step).max(1) as u64
+}
 
 /// Pick a human-friendly bucket width giving at most `max_buckets`.
 pub fn choose_step_ms(range: &TimeRange, max_buckets: usize) -> i64 {
@@ -175,10 +186,25 @@ struct FieldCounter {
 
 /// Facets over a sample of events: well-known fields first, then the most
 /// common structured properties.
-pub fn facets(events: &[TelemetryEvent], top_values: usize) -> Facets {
+///
+/// Counting runs within the request's `budget`: it is checked every
+/// [`crate::budget::ROWS_PER_CHECK`] values (property leaves included) and
+/// before and after the final ordering, so a cancelled or timed-out request
+/// stops here too and returns only the error.
+pub fn facets(events: &[TelemetryEvent], top_values: usize, budget: &Budget) -> Result<Facets, QueryError> {
     let mut fields: Vec<(String, FieldCounter)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
+    // The leaf walk cannot return early, so a failed check is parked here
+    // and every later value is skipped.
+    let failed: Cell<Option<QueryError>> = Cell::new(None);
     let mut add = |field: &str, v: Value, seen: &mut Vec<usize>| {
+        if let Err(e) = budget.tick(Checkpoint::Aggregate) {
+            failed.set(Some(e));
+        }
+        if let Some(e) = failed.take() {
+            failed.set(Some(e));
+            return;
+        }
         let i = match index.get(field) {
             Some(i) => *i,
             None => {
@@ -232,7 +258,11 @@ pub fn facets(events: &[TelemetryEvent], top_values: usize) -> Facets {
                 add(p, v.clone(), &mut seen);
             }
         });
+        if let Some(e) = failed.take() {
+            return Err(e);
+        }
     }
+    budget.check(Checkpoint::Aggregate)?;
     let well_known = ["level", "service", "environment", "name", "status", "exception.type"];
     let mut out: Vec<Facet> = fields
         .into_iter()
@@ -253,7 +283,8 @@ pub fn facets(events: &[TelemetryEvent], top_values: usize) -> Facets {
         wa.cmp(&wb).then(b.count.cmp(&a.count)).then(a.field.cmp(&b.field))
     });
     out.truncate(MAX_FACET_FIELDS);
-    Facets { sampled: events.len() as u64, fields: out }
+    budget.check(Checkpoint::Aggregate)?;
+    Ok(Facets { sampled: events.len() as u64, fields: out })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, Serialize, Default)]

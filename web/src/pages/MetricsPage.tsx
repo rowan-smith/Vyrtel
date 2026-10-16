@@ -31,6 +31,8 @@ function NoMetrics() {
 function MetricsView() {
   const { location, navigate } = useRouter();
   const [names, setNames] = useState<string[] | null>(null);
+  // The server lists at most query.max_metric_names names.
+  const [namesTruncated, setNamesTruncated] = useState(false);
   const name = location.search.get('name') ?? '';
   const agg = (location.search.get('agg') as Agg) ?? 'avg';
   const range = location.search.get('range') ?? '1h';
@@ -46,7 +48,10 @@ function MetricsView() {
   useEffect(() => {
     api
       .metricNames()
-      .then((r) => setNames(r.metrics.map((m) => m.name)))
+      .then((r) => {
+        setNames(r.metrics.map((m) => m.name));
+        setNamesTruncated(r.truncated);
+      })
       .catch((e) => {
         setError(e);
         setNames([]);
@@ -98,6 +103,7 @@ function MetricsView() {
             {(names ?? []).map((n) => (
               <option key={n}>{n}</option>
             ))}
+            {namesTruncated && <option disabled>… more names not listed</option>}
           </select>
         </label>
         <label>

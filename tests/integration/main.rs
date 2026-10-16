@@ -12,6 +12,7 @@ mod crash;
 mod data_dir_access;
 mod ingest_limits;
 mod live;
+mod query_budgets;
 mod recovery_health;
 mod shutdown;
 mod signals;

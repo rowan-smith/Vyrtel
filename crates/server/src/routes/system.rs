@@ -258,6 +258,7 @@ pub async fn info(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
     let queue = |s: &StreamStats| json!({ "depth": s.queue_depth, "capacity": s.queue_capacity });
     let active = |s: &StreamStats| json!({ "events": s.active_events + s.frozen_events, "bytes": s.active_bytes });
     let b = &state.budgets;
+    let q = &state.query_outcomes;
     let storage_bytes: u64 = [&stats.logs, &stats.traces, &stats.metrics]
         .iter()
         .map(|s| s.segment_data_bytes + s.segment_index_bytes + s.wal_bytes)
@@ -287,6 +288,15 @@ pub async fn info(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
             "rejected": state.ingest_rejected.load(Ordering::Relaxed),
             "discarding": crate::routes::ingest::MAX_DISCARD_PENDING
                 .saturating_sub(state.discard_pending.available_permits()),
+        },
+        "query": {
+            "maxConcurrent": state.config.query.max_concurrent,
+            "inFlight": state.config.query.max_concurrent.saturating_sub(state.query_permits.available_permits()),
+            "rejected": q.rejected.load(Ordering::Relaxed),
+            "cancelled": q.cancelled.load(Ordering::Relaxed),
+            "timedOut": q.timed_out.load(Ordering::Relaxed),
+            "tooExpensive": q.too_expensive.load(Ordering::Relaxed),
+            "resultLimited": q.result_limited.load(Ordering::Relaxed),
         },
         "activeSegment": { "logs": active(&stats.logs), "traces": active(&stats.traces), "metrics": active(&stats.metrics) },
         "memory": {

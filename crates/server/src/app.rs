@@ -153,6 +153,8 @@ impl App {
                 timeout: config.query.timeout,
                 max_scan_bytes: config.query.max_scan_bytes.0,
                 max_results: config.query.max_results,
+                max_trace_spans: config.query.max_trace_spans,
+                max_metric_names: config.query.max_metric_names,
             },
         ));
 
@@ -181,6 +183,7 @@ impl App {
             live: live_tx,
             live_permits: Arc::new(Semaphore::new(config.query.max_live_streams.max(1))),
             query_permits: Arc::new(Semaphore::new(config.query.max_concurrent)),
+            query_outcomes: Default::default(),
             ingest_permits: Arc::new(Semaphore::new(ingest_slots)),
             ingest_max_concurrent: ingest_slots,
             ingest_admission: admission,

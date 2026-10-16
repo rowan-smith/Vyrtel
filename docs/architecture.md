@@ -152,8 +152,15 @@ flowchart LR
 * Segments are visited newest-first; once the page is full, any segment or
   block whose newest event is older than the oldest kept result is skipped
   (`segmentsNotNeeded`).
-* Queries run on the blocking thread pool under a concurrency limit, with a
-  timeout and a scan-bytes limit.
+* Queries run on the blocking thread pool under a concurrency limit
+  (`query.max_concurrent` slots, `query.queue_timeout` to get one). Each
+  request gets one `query::Budget` (time, scan bytes, a cancellation
+  token), shared by all of its scans and checked at the start, per segment,
+  around each block read and every 256 rows, and during the in-memory work
+  after a scan (facet counting, metric-name discovery). Dropping the HTTP handler
+  (client disconnect) cancels the token; the query stops at its next
+  checkpoint and only then frees its slot. A failed query returns only its
+  error ([details](query-language.md#execution-limits-and-cancellation)).
 * Every query records per-field statistics (fields used, index kind, bytes
   read, segments skipped). They are flushed to SQLite every minute — the
   input for adaptive indexing in a later version.

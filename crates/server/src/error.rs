@@ -99,8 +99,23 @@ impl From<query::QueryError> for ApiError {
             Q::Parse(p) => ApiError::new(StatusCode::BAD_REQUEST, "invalid_query", p.message.clone())
                 .with_details(json!({ "position": p.position })),
             Q::InvalidRequest(m) => ApiError::bad_request(m),
-            Q::Timeout(_) => ApiError::new(StatusCode::GATEWAY_TIMEOUT, "query_timeout", e.to_string()),
-            Q::TooExpensive(_) => ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "query_too_expensive", e.to_string()),
+            Q::Timeout(ms) => ApiError::new(StatusCode::GATEWAY_TIMEOUT, "query_timeout", e.to_string())
+                .with_details(json!({ "limitMs": ms })),
+            Q::TooExpensive(limit) => {
+                ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "query_too_expensive", e.to_string())
+                    .with_details(json!({ "limitBytes": limit }))
+            }
+            Q::ResultLimit { limit, .. } => {
+                ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "query_result_limit", e.to_string())
+                    .with_details(json!({ "limit": limit }))
+            }
+            // Never sent: the client is gone and its handler was dropped.
+            // 499 is the de facto "client closed request" status.
+            Q::Cancelled => ApiError::new(
+                StatusCode::from_u16(499).expect("valid status"),
+                "query_cancelled",
+                "the query was cancelled because the client disconnected",
+            ),
             Q::Storage(s) => s.into(),
         }
     }

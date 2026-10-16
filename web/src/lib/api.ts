@@ -5,8 +5,10 @@ import type {
   ApiKey,
   AuthState,
   Dashboard,
+  Diagnostics,
   FacetsResponse,
   HistogramResponse,
+  Json,
   MetricResponse,
   Panel,
   PanelKind,
@@ -16,8 +18,6 @@ import type {
   SystemInfo,
   TraceResponse,
   TraceSummary,
-  Diagnostics,
-  Json,
 } from './types';
 
 /** Error returned by the API: `{"error": {"code", "message", ...}}`. */
@@ -102,7 +102,7 @@ export const api = {
     post<{ traces: TraceSummary[]; diagnostics: Diagnostics }>('/api/v1/query/traces', q, signal),
   trace: (id: string) => get<TraceResponse>(`/api/v1/traces/${encodeURIComponent(id)}`),
 
-  metricNames: () => get<{ metrics: { name: string }[] }>('/api/v1/metrics'),
+  metricNames: () => get<{ metrics: { name: string }[]; truncated: boolean }>('/api/v1/metrics'),
   metricQuery: (
     q: { name: string; agg: Agg; query?: string; groupBy?: string; stepMs?: number } & TimeWindow,
     signal?: AbortSignal,

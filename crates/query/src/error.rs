@@ -24,6 +24,12 @@ pub enum QueryError {
     Timeout(u64),
     #[error("query would scan more than {0} bytes; narrow the time range or add filters")]
     TooExpensive(u64),
+    /// The result would hold more than a configured number of items.
+    #[error("query result would exceed {limit} {what}; {hint}")]
+    ResultLimit { what: &'static str, limit: u64, hint: &'static str },
+    /// The caller cancelled the query (e.g. the client disconnected).
+    #[error("query was cancelled")]
+    Cancelled,
     #[error(transparent)]
     Storage(#[from] StorageError),
 }

@@ -6,19 +6,22 @@
 //! do) plus an unsealed tail, and compare every query against evaluating the
 //! same predicate over every event.
 
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, LazyLock, mpsc};
 use std::time::Duration;
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use query::ast::{Expr, Literal, Op};
 use query::eval::{compile, eval};
-use query::{Direction, Engine, QueryLimits, TimeRange};
+use query::{CancelToken, Direction, Engine, QueryLimits, TimeRange};
 use storage::segment::SegmentWriteOptions;
 use storage::{Storage, StorageConfig};
 use telemetry::*;
 
 const BASE: i64 = 1_800_000_000_000_000_000;
+
+/// These tests never cancel.
+static NO_CANCEL: LazyLock<CancelToken> = LazyLock::new(CancelToken::new);
 
 fn messy_event(i: usize, rng: &mut impl FnMut(u32) -> u32) -> TelemetryEvent {
     let level = Level::ALL[rng(6) as usize];
@@ -244,11 +247,11 @@ fn indexed_count_and_search_equal_brute_force() {
                 nonempty.set(nonempty.get() + 1);
             }
 
-            let (count, _) = fx.engine.count(Signal::Logs, &text, range).unwrap();
+            let (count, _) = fx.engine.count(Signal::Logs, &text, range, &NO_CANCEL).unwrap();
             prop_assert_eq!(count as usize, expected.len(), "count mismatch for {}", text);
 
             // Full result set via search (limit larger than possible).
-            let out = fx.engine.search(Signal::Logs, &text, range, 1000, Direction::Forward, None).unwrap();
+            let out = fx.engine.search(Signal::Logs, &text, range, 1000, Direction::Forward, None, &NO_CANCEL).unwrap();
             let got: Vec<(i64, u64)> = out.events.iter().map(|ev| (ev.timestamp.0, ev.id.0)).collect();
             prop_assert_eq!(&got, &expected, "search mismatch for {}", text);
             if out.diagnostics.blocks_skipped > 0 {
@@ -280,7 +283,8 @@ fn pagination_walks_the_exact_result_set() {
             let mut got = Vec::new();
             let mut cursor = None;
             for _ in 0..1000 {
-                let out = fx.engine.search(Signal::Logs, &text, TimeRange::all(), page, dir, cursor).unwrap();
+                let out =
+                    fx.engine.search(Signal::Logs, &text, TimeRange::all(), page, dir, cursor, &NO_CANCEL).unwrap();
                 prop_assert!(out.events.len() <= page);
                 got.extend(out.events.iter().map(|ev| (ev.timestamp.0, ev.id.0)));
                 cursor = out.next;
@@ -299,8 +303,8 @@ fn histogram_totals_match_count() {
     let fx = fixture(3, 200);
     let range = TimeRange::new(Some(Timestamp(BASE - 10_000_000_000)), Some(Timestamp(BASE + 400_000_000_000)));
     for q in ["", "level = Error", r#"customerId = 5 or service = "auth""#, "not durationMs > 100"] {
-        let (h, _) = fx.engine.histogram(Signal::Logs, q, range, 50).unwrap();
-        let (c, _) = fx.engine.count(Signal::Logs, q, range).unwrap();
+        let (h, _) = fx.engine.histogram(Signal::Logs, q, range, 50, &NO_CANCEL).unwrap();
+        let (c, _) = fx.engine.count(Signal::Logs, q, range, &NO_CANCEL).unwrap();
         assert_eq!(h.total, c, "{q}");
         assert_eq!(h.buckets.iter().map(|b| b.count).sum::<u64>(), c);
         if q.is_empty() {
@@ -315,7 +319,15 @@ fn indexes_actually_skip_work() {
     let id = fx.all.iter().find_map(|e| e.trace_id.clone()).unwrap();
     let out = fx
         .engine
-        .search(Signal::Logs, &format!("traceId = \"{id}\""), TimeRange::all(), 100, Direction::Backward, None)
+        .search(
+            Signal::Logs,
+            &format!("traceId = \"{id}\""),
+            TimeRange::all(),
+            100,
+            Direction::Backward,
+            None,
+            &NO_CANCEL,
+        )
         .unwrap();
     let d = &out.diagnostics;
     assert!(!out.events.is_empty());
@@ -324,7 +336,7 @@ fn indexes_actually_skip_work() {
 
     let out = fx
         .engine
-        .search(Signal::Logs, r#"service = "nope""#, TimeRange::all(), 100, Direction::Backward, None)
+        .search(Signal::Logs, r#"service = "nope""#, TimeRange::all(), 100, Direction::Backward, None, &NO_CANCEL)
         .unwrap();
     assert!(out.events.is_empty());
     assert_eq!(out.diagnostics.blocks_read, 0);
@@ -334,7 +346,7 @@ fn indexes_actually_skip_work() {
 #[test]
 fn early_termination_reads_only_recent_segments() {
     let fx = fixture(9, 400);
-    let out = fx.engine.search(Signal::Logs, "", TimeRange::all(), 5, Direction::Backward, None).unwrap();
+    let out = fx.engine.search(Signal::Logs, "", TimeRange::all(), 5, Direction::Backward, None, &NO_CANCEL).unwrap();
     assert_eq!(out.events.len(), 5);
     let mut expected: Vec<_> = fx.all.iter().map(|e| (e.timestamp.0, e.id.0)).collect();
     expected.sort();

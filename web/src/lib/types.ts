@@ -120,6 +120,8 @@ export interface TraceSummary {
   spanCount: number;
   services: string[];
   errorCount: number;
+  /** More spans exist than the summary kept; counts cover the kept spans. */
+  truncated: boolean;
 }
 
 export interface TraceResponse {

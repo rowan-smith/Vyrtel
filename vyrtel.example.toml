@@ -31,8 +31,12 @@ queue_capacity = 10000
 max_concurrent = 0
 
 [query]
-timeout = "30s"
-max_concurrent = 4
+timeout = "30s"              # execution time per request; 504 query_timeout beyond
+max_concurrent = 4           # requests executing at once
+queue_timeout = "10s"        # wait for a free slot, then 503; "0s" rejects at once
+max_scan_bytes = "4GB"       # compressed bytes one request may read; 422 beyond
+max_trace_spans = 50000      # spans one trace may return; 422 beyond
+max_metric_names = 10000     # names GET /api/v1/metrics returns; "truncated": true beyond
 
 [auth]
 enabled = false

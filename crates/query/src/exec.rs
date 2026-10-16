@@ -9,33 +9,49 @@
 //!   stop once the result set is full and no remaining segment/block can
 //!   contain a better (newer) event
 //! ```
+//!
+//! Every loop checks the request's [`Budget`] at the checkpoints listed in
+//! [`crate::budget`], so cancellation and limits stop it mid-scan.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Serialize;
 use storage::segment::{BlockData, Column, ColumnSet, Segment, SegmentSummary};
 use storage::{IndexCache, StreamSnapshot};
 use telemetry::*;
 
+use crate::budget::{Budget, Checkpoint, ROWS_PER_CHECK};
 use crate::error::QueryError;
 use crate::eval::{CExpr, Row, eval};
 use crate::prune::{IndexUsage, PruneCtx, candidate_blocks, needs_index};
 
 #[derive(Debug, Clone)]
 pub struct QueryLimits {
+    /// Wall-clock time one request may execute (not counting any wait for
+    /// a query slot).
     pub timeout: Duration,
-    /// Maximum compressed bytes a single query may read from segments.
+    /// Maximum compressed bytes a single request may read from segments.
     pub max_scan_bytes: u64,
     pub max_results: usize,
+    /// Spans one trace may hold when it is assembled.
+    pub max_trace_spans: usize,
+    /// Names metric discovery returns.
+    pub max_metric_names: usize,
 }
 
 impl Default for QueryLimits {
     fn default() -> Self {
-        Self { timeout: Duration::from_secs(30), max_scan_bytes: 4 * 1024 * 1024 * 1024, max_results: 1000 }
+        Self {
+            timeout: Duration::from_secs(30),
+            max_scan_bytes: 4 * 1024 * 1024 * 1024,
+            max_results: 1000,
+            max_trace_spans: 50_000,
+            max_metric_names: 10_000,
+        }
     }
 }
 
@@ -154,32 +170,39 @@ impl Diagnostics {
     }
 }
 
-/// Shared state of one query execution: limits, deadline and counters.
+/// State of one scan: the request's budget, the page size and counters.
+/// Several scans of one request share its [`Budget`].
 pub struct ExecCtx<'a> {
     pub cache: &'a IndexCache,
-    pub limits: &'a QueryLimits,
-    pub started: Instant,
+    pub budget: &'a Budget,
+    pub max_results: usize,
     pub diag: Diagnostics,
     pub usage: IndexUsage,
+    /// Rows evaluated since the last budget check.
+    rows: u32,
 }
 
 impl<'a> ExecCtx<'a> {
-    pub fn new(cache: &'a IndexCache, limits: &'a QueryLimits) -> Self {
-        Self { cache, limits, started: Instant::now(), diag: Diagnostics::default(), usage: IndexUsage::default() }
+    pub fn new(cache: &'a IndexCache, budget: &'a Budget, max_results: usize) -> Self {
+        Self { cache, budget, max_results, diag: Diagnostics::default(), usage: IndexUsage::default(), rows: 0 }
     }
 
-    fn check_budget(&self) -> Result<(), QueryError> {
-        if self.started.elapsed() > self.limits.timeout {
-            return Err(QueryError::Timeout(self.limits.timeout.as_millis() as u64));
-        }
-        if self.diag.bytes_read > self.limits.max_scan_bytes {
-            return Err(QueryError::TooExpensive(self.limits.max_scan_bytes));
+    pub fn check(&self, at: Checkpoint) -> Result<(), QueryError> {
+        self.budget.check(at)
+    }
+
+    /// Count one evaluated row; check the budget every [`ROWS_PER_CHECK`].
+    pub fn tick(&mut self) -> Result<(), QueryError> {
+        self.rows += 1;
+        if self.rows >= ROWS_PER_CHECK {
+            self.rows = 0;
+            self.budget.check(Checkpoint::Rows)?;
         }
         Ok(())
     }
 
     pub fn finish(mut self) -> Diagnostics {
-        self.diag.elapsed_ms = self.started.elapsed().as_secs_f64() * 1000.0;
+        self.diag.elapsed_ms = self.budget.elapsed().as_secs_f64() * 1000.0;
         self.diag.segments_skipped =
             self.diag.segments_skipped_by_time + self.diag.segments_skipped_by_index + self.diag.segments_not_needed;
         self.diag.indexes = std::iter::once(IndexUse { field: "timestamp".into(), kind: "time" })
@@ -203,6 +226,7 @@ impl<'a> ExecCtx<'a> {
         filter: Option<&CExpr>,
         range: &TimeRange,
     ) -> Result<Option<Vec<usize>>, QueryError> {
+        self.check(Checkpoint::Segment)?;
         let s = &seg.summary;
         self.diag.segments_considered += 1;
         if !range.overlaps(s.min_ts, s.max_ts) {
@@ -227,10 +251,13 @@ impl<'a> ExecCtx<'a> {
     }
 
     fn read_block(&mut self, seg: &Segment, block: usize, cols: ColumnSet) -> Result<BlockData, QueryError> {
-        self.check_budget()?;
+        self.check(Checkpoint::Block)?;
         let data = seg.read_block(block, cols)?;
         self.diag.blocks_read += 1;
         self.diag.bytes_read += data.bytes_read;
+        self.budget.add_scanned(data.bytes_read);
+        // A read that went over the byte budget fails here, not one block later.
+        self.check(Checkpoint::Block)?;
         Ok(data)
     }
 }
@@ -377,7 +404,8 @@ fn in_cursor(key: (i64, u64), cursor: Option<Cursor>, dir: Direction) -> bool {
 
 /// Ordered search with early termination and cursor pagination.
 pub fn search(snapshot: &StreamSnapshot, req: &SearchRequest, ctx: &mut ExecCtx) -> Result<SearchResult, QueryError> {
-    let limit = req.limit.clamp(1, ctx.limits.max_results.max(1));
+    ctx.check(Checkpoint::Start)?;
+    let limit = req.limit.clamp(1, ctx.max_results.max(1));
     let backward = req.direction == Direction::Backward;
     // One extra result tells us whether another page exists.
     let mut top = TopK { heap: BinaryHeap::with_capacity(limit + 1), cap: limit + 1, backward };
@@ -397,6 +425,7 @@ pub fn search(snapshot: &StreamSnapshot, req: &SearchRequest, ctx: &mut ExecCtx)
             continue;
         }
         for e in &b.events {
+            ctx.tick()?;
             ctx.diag.unsealed_events_scanned += 1;
             let key = (e.timestamp.0, e.id.0);
             if !accept(key) || !top.admits(key) {
@@ -444,6 +473,7 @@ pub fn search(snapshot: &StreamSnapshot, req: &SearchRequest, ctx: &mut ExecCtx)
             let rows: Box<dyn Iterator<Item = usize>> =
                 if backward { Box::new((0..data.len).rev()) } else { Box::new(0..data.len) };
             for i in rows {
+                ctx.tick()?;
                 let key = (data.ts[i], data.id(i));
                 if !accept(key) {
                     continue;
@@ -515,11 +545,13 @@ pub fn scan(
     sink: &mut dyn Sink,
     ctx: &mut ExecCtx,
 ) -> Result<(), QueryError> {
+    ctx.check(Checkpoint::Start)?;
     for b in &snapshot.batches {
         if !range.overlaps(b.min_ts, b.max_ts) {
             continue;
         }
         for e in &b.events {
+            ctx.tick()?;
             ctx.diag.unsealed_events_scanned += 1;
             if !range.contains(e.timestamp) {
                 continue;
@@ -554,6 +586,7 @@ pub fn scan(
             }
             let data = ctx.read_block(seg, b, cols)?;
             for i in 0..data.len {
+                ctx.tick()?;
                 if !range.contains(Timestamp(data.ts[i])) {
                     continue;
                 }

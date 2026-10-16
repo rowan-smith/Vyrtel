@@ -5,7 +5,7 @@ use std::hint::black_box;
 use std::sync::{Arc, mpsc};
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use query::{Direction, Engine, QueryLimits, TimeRange, parse};
+use query::{CancelToken, Direction, Engine, QueryLimits, TimeRange, parse};
 use storage::{Storage, StorageConfig};
 use telemetry::*;
 
@@ -60,14 +60,20 @@ fn benches(c: &mut Criterion) {
     g.sample_size(20);
     let engine = &engine;
     let run = move |q: &'static str, limit: usize| {
-        move || engine.search(Signal::Logs, q, TimeRange::all(), limit, Direction::Backward, None).unwrap()
+        move || {
+            engine
+                .search(Signal::Logs, q, TimeRange::all(), limit, Direction::Backward, None, &CancelToken::new())
+                .unwrap()
+        }
     };
     g.bench_function("simple_scan_contains", |b| b.iter(run(r#"message contains "request 1999""#, 100)));
     g.bench_function("indexed_bloom_trace_id", |b| b.iter(run(r#"traceId = "00000000000000000000000000012345""#, 100)));
     g.bench_function("indexed_bitmap_level", |b| b.iter(run("level = Error", 100)));
     g.bench_function("indexed_zonemap_range", |b| b.iter(run("durationMs > 1990", 100)));
     g.bench_function("latest_200", |b| b.iter(run("", 200)));
-    g.bench_function("count_all", |b| b.iter(|| engine.count(Signal::Logs, "", TimeRange::all()).unwrap()));
+    g.bench_function("count_all", |b| {
+        b.iter(|| engine.count(Signal::Logs, "", TimeRange::all(), &CancelToken::new()).unwrap())
+    });
     g.finish();
 }
 
