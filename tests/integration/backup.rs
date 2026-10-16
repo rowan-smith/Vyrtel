@@ -295,7 +295,12 @@ async fn missing_files_are_accepted_only_on_request() {
     // everything else.
     let options = server::app::StartOptions { accept_incomplete_restore: true };
     let app = App::build_with(secure(dir), options).expect("accepted");
-    let logs = app.state.engine.count(telemetry::Signal::Logs, "", query::TimeRange::new(None, None)).unwrap().0;
+    let logs = app
+        .state
+        .engine
+        .count(telemetry::Signal::Logs, "", query::TimeRange::new(None, None), &query::CancelToken::new())
+        .unwrap()
+        .0;
     let all = before["counts"]["logs"].as_u64().unwrap();
     assert!(logs > 0 && logs < all, "segment events remain, the WAL's are gone: {logs} of {all}");
     app.shutdown().await.unwrap();

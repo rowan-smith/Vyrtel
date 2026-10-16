@@ -1,7 +1,10 @@
 //! High-level query API used by the server.
+//!
+//! Every request takes a [`CancelToken`] and runs within one [`Budget`]
+//! built from the engine's [`QueryLimits`]; see [`crate::budget`].
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use serde::Serialize;
 use storage::Storage;
@@ -9,6 +12,7 @@ use telemetry::*;
 
 use crate::aggregate::{self, Agg, CountSink, Facets, Histogram, HistogramSink, MetricMeta, MetricSink, Series};
 use crate::ast::Expr;
+use crate::budget::{Budget, CancelToken, Checkpoint, CheckpointHook};
 use crate::error::QueryError;
 use crate::eval::{CExpr, compile};
 use crate::exec::{self, Cursor, Diagnostics, Direction, ExecCtx, QueryLimits, SearchRequest, TimeRange};
@@ -16,10 +20,17 @@ use crate::parser::parse;
 use crate::stats::QueryStats;
 use crate::traces::{self, SpanCollector, TraceSummary};
 
+/// Most points one metric series may have.
+pub const MAX_METRIC_POINTS: usize = 10_000;
+
+/// Spans kept per trace while summarising trace search results.
+const MAX_SUMMARY_SPANS: usize = 10_000;
+
 pub struct Engine {
     storage: Arc<Storage>,
     limits: QueryLimits,
     stats: QueryStats,
+    hook: RwLock<Option<CheckpointHook>>,
 }
 
 pub struct SearchOutput {
@@ -69,7 +80,13 @@ fn and(a: Expr, b: Option<Expr>) -> Expr {
 
 impl Engine {
     pub fn new(storage: Arc<Storage>, limits: QueryLimits) -> Self {
-        Self { storage, limits, stats: QueryStats::default() }
+        Self { storage, limits, stats: QueryStats::default(), hook: RwLock::new(None) }
+    }
+
+    /// Test seam: run `hook` at every checkpoint of queries started from
+    /// now on (e.g. to hold a query until it is cancelled). `None` removes it.
+    pub fn set_checkpoint_hook(&self, hook: Option<CheckpointHook>) {
+        *self.hook.write().unwrap_or_else(|e| e.into_inner()) = hook;
     }
 
     pub fn storage(&self) -> &Arc<Storage> {
@@ -84,8 +101,14 @@ impl Engine {
         &self.stats
     }
 
-    fn ctx(&self) -> ExecCtx<'_> {
-        ExecCtx::new(self.storage.cache(), &self.limits)
+    /// The budget of one request.
+    pub fn budget(&self, cancel: &CancelToken) -> Budget {
+        let hook = self.hook.read().unwrap_or_else(|e| e.into_inner()).clone();
+        Budget::with_hook(&self.limits, cancel.clone(), hook)
+    }
+
+    fn ctx<'a>(&'a self, budget: &'a Budget) -> ExecCtx<'a> {
+        ExecCtx::new(self.storage.cache(), budget, self.limits.max_results)
     }
 
     fn finish(&self, signal: Signal, mut ctx: ExecCtx, filter: Option<&CExpr>) -> Diagnostics {
@@ -97,6 +120,8 @@ impl Engine {
         d
     }
 
+    // One argument per field of the search request, plus its cancellation.
+    #[allow(clippy::too_many_arguments)]
     pub fn search(
         &self,
         signal: Signal,
@@ -105,10 +130,12 @@ impl Engine {
         limit: usize,
         direction: Direction,
         cursor: Option<Cursor>,
+        cancel: &CancelToken,
     ) -> Result<SearchOutput, QueryError> {
         let filter = compile_query(query, signal)?;
         let snapshot = self.storage.snapshot(signal);
-        let mut ctx = self.ctx();
+        let budget = self.budget(cancel);
+        let mut ctx = self.ctx(&budget);
         let r = exec::search(
             &snapshot,
             &SearchRequest { signal, filter: filter.as_ref(), range, limit, direction, cursor },
@@ -117,10 +144,17 @@ impl Engine {
         Ok(SearchOutput { events: r.events, next: r.next, diagnostics: self.finish(signal, ctx, filter.as_ref()) })
     }
 
-    pub fn count(&self, signal: Signal, query: &str, range: TimeRange) -> Result<(u64, Diagnostics), QueryError> {
+    pub fn count(
+        &self,
+        signal: Signal,
+        query: &str,
+        range: TimeRange,
+        cancel: &CancelToken,
+    ) -> Result<(u64, Diagnostics), QueryError> {
         let filter = compile_query(query, signal)?;
         let snapshot = self.storage.snapshot(signal);
-        let mut ctx = self.ctx();
+        let budget = self.budget(cancel);
+        let mut ctx = self.ctx(&budget);
         let mut sink = CountSink { count: 0 };
         exec::scan(&snapshot, signal, filter.as_ref(), range, &mut sink, &mut ctx)?;
         Ok((sink.count, self.finish(signal, ctx, filter.as_ref())))
@@ -133,11 +167,13 @@ impl Engine {
         query: &str,
         range: TimeRange,
         max_buckets: usize,
+        cancel: &CancelToken,
     ) -> Result<(Histogram, Diagnostics), QueryError> {
         let filter = compile_query(query, signal)?;
         let step = aggregate::choose_step_ms(&range, max_buckets);
         let snapshot = self.storage.snapshot(signal);
-        let mut ctx = self.ctx();
+        let budget = self.budget(cancel);
+        let mut ctx = self.ctx(&budget);
         let mut sink = HistogramSink::new(&range, step, signal == Signal::Logs);
         exec::scan(&snapshot, signal, filter.as_ref(), range, &mut sink, &mut ctx)?;
         Ok((sink.finish(), self.finish(signal, ctx, filter.as_ref())))
@@ -150,12 +186,13 @@ impl Engine {
         query: &str,
         range: TimeRange,
         sample: usize,
+        cancel: &CancelToken,
     ) -> Result<(Facets, Diagnostics), QueryError> {
         let filter = compile_query(query, signal)?;
         let snapshot = self.storage.snapshot(signal);
-        let mut ctx = self.ctx();
-        let limits = QueryLimits { max_results: sample, ..self.limits.clone() };
-        let mut inner = ExecCtx::new(self.storage.cache(), &limits);
+        let budget = self.budget(cancel);
+        let mut ctx = self.ctx(&budget);
+        let mut inner = ExecCtx::new(self.storage.cache(), &budget, sample);
         let r = exec::search(
             &snapshot,
             &SearchRequest {
@@ -169,6 +206,7 @@ impl Engine {
             &mut inner,
         )?;
         ctx.diag.merge(&inner.finish());
+        ctx.check(Checkpoint::Assemble)?;
         Ok((aggregate::facets(&r.events, 10), self.finish(signal, ctx, filter.as_ref())))
     }
 
@@ -193,7 +231,7 @@ impl Engine {
         v
     }
 
-    pub fn metric_query(&self, q: &MetricQuery) -> Result<MetricOutput, QueryError> {
+    pub fn metric_query(&self, q: &MetricQuery, cancel: &CancelToken) -> Result<MetricOutput, QueryError> {
         if q.name.trim().is_empty() {
             return Err(QueryError::InvalidRequest("metric name is required".into()));
         }
@@ -204,8 +242,17 @@ impl Engine {
         let expr = and(Expr::cmp("name", crate::ast::Op::Eq, crate::ast::Literal::String(q.name.clone())), extra);
         let filter = compile(&expr, Signal::Metrics);
         let step = q.step_ms.filter(|s| *s >= 1000).unwrap_or_else(|| aggregate::choose_step_ms(&q.range, 120));
+        // Refuse rather than return series that silently stop early.
+        if aggregate::bucket_count(&q.range, step) > MAX_METRIC_POINTS as u64 {
+            return Err(QueryError::ResultLimit {
+                what: "points per series",
+                limit: MAX_METRIC_POINTS as u64,
+                hint: "use a larger stepMs or a shorter time range",
+            });
+        }
         let snapshot = self.storage.snapshot(Signal::Metrics);
-        let mut ctx = self.ctx();
+        let budget = self.budget(cancel);
+        let mut ctx = self.ctx(&budget);
         let mut sink = MetricSink::new(&q.range, step, q.group_by.clone().filter(|g| !g.is_empty()));
         exec::scan(&snapshot, Signal::Metrics, Some(&filter), q.range, &mut sink, &mut ctx)?;
         let meta = sink.meta.clone();
@@ -226,19 +273,21 @@ impl Engine {
         query: &str,
         range: TimeRange,
         limit: usize,
+        cancel: &CancelToken,
     ) -> Result<(Vec<TraceSummary>, Diagnostics), QueryError> {
         let filter = compile_query(query, Signal::Traces)?;
         let snapshot = self.storage.snapshot(Signal::Traces);
-        let mut ctx = self.ctx();
+        let budget = self.budget(cancel);
+        let mut ctx = self.ctx(&budget);
         let limit = limit.clamp(1, 200);
 
         // 1. Newest matching spans → distinct trace ids.
         let mut order: Vec<String> = Vec::new();
         let mut seen: HashMap<String, (Timestamp, Timestamp)> = HashMap::new();
         let mut cursor = None;
-        let page_limits = QueryLimits { max_results: 500, ..self.limits.clone() };
         for _ in 0..20 {
-            let mut page_ctx = ExecCtx::new(self.storage.cache(), &page_limits);
+            // Pages share the request's budget: their time and bytes add up.
+            let mut page_ctx = ExecCtx::new(self.storage.cache(), &budget, 500);
             let r = exec::search(
                 &snapshot,
                 &SearchRequest {
@@ -280,26 +329,48 @@ impl Engine {
         let hi = order.iter().map(|id| seen[id].1).max().unwrap_or_default();
         let window = TimeRange::new(Some(lo.saturating_sub_nanos(hour)), Some(hi.saturating_add_nanos(hour + 1)));
         let id_filter = traces::trace_id_filter(&order);
-        let mut sink = SpanCollector::new(10_000);
+        let mut sink = SpanCollector::new(MAX_SUMMARY_SPANS);
+        ctx.check(Checkpoint::Assemble)?;
         exec::scan(&snapshot, Signal::Traces, id_filter.as_ref(), window, &mut sink, &mut ctx)?;
 
-        let mut out: Vec<TraceSummary> =
-            order.iter().filter_map(|id| sink.traces.get(id).map(|spans| traces::summarize(id, spans))).collect();
+        let mut out: Vec<TraceSummary> = order
+            .iter()
+            .filter_map(|id| {
+                sink.traces.get(id).map(|spans| TraceSummary {
+                    truncated: sink.truncated_traces.contains(id),
+                    ..traces::summarize(id, spans)
+                })
+            })
+            .collect();
         out.sort_by_key(|t| std::cmp::Reverse(t.start));
         Ok((out, self.finish(Signal::Traces, ctx, filter.as_ref())))
     }
 
     /// All spans of one trace, ordered by start time.
-    pub fn trace(&self, trace_id: &str, range: TimeRange) -> Result<(Vec<TelemetryEvent>, Diagnostics), QueryError> {
+    pub fn trace(
+        &self,
+        trace_id: &str,
+        range: TimeRange,
+        cancel: &CancelToken,
+    ) -> Result<(Vec<TelemetryEvent>, Diagnostics), QueryError> {
         let id = normalize_id(trace_id.trim());
         if id.is_empty() {
             return Err(QueryError::InvalidRequest("trace id is required".into()));
         }
         let filter = traces::trace_id_filter(std::slice::from_ref(&id));
         let snapshot = self.storage.snapshot(Signal::Traces);
-        let mut ctx = self.ctx();
-        let mut sink = SpanCollector::new(50_000);
+        let budget = self.budget(cancel);
+        let mut ctx = self.ctx(&budget);
+        let mut sink = SpanCollector::new(self.limits.max_trace_spans);
         exec::scan(&snapshot, Signal::Traces, filter.as_ref(), range, &mut sink, &mut ctx)?;
+        // A partial trace would look complete in the waterfall.
+        if sink.truncated {
+            return Err(QueryError::ResultLimit {
+                what: "spans in one trace",
+                limit: self.limits.max_trace_spans as u64,
+                hint: "narrow the time range with from/to, or raise query.max_trace_spans",
+            });
+        }
         let mut spans = sink.traces.remove(&id).unwrap_or_default();
         spans.sort_by_key(|s| (s.timestamp, s.id));
         Ok((spans, self.finish(Signal::Traces, ctx, None)))

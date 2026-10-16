@@ -39,7 +39,7 @@ pub async fn evaluate(state: &SharedState, alert: &Alert) -> Evaluation {
     let to = Timestamp::now();
     let from = to.saturating_sub_nanos(alert.def.window_secs.saturating_mul(NANOS_PER_SEC));
     let q = alert.def.query.clone();
-    let result = state.query(move |e| Ok(e.count(Signal::Logs, &q, TimeRange::new(Some(from), Some(to)))?)).await;
+    let result = state.query(move |e, c| Ok(e.count(Signal::Logs, &q, TimeRange::new(Some(from), Some(to)), c)?)).await;
     match result {
         Ok((n, _)) => {
             let value = n as f64;

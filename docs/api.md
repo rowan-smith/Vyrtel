@@ -21,12 +21,17 @@ Every error has the same shape:
 |    404 | `not_found`                                                                                                | unknown resource or endpoint                                                                                                                                                                                                                       |
 |    413 | `payload_too_large`                                                                                        | ingest body over `ingest.max_request_size` after gzip decoding (`limitBytes` gives the limit), or a batch larger than the queue ([details](#request-size-and-encoding))                                                                            |
 |    415 | `unsupported_media_type`                                                                                   | content type or `Content-Encoding` not accepted                                                                                                                                                                                                    |
-|    422 | `query_too_expensive`                                                                                      | the query would read more than `query.max_scan_bytes`                                                                                                                                                                                              |
+|    422 | `query_too_expensive`                                                                                      | the query would read more than `query.max_scan_bytes` (`limitBytes` gives the limit)                                                                                                                                                               |
+|    422 | `query_result_limit`                                                                                       | the result would exceed a result budget: more spans in one trace than `query.max_trace_spans`, or more than 10,000 points per metric series (`limit` gives the limit) ([details](query-language.md#execution-limits-and-cancellation))           |
 |    429 | `rate_limited`                                                                                             | every ingest slot busy (`ingest.max_concurrent`) or the ingest queue full — retry after `Retry-After` seconds ([details](#ingest-limits-and-retries))                                                                                              |
-|    503 | `unavailable`                                                                                              | storage unavailable / too many concurrent queries                                                                                                                                                                                                  |
+|    503 | `unavailable`                                                                                              | storage unavailable, or every query slot (`query.max_concurrent`) stayed busy for `query.queue_timeout` — retry after `Retry-After` seconds                                                                                                       |
 |    503 | `storage_write_failed`                                                                                     | storage could not write the request (`reason`: `noSpace`, `permissionDenied`, `readOnly`, `shortWrite`, `ioError` or `other`). `outcome` is `notStored`, or `unknown` if it may reappear after a power loss ([details](#status-codes-and-retries)) |
-|    504 | `query_timeout`                                                                                            | the query exceeded `query.timeout`                                                                                                                                                                                                                 |
+|    504 | `query_timeout`                                                                                            | the query exceeded `query.timeout` (`limitMs` gives the limit)                                                                                                                                                                                     |
 |    500 | `internal`, `storage_error`                                                                                | details are logged server-side, never returned                                                                                                                                                                                                     |
+
+Query limit errors never come with partial results. A query whose client
+disconnects is cancelled at its next checkpoint and nothing is sent. See
+[Execution limits and cancellation](query-language.md#execution-limits-and-cancellation).
 
 ### Time inputs
 
@@ -370,9 +375,13 @@ Returns recent traces with at least one span matching the query:
 ```json
 { "traces": [ { "traceId": "4bf9…", "rootName": "POST /checkout", "rootService": "checkout",
                 "start": "...", "durationMs": 800.0, "spanCount": 3,
-                "services": ["checkout", "payments"], "errorCount": 2 } ],
+                "services": ["checkout", "payments"], "errorCount": 2, "truncated": false } ],
   "diagnostics": {} }
 ```
+
+A summary keeps at most 10,000 spans of a trace. With more, `truncated` is
+`true` and `spanCount`, `services`, `errorCount` and `durationMs` cover the
+kept spans only.
 
 ```
 GET /api/v1/traces/{traceId}[?from=...&to=...]
@@ -380,7 +389,9 @@ GET /api/v1/traces/{traceId}[?from=...&to=...]
 ```
 
 Spans are ordered by start time. Correlated logs: query logs with
-`traceId = "<id>"`.
+`traceId = "<id>"`. A trace with more than `query.max_trace_spans` spans
+(default 50,000) in the range gets `422 query_result_limit` rather than an
+incomplete waterfall; narrow it with `from`/`to`.
 
 ## Metrics
 
@@ -400,7 +411,9 @@ POST /api/v1/query/metrics
 `agg`: `sum`, `count`, `min`, `max`, `avg` (default), `last`. For histogram
 points, `sum`/`count`/`avg` use the histogram's sum and count. Response:
 `{"name", "agg", "stepMs", "unit", "kind", "series": [{"group", "points": [{"ts", "value"}]}]}`
-(at most 20 groups; the rest are merged into `(other)`).
+(at most 20 groups; the rest are merged into `(other)`). A series has at
+most 10,000 points: a range and `stepMs` needing more get `422
+query_result_limit` before anything is read.
 
 ## Dashboards
 
@@ -482,11 +495,23 @@ change is recorded and POSTed to the webhook (3 attempts, 10 s timeout):
 ```
 GET /health                      → 200 {"status": "ok"} while the process runs
 GET /ready                       → 200 {"status": "ready", "storageWritable": true}, 503 {"status": "degraded", ...} or, while shutting down, 503 {"status": "draining"}
-GET /api/v1/system/info          version, uptime, event counts, queue depths, ingest admission, active segments, memory budgets, recovery status
+GET /api/v1/system/info          version, uptime, event counts, queue depths, ingest and query admission, active segments, memory budgets, recovery status
 GET /api/v1/system/storage       raw/stored bytes, compression ratio, index overhead, recovery status, per-signal detail
 GET /api/v1/system/query-stats   per-field query statistics (input for future adaptive indexing)
 GET /api/v1/system/config        effective configuration (secrets omitted)
 ```
+
+`/api/v1/system/info` includes query admission and how queries that did
+not complete ended, counted since the process started:
+
+```json
+"query": { "maxConcurrent": 4, "inFlight": 1, "rejected": 0, "cancelled": 2,
+           "timedOut": 1, "tooExpensive": 0, "resultLimited": 0 }
+```
+
+`inFlight` counts queries holding a slot, including cancelled ones that
+have not reached their next checkpoint yet. `rejected` counts 503s for busy
+slots; the others count the matching errors.
 
 `/ready` is unauthenticated, so it says which signals are affected but
 never why. It is 503 when a 4 KiB write-and-fsync probe in the data directory's `tmp/` fails (`storageWritable: false`,

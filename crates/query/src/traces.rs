@@ -1,6 +1,6 @@
 //! Trace search and assembly.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::ControlFlow;
 
 use serde::Serialize;
@@ -22,6 +22,9 @@ pub struct TraceSummary {
     pub span_count: usize,
     pub services: Vec<String>,
     pub error_count: usize,
+    /// The trace has more spans than a summary keeps: `spanCount`,
+    /// `services`, `errorCount` and `durationMs` cover the kept spans only.
+    pub truncated: bool,
 }
 
 /// `traceId = a or traceId = b or ...` as a balanced tree.
@@ -43,12 +46,15 @@ pub fn trace_id_filter(ids: &[String]) -> Option<CExpr> {
 pub struct SpanCollector {
     pub traces: HashMap<String, Vec<TelemetryEvent>>,
     pub max_spans_per_trace: usize,
+    /// Some trace had more spans than `max_spans_per_trace`.
     pub truncated: bool,
+    /// The traces that did.
+    pub truncated_traces: HashSet<String>,
 }
 
 impl SpanCollector {
     pub fn new(max_spans_per_trace: usize) -> Self {
-        Self { traces: HashMap::new(), max_spans_per_trace, truncated: false }
+        Self { traces: HashMap::new(), max_spans_per_trace, truncated: false, truncated_traces: HashSet::new() }
     }
 }
 
@@ -66,6 +72,9 @@ impl Sink for SpanCollector {
                 v.push(e.clone());
             } else {
                 self.truncated = true;
+                if !self.truncated_traces.contains(t.as_str()) {
+                    self.truncated_traces.insert(t.as_str().to_string());
+                }
             }
         }
         ControlFlow::Continue(())
@@ -103,6 +112,7 @@ pub fn summarize(trace_id: &str, spans: &[TelemetryEvent]) -> TraceSummary {
         span_count: spans.len(),
         services: services.into_keys().collect(),
         error_count: spans.iter().filter(|s| s.as_span().is_some_and(|sp| sp.status.code == StatusCode::Error)).count(),
+        truncated: false,
     }
 }
 

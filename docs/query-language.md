@@ -129,6 +129,109 @@ was used in the result's `diagnostics` (and the UI's diagnostics panel):
 for its operand. Results are returned newest first and the scan stops early
 once the page is full and no older segment could contain a newer event.
 
+## Execution limits and cancellation
+
+Every query request runs within a budget, so one expensive query cannot
+starve ingestion or other users. A request that goes over a limit stops and
+returns an error that names the limit. It never returns the rows it had
+gathered, so a partial answer is never presented as complete.
+
+| Limit                         | Default | Applies to                                                       | Over the limit                    |
+|-------------------------------|---------|------------------------------------------------------------------|-----------------------------------|
+| `query.timeout`               | `30s`   | execution time of one request, from its first checkpoint          | `504 query_timeout` (`limitMs`)   |
+| `query.max_scan_bytes`        | `4GB`   | compressed segment bytes one request reads                        | `422 query_too_expensive` (`limitBytes`) |
+| `query.max_results`           | `1000`  | `limit` (page size) of a search                                   | `400 invalid_request`, before execution |
+| `query.max_trace_spans`       | `50000` | spans of one trace (`GET /api/v1/traces/{id}`)                    | `422 query_result_limit` (`limit`) |
+| metric points (fixed)         | `10000` | points per series: time range ÷ `stepMs`                          | `422 query_result_limit` (`limit`), before execution |
+| `query.max_concurrent`        | `4`     | requests executing at once                                        | waits, then `503 unavailable`     |
+| `query.queue_timeout`         | `10s`   | how long a request waits for a free slot                          | `503 unavailable` + `Retry-After` |
+
+Notes:
+
+* A **request** is everything one API call runs. Trace search runs up to 20
+  pages and then gathers the spans of the traces found; facets sample
+  events and then count them. All of it shares one clock and one byte
+  count, so splitting the work never resets a limit.
+* **Boundaries**: reading exactly `max_scan_bytes` succeeds, one byte more
+  fails. A trace with exactly `max_trace_spans` spans is returned in full.
+  `max_scan_bytes` counts compressed bytes read from sealed segments only:
+  unsealed (recent, in-memory) events and counts answered from block
+  summaries read nothing. Time spent waiting for a slot does not count
+  towards `timeout`.
+* **Trace search summaries** keep at most 10,000 spans per trace. A summary
+  with more has `truncated: true`, and its `spanCount`, `services`,
+  `errorCount` and `durationMs` cover the kept spans only (the UI shows the
+  span count as `10000+`).
+* **Live tail** is not a query in this sense: it filters new batches as they
+  are written and has its own limits (see [API](api.md#live-tail)).
+
+### Checkpoints
+
+Execution checks its budget at these points, so a cancelled or over-budget
+query stops after at most one block read or 256 evaluated rows:
+
+| Checkpoint | Where                                                         |
+|------------|---------------------------------------------------------------|
+| start      | before any data is read                                       |
+| segment    | before each segment is planned (index lookups)                |
+| block      | before and after each block read                              |
+| rows       | every 256 rows evaluated, sealed or unsealed                  |
+| assemble   | between the phases of a multi-phase query (trace search, facets) |
+
+### Client disconnects
+
+When the client goes away while its query runs (closed tab, `curl` killed,
+proxy timeout), the server cancels the query; it stops at its next
+checkpoint and frees its slot. Nothing is sent, since nobody is listening;
+cancelled queries are counted in `/api/v1/system/info` (`query.cancelled`)
+and logged at `debug` level. The server notices a disconnect when the
+client's connection closes.
+
+A query keeps its slot until it has actually stopped, so abandoned queries
+always count against `query.max_concurrent`: at most that many queries are
+ever executing, however many clients connect, disconnect or retry.
+
+### Example
+
+The trace from `tests/fixtures/otlp-traces.json` (three spans), with a
+deliberately small span budget; the same fixture and limits as the
+`scan_and_result_budgets_are_explicit_errors` integration test:
+
+```bash
+printf '[query]\nmax_trace_spans = 2\n' > budgets.toml
+vyrtel --config budgets.toml --data-dir ./budgets-data &
+
+now=$(date +%s)000000000
+sed "s/{{now[^}]*}}/$now/g" tests/fixtures/otlp-traces.json |
+  curl -s localhost:8080/v1/traces -H 'Content-Type: application/json' --data-binary @-
+# {}
+
+curl -s localhost:8080/api/v1/traces/4bf92f3577b34da6a3ce929d0e0e4736
+# {"error":{"code":"query_result_limit","message":"query result would exceed 2 spans in one trace; narrow the time range with from/to, or raise query.max_trace_spans","limit":2}}
+
+# A metric series over 3 hours at 1 s steps needs 10,800 points:
+curl -s localhost:8080/api/v1/query/metrics -H 'Content-Type: application/json' \
+  -d '{"name": "http.server.duration", "from": "-3h", "stepMs": 1000}'
+# {"error":{"code":"query_result_limit","message":"query result would exceed 10000 points per series; use a larger stepMs or a shorter time range","limit":10000}}
+
+# The server stays usable: a request inside the budgets answers in full.
+curl -s localhost:8080/api/v1/traces | jq '.traces[] | {spanCount, truncated}'
+# {"spanCount": 3, "truncated": false}
+
+curl -s localhost:8080/api/v1/system/info | jq -c .query
+# {"maxConcurrent":4,"inFlight":0,"rejected":0,"cancelled":0,"timedOut":0,"tooExpensive":0,"resultLimited":2}
+```
+
+`query_timeout` (`504`, `limitMs`) and `query_too_expensive` (`422`,
+`limitBytes`) look the same; they depend on the data and the host, so the
+tests produce them with a checkpoint hook rather than a large dataset.
+
+To recover from a limit error, narrow the time range, add an indexed filter
+(`level`, `service`, `traceId`, a property equality) instead of `contains`,
+or raise the limit in [`[query]`](configuration.md#query). Limits are
+checked per request; nothing is left behind by a stopped query, and the
+next request runs with its full budget.
+
 ## Limitations (v0.1)
 
 * No aggregation, grouping or projection syntax (the API offers counts,

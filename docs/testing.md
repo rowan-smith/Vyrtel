@@ -243,6 +243,8 @@ talks HTTP to it:
   the host path; after a short write and a denied fsync, a restart brings
   back exactly the pre-fault dataset (`logs.ndjson` plus one event) with
   nothing quarantined;
+* query budgets and cancellation (`query_budgets.rs`, REL-12; see
+  [below](#query-budget-and-cancellation-tests));
 * missing auth, bad auth, ingest-only keys, sessions, logout, revocation;
 * pagination, time ranges, empty results, facets, histograms;
 * live stream (SSE) delivery and filtering, and that open streams do not
@@ -339,6 +341,35 @@ talks HTTP to it:
   ([tests/fixtures/datadir/README.md](../tests/fixtures/datadir/README.md)).
 
 Fixtures shared with E2E live in `tests/fixtures/`.
+
+### Query budget and cancellation tests
+
+```bash
+cargo test -p query --test budgets                        # engine level
+cargo test -p server --test integration query_budgets     # over HTTP
+```
+
+Slow queries come from the engine's checkpoint hook
+(`Engine::set_checkpoint_hook`), not from big datasets, so the tests are
+deterministic and take under a second. The engine fixture is 2,000 logs
+(every seventh an `Error`, event `i` at `BASE + i s`) and 30 traces of 10
+spans, in 16-event blocks, sealed into three segments per signal plus an
+unsealed tail. The HTTP tests ingest a few events (and
+`tests/fixtures/otlp-traces.json`, one trace of three spans) into a real
+server.
+
+| Acceptance criterion / case | Tests |
+|---|---|
+| AC1 runtime or result budget → explicit limit error | `budgets.rs`: `timeout_then_a_small_query_is_complete` (every request kind gets `Timeout(20)`), `scan_byte_budget_boundary`, `trace_span_budget_boundary`, `metric_point_budget_boundary`; `query_budgets.rs`: `timeout_is_an_explicit_error_and_the_server_stays_usable` (504 `query_timeout`, `limitMs`), `scan_and_result_budgets_are_explicit_errors` (422 `query_too_expensive`/`query_result_limit`, 400 for `limit` over `max_results`) |
+| AC2 client disconnect stops work at checkpoints | `budgets.rs`: `cancelled_requests_return_only_the_error`, `cancel_during_scan_stops_at_the_next_block`, `cancel_during_aggregation_stops_within_one_check_interval`, `cancel_at_a_row_checkpoint_stops_every_aggregation`, `cancel_between_trace_search_phases`, `summary_only_counts_still_check_segments`; `query_budgets.rs`: `client_disconnect_cancels_the_query_and_frees_its_slot` (raw socket closed mid-query) |
+| AC3 concurrent queries and ingestion stay bounded | `query_budgets.rs`: `query_slots_bound_blocking_work_while_ingest_continues` — 2 slots held, 8 more queries get 503 promptly, 20 concurrent ingests all 200, never more than 2 queries executing; then both held queries complete |
+| AC4 resources released, no partial result as complete | `budgets.rs`: `later_queries_are_complete_after_cancellation_and_limits`, `hook_can_be_removed`; `query_budgets.rs`: the disconnect test (slot back, next answer `["a", "b", "c"]`), `trace search` summaries report `truncated` |
+| TC-02 cancel at scan and aggregation, budgets at boundaries | the AC2 rows above; boundaries: exactly `max_scan_bytes` succeeds and one byte less fails (count, facets, trace search across its pages and assembly); exactly `max_trace_spans` and 10,000 metric points succeed, one more fails; `budget.rs` unit tests (zero timeout, cancellation wins over other limits) |
+| TC-03 small query right after a rejection | `timeout_then_a_small_query_is_complete`, `timeout_is_an_explicit_error_and_the_server_stays_usable`, `client_disconnect_cancels_the_query_and_frees_its_slot` |
+| TC-04 regression | `cargo test --workspace --all-features`, `query/tests/correctness.rs` (indexed results equal brute force) unchanged |
+
+Config validation (`config.rs` `query_budgets`) covers defaults, parsing
+and refusing zero `timeout`, `max_results` and `max_trace_spans`.
 
 ### Restore drill
 

@@ -116,7 +116,10 @@ function TracesView() {
                     </span>
                   ))}
                 </td>
-                <td className="num">{t.spanCount}</td>
+                <td className="num" title={t.truncated ? "more spans than the summary counts" : undefined}>
+                  {t.spanCount}
+                  {t.truncated && "+"}
+                </td>
                 <td className="num">
                   <div className="duration-cell">
                     <div className="duration-bar" style={{ width: `${(t.durationMs / maxDuration) * 100}%` }} />

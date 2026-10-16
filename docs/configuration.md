@@ -227,13 +227,48 @@ MB of ingest heap against the 76.8 MB budget
 
 ### `[query]`
 
-| Key                | Default | Env                             | Description                                                |
-|--------------------|---------|---------------------------------|------------------------------------------------------------|
-| `timeout`          | `30s`   | `VYRTEL_QUERY_TIMEOUT`        | Per-query time limit (504).                                |
-| `max_concurrent`   | `4`     | `VYRTEL_QUERY_MAX_CONCURRENT` | Queries executing at once; more wait up to 10 s, then 503. |
-| `max_scan_bytes`   | `4GB`   | –                               | Compressed bytes one query may read (422 beyond).          |
-| `max_results`      | `1000`  | –                               | Maximum page size.                                         |
-| `max_live_streams` | `64`    | –                               | Concurrent live-tail connections.                          |
+| Key                | Default | Env                           | Description                                                                                       |
+|--------------------|---------|-------------------------------|---------------------------------------------------------------------------------------------------|
+| `timeout`          | `30s`   | `VYRTEL_QUERY_TIMEOUT`        | Execution time of one request, not counting the wait for a slot (504 `query_timeout`). Must be positive. |
+| `max_concurrent`   | `4`     | `VYRTEL_QUERY_MAX_CONCURRENT` | Requests executing at once. A cancelled query keeps its slot until it has stopped.                |
+| `queue_timeout`    | `10s`   | –                             | How long a request waits for a free slot, then 503 `unavailable`. `0s` refuses at once when busy. |
+| `max_scan_bytes`   | `4GB`   | –                             | Compressed segment bytes one request may read, across all its scans (422 `query_too_expensive`).  |
+| `max_results`      | `1000`  | –                             | Maximum page size (`limit`). Must be positive.                                                    |
+| `max_trace_spans`  | `50000` | –                             | Spans one trace may return from `GET /api/v1/traces/{id}` (422 `query_result_limit`). Must be positive. |
+| `max_live_streams` | `64`    | –                             | Concurrent live-tail connections.                                                                 |
+
+How the limits are enforced, where execution checks them, and what happens
+when a client disconnects mid-query: [Execution limits and
+cancellation](query-language.md#execution-limits-and-cancellation).
+`/api/v1/system/info` reports `query.inFlight` and how many queries were
+`rejected`, `cancelled`, `timedOut`, `tooExpensive` or `resultLimited`
+since the process started.
+
+#### Query budget changes in 0.1.2
+
+* New keys `query.queue_timeout` (the previously fixed 10 s wait) and
+  `query.max_trace_spans` (the previously fixed 50,000-span cap). The
+  defaults keep the old values.
+* `query.timeout` and `query.max_scan_bytes` now cover the whole request.
+  Trace search pages and the facet sample each had their own budget before,
+  so a trace search could run for up to 20 × `timeout` before failing.
+* A scan that reads past `max_scan_bytes` now fails at that block. Before,
+  the check ran only before each read, so the last block could go over.
+* Queries are checked every 256 rows as well as at each block, including
+  recent (unsealed) data, which had no checks before; a client
+  disconnecting now stops its query (before, it ran to the end).
+* A trace with more than `max_trace_spans` spans gets `422
+  query_result_limit` instead of the first 50,000 spans presented as the
+  whole trace. Trace search summaries gain `truncated`.
+* A metric query needing more than 10,000 points per series gets `422
+  query_result_limit` instead of series that silently stopped at the
+  10,000th point.
+* `query.timeout = 0`, `query.max_results = 0` and
+  `query.max_trace_spans = 0` are refused at startup; before, they made
+  every query fail.
+* `504`, `422` and the new limit errors carry the limit (`limitMs`,
+  `limitBytes`, `limit`). Codes and statuses of existing errors are
+  unchanged; the 503 message for busy query slots now names the slot count.
 
 ### `[auth]`
 

@@ -93,7 +93,7 @@ async fn search(state: SharedState, signal: Signal, b: SearchBody) -> ApiResult<
     if limit == 0 || limit > max {
         return Err(ApiError::bad_request(format!("limit must be between 1 and {max}")));
     }
-    let out = state.query(move |e| Ok(e.search(signal, &b.query, range, limit, b.direction, cursor)?)).await?;
+    let out = state.query(move |e, c| Ok(e.search(signal, &b.query, range, limit, b.direction, cursor, c)?)).await?;
     Ok(Json(json!({
         "events": out.events,
         "diagnostics": out.diagnostics,
@@ -133,7 +133,7 @@ pub async fn histogram(
     let signal = signal_of(&signal)?;
     let range = bounded(b.from.as_ref(), b.to.as_ref())?;
     let buckets = b.buckets.unwrap_or(60).clamp(1, 500);
-    let (h, d) = state.query(move |e| Ok(e.histogram(signal, &b.query, range, buckets)?)).await?;
+    let (h, d) = state.query(move |e, c| Ok(e.histogram(signal, &b.query, range, buckets, c)?)).await?;
     Ok(Json(json!({
         "from": range.from,
         "to": range.to,
@@ -151,7 +151,7 @@ pub async fn count(
 ) -> ApiResult<Json<Json_>> {
     let signal = signal_of(&signal)?;
     let range = range(b.from.as_ref(), b.to.as_ref())?;
-    let (n, d) = state.query(move |e| Ok(e.count(signal, &b.query, range)?)).await?;
+    let (n, d) = state.query(move |e, c| Ok(e.count(signal, &b.query, range, c)?)).await?;
     Ok(Json(json!({ "count": n, "diagnostics": d })))
 }
 
@@ -163,7 +163,7 @@ pub async fn facets(
     let signal = signal_of(&signal)?;
     let range = range(b.from.as_ref(), b.to.as_ref())?;
     let sample = b.sample.unwrap_or(2000).clamp(1, 10_000);
-    let (f, d) = state.query(move |e| Ok(e.facets(signal, &b.query, range, sample)?)).await?;
+    let (f, d) = state.query(move |e, c| Ok(e.facets(signal, &b.query, range, sample, c)?)).await?;
     Ok(Json(json!({ "sampled": f.sampled, "fields": f.fields, "diagnostics": d })))
 }
 
@@ -183,7 +183,7 @@ pub async fn trace_search(
 ) -> ApiResult<Json<Json_>> {
     let range = range(b.from.as_ref(), b.to.as_ref())?;
     let limit = b.limit.unwrap_or(50).clamp(1, 200);
-    let (traces, d) = state.query(move |e| Ok(e.trace_search(&b.query, range, limit)?)).await?;
+    let (traces, d) = state.query(move |e, c| Ok(e.trace_search(&b.query, range, limit, c)?)).await?;
     Ok(Json(json!({ "traces": traces, "diagnostics": d })))
 }
 
@@ -225,7 +225,7 @@ pub async fn trace_get(
 ) -> ApiResult<Json<Json_>> {
     let range = range(p.from.map(Json_::String).as_ref(), p.to.map(Json_::String).as_ref())?;
     let id2 = id.clone();
-    let (spans, d) = state.query(move |e| Ok(e.trace(&id2, range)?)).await?;
+    let (spans, d) = state.query(move |e, c| Ok(e.trace(&id2, range, c)?)).await?;
     if spans.is_empty() {
         return Err(ApiError::not_found("trace"));
     }
@@ -235,7 +235,7 @@ pub async fn trace_get(
 }
 
 pub async fn metric_names(State(state): State<SharedState>) -> ApiResult<Json<Json_>> {
-    let names = state.query(|e| Ok(e.metric_names())).await?;
+    let names = state.query(|e, _| Ok(e.metric_names())).await?;
     Ok(Json(json!({ "metrics": names })))
 }
 
@@ -262,7 +262,7 @@ pub async fn metric_query(State(state): State<SharedState>, ApiJson(b): ApiJson<
         agg: b.agg,
         group_by: b.group_by,
     };
-    let out = state.query(move |e| Ok(e.metric_query(&q)?)).await?;
+    let out = state.query(move |e, c| Ok(e.metric_query(&q, c)?)).await?;
     Ok(Json(serde_json::to_value(out).map_err(ApiError::internal)?))
 }
 

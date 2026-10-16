@@ -49,6 +49,14 @@ const NICE_STEPS_MS: &[i64] = &[
     604_800_000,
 ];
 
+/// Buckets of `step_ms` needed to cover a bounded `range`, aligned as
+/// [`HistogramSink`] and [`MetricSink`] align them.
+pub fn bucket_count(range: &TimeRange, step_ms: i64) -> u64 {
+    let step = step_ms.max(1) as i128 * NANOS_PER_MILLI as i128;
+    let start = (range.from.0 as i128).div_euclid(step) * step;
+    ((range.to.0 as i128 - start + step - 1) / step).max(1) as u64
+}
+
 /// Pick a human-friendly bucket width giving at most `max_buckets`.
 pub fn choose_step_ms(range: &TimeRange, max_buckets: usize) -> i64 {
     let span_ms = (range.to.0.saturating_sub(range.from.0) / NANOS_PER_MILLI).max(1);

@@ -299,11 +299,20 @@ impl Default for IngestSection {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct QuerySection {
+    /// Execution time of one request (504 beyond). Waiting for a slot does
+    /// not count.
     #[serde(with = "duration_serde")]
     pub timeout: Duration,
+    /// Requests executing at once.
     pub max_concurrent: usize,
+    /// How long a request waits for a free slot before 503. `0s` rejects at
+    /// once when every slot is busy.
+    #[serde(with = "duration_serde")]
+    pub queue_timeout: Duration,
     pub max_scan_bytes: ByteSize,
     pub max_results: usize,
+    /// Spans `GET /api/v1/traces/{id}` may return (422 beyond).
+    pub max_trace_spans: usize,
     pub max_live_streams: usize,
 }
 
@@ -312,8 +321,10 @@ impl Default for QuerySection {
         Self {
             timeout: Duration::from_secs(30),
             max_concurrent: 4,
+            queue_timeout: Duration::from_secs(10),
             max_scan_bytes: ByteSize(4 << 30),
             max_results: 1000,
+            max_trace_spans: 50_000,
             max_live_streams: 64,
         }
     }
@@ -509,6 +520,15 @@ impl Config {
         }
         if self.query.max_concurrent == 0 {
             return Err("query.max_concurrent must be positive".into());
+        }
+        if self.query.timeout.is_zero() {
+            return Err("query.timeout must be positive (e.g. 30s)".into());
+        }
+        if self.query.max_results == 0 {
+            return Err("query.max_results must be positive".into());
+        }
+        if self.query.max_trace_spans == 0 {
+            return Err("query.max_trace_spans must be positive".into());
         }
         if !(1..=22).contains(&self.storage.zstd_level) {
             return Err("storage.zstd_level must be between 1 and 22".into());
@@ -837,6 +857,38 @@ shutdown_timeout = 0",
         let mut c = Config::default();
         let err = c.apply_env(|k| (k == "VYRTEL_SERVER_SHUTDOWN_TIMEOUT").then(|| "soon".to_string())).unwrap_err();
         assert!(err.contains("VYRTEL_SERVER_SHUTDOWN_TIMEOUT"), "{err}");
+    }
+
+    // REL-12: query budgets are configurable; zero values that would make
+    // every query fail are refused at startup.
+    #[test]
+    fn query_budgets() {
+        let d = Config::default().query;
+        assert_eq!(
+            (d.timeout, d.queue_timeout, d.max_trace_spans, d.max_scan_bytes.0),
+            (Duration::from_secs(30), Duration::from_secs(10), 50_000, 4 << 30)
+        );
+        let c = Config::from_toml(
+            "[query]
+timeout = \"2s\"
+queue_timeout = \"0s\"
+max_trace_spans = 10
+max_scan_bytes = \"1MB\"",
+        )
+        .unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.query.timeout, Duration::from_secs(2));
+        assert_eq!(c.query.queue_timeout, Duration::ZERO, "0s rejects at once when busy");
+        assert_eq!(c.query.max_trace_spans, 10);
+        assert_eq!(c.query.max_scan_bytes.0, 1 << 20);
+        for (toml, err) in [
+            ("timeout = 0", "query.timeout must be positive (e.g. 30s)"),
+            ("max_results = 0", "query.max_results must be positive"),
+            ("max_trace_spans = 0", "query.max_trace_spans must be positive"),
+        ] {
+            let c = Config::from_toml(&format!("[query]\n{toml}")).unwrap();
+            assert_eq!(c.validate().unwrap_err(), err);
+        }
     }
 
     #[test]

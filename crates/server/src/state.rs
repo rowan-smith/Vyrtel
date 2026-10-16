@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use metadata::Metadata;
-use query::Engine;
+use query::{CancelToken, Engine};
 use storage::{Batch, Storage};
 use telemetry::{Signal, Timestamp};
 use tokio::sync::{Semaphore, broadcast, watch};
@@ -27,7 +27,11 @@ pub struct AppState {
     pub metadata: Arc<Metadata>,
     pub live: broadcast::Sender<LiveBatch>,
     pub live_permits: Arc<Semaphore>,
+    /// Query admission: one permit per executing query, held until the
+    /// blocking work has returned (see [`AppState::query`]).
     pub query_permits: Arc<Semaphore>,
+    /// How queries ended, for `/api/v1/system/info`.
+    pub query_outcomes: Arc<QueryOutcomes>,
     /// Ingest admission: one permit per request from before its body is
     /// read until its write is acknowledged (see `routes::ingest`).
     pub ingest_permits: Arc<Semaphore>,
@@ -56,6 +60,44 @@ pub struct AppState {
 
 pub type SharedState = Arc<AppState>;
 
+/// Queries that did not complete, by reason (REL-12).
+#[derive(Debug, Default)]
+pub struct QueryOutcomes {
+    /// Turned away: every slot stayed busy for `query.queue_timeout`.
+    pub rejected: AtomicU64,
+    /// Stopped because the client went away.
+    pub cancelled: AtomicU64,
+    /// Over `query.timeout`.
+    pub timed_out: AtomicU64,
+    /// Over `query.max_scan_bytes`.
+    pub too_expensive: AtomicU64,
+    /// Over a result budget (`query.max_trace_spans`, metric points).
+    pub result_limited: AtomicU64,
+}
+
+impl QueryOutcomes {
+    fn record(&self, e: &ApiError) {
+        let counter = match e.code {
+            "query_cancelled" => &self.cancelled,
+            "query_timeout" => &self.timed_out,
+            "query_too_expensive" => &self.too_expensive,
+            "query_result_limit" => &self.result_limited,
+            _ => return,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Cancels a query when the request handler is dropped: hyper drops it when
+/// the client disconnects, and the query stops at its next checkpoint.
+struct CancelOnDrop(CancelToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
 impl AppState {
     /// Shutdown has started; refuse new work.
     pub fn draining(&self) -> bool {
@@ -81,24 +123,51 @@ impl AppState {
     }
 
     /// Run a query on the blocking pool under the concurrency limit. When
-    /// all query slots stay busy, fail with 503 instead of queueing forever.
+    /// all query slots stay busy for `query.queue_timeout`, fail with 503
+    /// instead of queueing forever.
+    ///
+    /// `f` gets the request's [`CancelToken`]. It is cancelled if this
+    /// future is dropped (the client disconnected), and the query then
+    /// stops at its next checkpoint. Its slot stays taken until the blocking
+    /// work has returned, so abandoned queries still count against
+    /// `query.max_concurrent` and can never pile up beyond it.
     pub async fn query<T, F>(&self, f: F) -> ApiResult<T>
     where
         T: Send + 'static,
-        F: FnOnce(&Engine) -> ApiResult<T> + Send + 'static,
+        F: FnOnce(&Engine, &CancelToken) -> ApiResult<T> + Send + 'static,
     {
         if self.draining() {
             return Err(ApiError::shutting_down());
         }
-        let permit = tokio::time::timeout(Duration::from_secs(10), self.query_permits.clone().acquire_owned())
-            .await
-            .map_err(|_| ApiError::unavailable("too many concurrent queries; try again shortly"))?
-            .map_err(|_| ApiError::unavailable("shutting down"))?;
+        let wait = self.config.query.queue_timeout;
+        let permit = match tokio::time::timeout(wait, self.query_permits.clone().acquire_owned()).await {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => return Err(ApiError::unavailable("shutting down")),
+            Err(_) => {
+                self.query_outcomes.rejected.fetch_add(1, Ordering::Relaxed);
+                return Err(ApiError::unavailable(format!(
+                    "all {} query slots are busy; try again shortly",
+                    self.config.query.max_concurrent
+                )));
+            }
+        };
         let engine = self.engine.clone();
-        tokio::task::spawn_blocking(move || {
+        let outcomes = self.query_outcomes.clone();
+        let guard = CancelOnDrop(CancelToken::new());
+        let cancel = guard.0.clone();
+        let r = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            f(&engine)
+            let r = f(&engine, &cancel);
+            if let Err(e) = &r {
+                outcomes.record(e);
+                if e.code == "query_cancelled" {
+                    tracing::debug!("query cancelled: the client disconnected");
+                }
+            }
+            r
         })
-        .await?
+        .await?;
+        drop(guard);
+        r
     }
 }
