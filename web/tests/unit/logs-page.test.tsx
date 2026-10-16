@@ -33,7 +33,10 @@ function setup(error?: boolean, logCount = 2) {
     '/api/v1/system/info': () => ({ eventCounts: { logs: logCount, traces: 0, metrics: 0 } }),
     '/api/v1/query/logs': (body) => {
       if (error) {
-        return new Response(JSON.stringify({ error: { code: 'invalid_query', message: "Expected a value after '='", position: 8 } }), { status: 400 });
+        return new Response(
+          JSON.stringify({ error: { code: 'invalid_query', message: "Expected a value after '='", position: 8 } }),
+          { status: 400 },
+        );
       }
       const q = (body as { query: string }).query;
       return { events: q.includes('nothing') ? [] : [first, second], diagnostics: diag, continuationToken: null };
@@ -92,9 +95,17 @@ describe('LogsPage', () => {
     await screen.findByText('first event');
     const panel = await screen.findByRole('complementary', { name: 'Columns and filters' });
     await userEvent.click(await within(panel).findByRole('button', { name: /production/ }));
-    await waitFor(() => expect(new URLSearchParams(window.location.search).get('q')).toBe('level = Error and environment = "production"'));
     await waitFor(() =>
-      expect(calls.some((c) => c.url === '/api/v1/query/logs' && (c.body as { query: string }).query === 'level = Error and environment = "production"')).toBe(true),
+      expect(new URLSearchParams(window.location.search).get('q')).toBe('level = Error and environment = "production"'),
+    );
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.url === '/api/v1/query/logs' &&
+            (c.body as { query: string }).query === 'level = Error and environment = "production"',
+        ),
+      ).toBe(true),
     );
   });
 

@@ -107,8 +107,28 @@ The OTLP fixtures contain `{{now-…}}` placeholders; see
 ```bash
 cargo fmt --all
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cd web && npm run lint && npm run typecheck
+cd web && npm run format && npm run lint && npm run typecheck
 ```
+
+The web UI is formatted with [Prettier](https://prettier.io) (`web/.prettierrc.json`: 120
+columns to match `rustfmt.toml`, single quotes, trailing commas). `npm run format` rewrites
+files in place; `npm run format:check` is what CI runs and fails on any unformatted file.
+Don't hand-align code or fight the formatter; if a line reads badly once wrapped, extract a
+named local instead. Generated files (`src/lib/wordmark.ts`) are listed in
+`web/.prettierignore` and stay as their generator writes them.
+
+Beyond layout, a few style rules are enforced so they don't come up in review:
+
+* **Rust** (`rustfmt.toml`): field-init shorthand (`Foo { bar }`, not `Foo { bar: bar }`)
+  and `?` instead of `try!`, on top of the 120-column width.
+* **TypeScript** (`web/eslint.config.js`): `import type` for type-only imports, `interface`
+  rather than `type` for object shapes (`type` stays for unions and aliases), `T[]` rather
+  than `Array<T>`, `===` (`== null` is allowed for null-or-undefined), braces on any `if`
+  or loop whose body spans lines, object shorthand and template literals instead of string
+  concatenation. `npx eslint . --fix` fixes all of these.
+* **Every file** (`.editorconfig`): UTF-8, spaces, final newline, no trailing whitespace;
+  4-space indents for Rust and C#, 2 for everything else. Most editors pick this up
+  automatically.
 
 ## Benchmarks and profiling
 

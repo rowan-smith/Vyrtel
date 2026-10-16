@@ -1,7 +1,15 @@
 import type { Json, TelemetryEvent } from './types';
 
 /** Fields every log event has (or commonly has), in display order. */
-export const BUILTIN_COLUMNS = ['timestamp', 'level', 'service', 'message', 'environment', 'traceId', 'spanId'] as const;
+export const BUILTIN_COLUMNS = [
+  'timestamp',
+  'level',
+  'service',
+  'message',
+  'environment',
+  'traceId',
+  'spanId',
+] as const;
 
 /** Columns offered in the side panel's "Pinned" list (deliberately short for now). */
 export const AVAILABLE_COLUMNS = ['timestamp', 'level', 'message'];
@@ -20,7 +28,22 @@ const LABELS: Record<string, string> = {
   'exception.type': 'Exception',
 };
 
-const ACRONYMS = new Set(['id', 'http', 'https', 'url', 'uri', 'api', 'ip', 'db', 'sql', 'os', 'cpu', 'ui', 'tls', 'dns']);
+const ACRONYMS = new Set([
+  'id',
+  'http',
+  'https',
+  'url',
+  'uri',
+  'api',
+  'ip',
+  'db',
+  'sql',
+  'os',
+  'cpu',
+  'ui',
+  'tls',
+  'dns',
+]);
 
 /** `customerId` → "Customer ID", `http.statusCode` → "HTTP status code". */
 export function columnLabel(key: string): string {
@@ -68,7 +91,11 @@ export function columnValue(event: TelemetryEvent, key: string): Json | undefine
 export function orderColumns(pinned: string[]): string[] {
   const set = new Set(pinned);
   const extras = pinned.filter((k) => !['timestamp', 'level', 'service', 'message'].includes(k));
-  return [...['timestamp', 'level', 'service'].filter((k) => set.has(k)), ...extras, ...(set.has('message') ? ['message'] : [])];
+  return [
+    ...['timestamp', 'level', 'service'].filter((k) => set.has(k)),
+    ...extras,
+    ...(set.has('message') ? ['message'] : []),
+  ];
 }
 
 /** CSS grid template for a row of these columns; the message (or the last column) takes the rest. */

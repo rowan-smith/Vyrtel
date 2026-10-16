@@ -75,7 +75,10 @@ function MetricsView() {
     setLoading(true);
     setError(null);
     api
-      .metricQuery({ name, agg, groupBy: groupBy || undefined, query: filter || undefined, ...boundedWindow(range) }, ctrl.signal)
+      .metricQuery(
+        { name, agg, groupBy: groupBy || undefined, query: filter || undefined, ...boundedWindow(range) },
+        ctrl.signal,
+      )
       .then(setData)
       .catch((e) => {
         if (e.name !== 'AbortError') setError(e);
@@ -108,7 +111,12 @@ function MetricsView() {
         </label>
         <label>
           <span className="label">Aggregation</span>
-          <select className="select" aria-label="Aggregation" value={agg} onChange={(e) => set({ agg: e.target.value })}>
+          <select
+            className="select"
+            aria-label="Aggregation"
+            value={agg}
+            onChange={(e) => set({ agg: e.target.value })}
+          >
             {AGGS.map((a) => (
               <option key={a}>{a}</option>
             ))}
@@ -116,11 +124,21 @@ function MetricsView() {
         </label>
         <label>
           <span className="label">Group by</span>
-          <input className="input" placeholder="attribute, e.g. route" value={draft.groupBy} onChange={(e) => setDraft({ ...draft, groupBy: e.target.value })} />
+          <input
+            className="input"
+            placeholder="attribute, e.g. route"
+            value={draft.groupBy}
+            onChange={(e) => setDraft({ ...draft, groupBy: e.target.value })}
+          />
         </label>
         <label className="grow">
           <span className="label">Filter</span>
-          <input className="input" placeholder='route = "/checkout"' value={draft.filter} onChange={(e) => setDraft({ ...draft, filter: e.target.value })} />
+          <input
+            className="input"
+            placeholder='route = "/checkout"'
+            value={draft.filter}
+            onChange={(e) => setDraft({ ...draft, filter: e.target.value })}
+          />
         </label>
         <RangeSelect value={range} onChange={(r) => set({ range: r })} />
         <button className="btn btn-primary" type="submit">

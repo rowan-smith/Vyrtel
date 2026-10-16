@@ -44,7 +44,10 @@ export function QueryBar({
       />
       <button className="btn btn-run" type="submit" disabled={running} aria-label="Run" title="Run query (Enter)">
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-          <path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z" fill="currentColor" />
+          <path
+            d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"
+            fill="currentColor"
+          />
         </svg>
       </button>
       {children}
@@ -52,7 +55,15 @@ export function QueryBar({
   );
 }
 
-export function LiveToggle({ live, status, onChange }: { live: boolean; status?: string; onChange: (live: boolean) => void }) {
+export function LiveToggle({
+  live,
+  status,
+  onChange,
+}: {
+  live: boolean;
+  status?: string;
+  onChange: (live: boolean) => void;
+}) {
   // Always labelled "Live"; the dot shows the state (red off, amber connecting, green on) and
   // aria-pressed carries it for assistive tech. Green only once the stream reports it is
   // connected: right after the click the status is still "off" until the stream starts, and
@@ -114,7 +125,17 @@ export function RangeSelect({ value, onChange }: { value: string; onChange: (v: 
         title={`Time range: ${current.label}`}
         onClick={() => setOpen((o) => !o)}
       >
-        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <svg
+          viewBox="0 0 24 24"
+          width="17"
+          height="17"
+          aria-hidden="true"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.9"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
           <circle cx="12" cy="12" r="9" />
           <path d="M12 7v5l3 2" />
         </svg>

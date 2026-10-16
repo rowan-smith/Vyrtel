@@ -23,10 +23,28 @@ function Section({ title, action, children }: { title: string; action?: ReactNod
   );
 }
 
-function Option({ on, label, count, title, onClick }: { on: boolean; label: string; count?: number; title: string; onClick: () => void }) {
+function Option({
+  on,
+  label,
+  count,
+  title,
+  onClick,
+}: {
+  on: boolean;
+  label: string;
+  count?: number;
+  title: string;
+  onClick: () => void;
+}) {
   return (
     <li>
-      <button type="button" className={`side-option ${on ? 'is-on' : ''}`} aria-pressed={on} title={title} onClick={onClick}>
+      <button
+        type="button"
+        className={`side-option ${on ? 'is-on' : ''}`}
+        aria-pressed={on}
+        title={title}
+        onClick={onClick}
+      >
         <span className="side-dot" aria-hidden="true" />
         <span className="side-label">{label}</span>
         {count !== undefined && <span className="side-count">{formatCount(count)}</span>}
@@ -60,9 +78,10 @@ export function LogsSidebar({
   const candidates = AVAILABLE_COLUMNS;
   const isDefault = columns.length === DEFAULT_COLUMNS.length && DEFAULT_COLUMNS.every((c) => columns.includes(c));
 
-  const groups = GROUPS.map(([field, title]) => ({ title, facet: facets.find((f) => f.field === field && f.values.length > 0) })).filter(
-    (g): g is { title: string; facet: Facet } => !!g.facet,
-  );
+  const groups = GROUPS.map(([field, title]) => ({
+    title,
+    facet: facets.find((f) => f.field === field && f.values.length > 0),
+  })).filter((g): g is { title: string; facet: Facet } => !!g.facet);
 
   const togglePin = (key: string) =>
     onColumnsChange(columns.includes(key) ? columns.filter((c) => c !== key) : [...columns, key]);
@@ -73,7 +92,12 @@ export function LogsSidebar({
         title="Pinned"
         action={
           !isDefault && (
-            <button type="button" className="side-action" onClick={() => onColumnsChange(DEFAULT_COLUMNS)} title="Show the default columns">
+            <button
+              type="button"
+              className="side-action"
+              onClick={() => onColumnsChange(DEFAULT_COLUMNS)}
+              title="Show the default columns"
+            >
               Reset
             </button>
           )
@@ -95,8 +119,13 @@ export function LogsSidebar({
         </ul>
       </Section>
 
-      <Section title="Filters" action={<span className="side-note">{loading ? 'updating…' : `${formatCount(sampled)} events`}</span>}>
-        {groups.length === 0 && !loading && <div className="muted small side-empty">No levels or environments yet.</div>}
+      <Section
+        title="Filters"
+        action={<span className="side-note">{loading ? 'updating…' : `${formatCount(sampled)} events`}</span>}
+      >
+        {groups.length === 0 && !loading && (
+          <div className="muted small side-empty">No levels or environments yet.</div>
+        )}
         {groups.map(({ title, facet: f }) => (
           <div key={f.field} className="side-group">
             <h3 className="side-group-name" title={`${formatCount(f.count)} events have this field`}>

@@ -67,7 +67,12 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
   if (!res.ok) {
     const err = (data as { error?: { code?: string; message?: string; position?: number } } | undefined)?.error;
     if (res.status === 401 && onUnauthorized && !path.startsWith('/api/v1/auth/')) onUnauthorized();
-    throw new ApiError(res.status, err?.code ?? 'http_error', err?.message ?? `Request failed (${res.status})`, err?.position);
+    throw new ApiError(
+      res.status,
+      err?.code ?? 'http_error',
+      err?.message ?? `Request failed (${res.status})`,
+      err?.position,
+    );
   }
   return data as T;
 }
@@ -88,7 +93,12 @@ export const api = {
   logout: () => post<{ ok: boolean }>('/api/v1/auth/logout', {}),
 
   searchLogs: (
-    q: { query: string; limit?: number; direction?: 'backward' | 'forward'; continuationToken?: string | null } & TimeWindow,
+    q: {
+      query: string;
+      limit?: number;
+      direction?: 'backward' | 'forward';
+      continuationToken?: string | null;
+    } & TimeWindow,
     signal?: AbortSignal,
   ) => post<SearchResponse>('/api/v1/query/logs', q, signal),
   histogram: (signalName: string, q: { query: string; buckets?: number } & TimeWindow, signal?: AbortSignal) =>
@@ -122,7 +132,8 @@ export const api = {
   ) => put<Panel>(`/api/v1/dashboards/${id}/panels/${panelId}`, p),
   deletePanel: (id: number, panelId: number) => del(`/api/v1/dashboards/${id}/panels/${panelId}`),
 
-  savedQueries: () => get<{ savedQueries: { id: number; name: string; signal: string; query: string }[] }>('/api/v1/saved-queries'),
+  savedQueries: () =>
+    get<{ savedQueries: { id: number; name: string; signal: string; query: string }[] }>('/api/v1/saved-queries'),
   saveQuery: (name: string, query: string) => post('/api/v1/saved-queries', { name, query, signal: 'logs' }),
   deleteSavedQuery: (id: number) => del(`/api/v1/saved-queries/${id}`),
 

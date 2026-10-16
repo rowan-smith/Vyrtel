@@ -1,7 +1,9 @@
 // Types mirroring the HTTP API (docs/api.md).
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-export type Fields = { [key: string]: Json };
+export interface Fields {
+  [key: string]: Json;
+}
 
 export type Level = 'Trace' | 'Debug' | 'Information' | 'Warning' | 'Error' | 'Fatal';
 

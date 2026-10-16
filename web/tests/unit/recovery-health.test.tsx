@@ -29,7 +29,9 @@ function storage(signals: Partial<Record<'logs' | 'traces' | 'metrics', SignalRe
   const sig = (r: SignalRecovery) => ({ recovery: r }) as StorageStats['signals']['logs'];
   const all = { logs: recovery(), traces: recovery(), metrics: recovery(), ...signals };
   const affected = (['logs', 'traces', 'metrics'] as const).filter((k) => all[k].status !== 'clean');
-  const worst = (['damaged', 'unknown', 'quarantineRetained'] as const).find((st) => affected.some((k) => all[k].status === st));
+  const worst = (['damaged', 'unknown', 'quarantineRetained'] as const).find((st) =>
+    affected.some((k) => all[k].status === st),
+  );
   const status = worst ?? 'clean';
   return {
     recovery: { status, signals: affected },
@@ -68,7 +70,10 @@ describe('RecoveryHealth', () => {
     expect(alert).toHaveTextContent('Startup recovery set damaged data aside');
     expect(alert).toHaveTextContent('not queryable');
     expect(alert).toHaveTextContent('Vyrtel does not repair them');
-    expect(within(alert).getByRole('link', { name: 'Recovery documentation' })).toHaveAttribute('href', RECOVERY_DOCS_URL);
+    expect(within(alert).getByRole('link', { name: 'Recovery documentation' })).toHaveAttribute(
+      'href',
+      RECOVERY_DOCS_URL,
+    );
     const rows = within(alert).getAllByRole('row');
     expect(rows).toHaveLength(2);
     expect(rows[1]).toHaveTextContent('logs');
@@ -94,7 +99,11 @@ describe('RecoveryHealth', () => {
   it('never treats an unreadable quarantine directory as clean', () => {
     const unreadable = recovery({
       status: 'unknown',
-      quarantineDir: { files: null, bytes: null, error: { reason: 'permissionDenied', message: 'Permission denied (os error 13)' } },
+      quarantineDir: {
+        files: null,
+        bytes: null,
+        error: { reason: 'permissionDenied', message: 'Permission denied (os error 13)' },
+      },
     });
     render(<RecoveryHealth storage={storage({ logs: unreadable })} />);
     const alert = screen.getByRole('alert');

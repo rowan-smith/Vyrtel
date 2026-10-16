@@ -26,9 +26,17 @@ function StorageTab() {
     <div>
       <RecoveryHealth storage={s} />
       <div className="stats" data-testid="storage-stats">
-        <Stat label="Raw ingested" value={formatBytes(s.rawBytes)} hint="Uncompressed size in Vyrtel's binary event encoding" />
+        <Stat
+          label="Raw ingested"
+          value={formatBytes(s.rawBytes)}
+          hint="Uncompressed size in Vyrtel's binary event encoding"
+        />
         <Stat label="Stored" value={formatBytes(s.storedBytes)} hint="Segments + indexes + WAL + metadata on disk" />
-        <Stat label="Compression" value={s.compressionRatio ? `${s.compressionRatio.toFixed(1)}×` : '–'} hint="Sealed segments: raw / (data + index)" />
+        <Stat
+          label="Compression"
+          value={s.compressionRatio ? `${s.compressionRatio.toFixed(1)}×` : '–'}
+          hint="Sealed segments: raw / (data + index)"
+        />
         <Stat label="Segments" value={formatCount(s.segmentCount)} />
         <Stat label="Events" value={formatCount(s.eventCount)} />
       </div>
@@ -66,9 +74,10 @@ function StorageTab() {
         </tbody>
       </table>
       <p className="muted small">
-        Index overhead {s.indexOverhead != null ? `${(s.indexOverhead * 100).toFixed(1)}%` : '–'} of compressed data · metadata{' '}
-        {formatBytes(s.metadataBytes)} · index cache {formatBytes(s.indexCache.usedBytes)} / {formatBytes(s.indexCache.budgetBytes)} ({s.indexCache.hits} hits,{' '}
-        {s.indexCache.misses} misses) · quarantine {formatBytes(s.quarantineBytes)} · received since start {formatBytes(s.receivedBytes)}
+        Index overhead {s.indexOverhead != null ? `${(s.indexOverhead * 100).toFixed(1)}%` : '–'} of compressed data ·
+        metadata {formatBytes(s.metadataBytes)} · index cache {formatBytes(s.indexCache.usedBytes)} /{' '}
+        {formatBytes(s.indexCache.budgetBytes)} ({s.indexCache.hits} hits, {s.indexCache.misses} misses) · quarantine{' '}
+        {formatBytes(s.quarantineBytes)} · received since start {formatBytes(s.receivedBytes)}
       </p>
     </div>
   );
@@ -109,19 +118,22 @@ function SystemTab() {
         <tr>
           <th>Events</th>
           <td>
-            logs {formatCount(i.eventCounts.logs)} · traces {formatCount(i.eventCounts.traces)} · metrics {formatCount(i.eventCounts.metrics)}
+            logs {formatCount(i.eventCounts.logs)} · traces {formatCount(i.eventCounts.traces)} · metrics{' '}
+            {formatCount(i.eventCounts.metrics)}
           </td>
         </tr>
         <tr>
           <th>Memory limit</th>
           <td>
-            {formatBytes(i.memory.limitBytes)} {i.memory.rssBytes != null && <span className="muted">(resident {formatBytes(i.memory.rssBytes)})</span>}
+            {formatBytes(i.memory.limitBytes)}{' '}
+            {i.memory.rssBytes != null && <span className="muted">(resident {formatBytes(i.memory.rssBytes)})</span>}
           </td>
         </tr>
         <tr>
           <th>Memory budgets</th>
           <td>
-            active segments {formatBytes(b.activeSegments as number)} · index cache {formatBytes(b.indexCache as number)} · ingest {formatBytes(b.ingest as number)} · queries{' '}
+            active segments {formatBytes(b.activeSegments as number)} · index cache{' '}
+            {formatBytes(b.indexCache as number)} · ingest {formatBytes(b.ingest as number)} · queries{' '}
             {formatBytes(b.queries as number)} · background {formatBytes(b.background as number)}
           </td>
         </tr>
@@ -160,8 +172,8 @@ function KeysTab() {
   return (
     <div>
       <p className="muted">
-        Send keys as <code>Authorization: Bearer &lt;key&gt;</code> or <code>X-Api-Key</code>. Ingest keys can only send data; admin keys can use the whole API. Keys are
-        enforced when authentication is enabled.
+        Send keys as <code>Authorization: Bearer &lt;key&gt;</code> or <code>X-Api-Key</code>. Ingest keys can only send
+        data; admin keys can use the whole API. Keys are enforced when authentication is enabled.
       </p>
       <form
         className="inline-form"
@@ -176,8 +188,20 @@ function KeysTab() {
           }
         }}
       >
-        <input className="input" aria-label="Key name" placeholder="Key name, e.g. checkout-service" value={name} onChange={(e) => setName(e.target.value)} required />
-        <select className="select" aria-label="Scope" value={scope} onChange={(e) => setScope(e.target.value as 'ingest' | 'admin')}>
+        <input
+          className="input"
+          aria-label="Key name"
+          placeholder="Key name, e.g. checkout-service"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          required
+        />
+        <select
+          className="select"
+          aria-label="Scope"
+          value={scope}
+          onChange={(e) => setScope(e.target.value as 'ingest' | 'admin')}
+        >
           <option value="ingest">ingest</option>
           <option value="admin">admin</option>
         </select>
@@ -243,7 +267,10 @@ function QueriesTab() {
   if (!rows) return <Spinner />;
   return (
     <div>
-      <p className="muted">Which fields are queried, how much they cost and how often existing indexes helped. This is the input for adaptive indexing in a future version.</p>
+      <p className="muted">
+        Which fields are queried, how much they cost and how often existing indexes helped. This is the input for
+        adaptive indexing in a future version.
+      </p>
       <table className="table">
         <thead>
           <tr>
@@ -284,7 +311,13 @@ export function SettingsPage() {
       <h1>Settings</h1>
       <div className="tabs" role="tablist">
         {TABS.map(([k, label]) => (
-          <button key={k} role="tab" aria-selected={tab === k} className={`tab ${tab === k ? 'is-active' : ''}`} onClick={() => navigate(`/settings?tab=${k}`)}>
+          <button
+            key={k}
+            role="tab"
+            aria-selected={tab === k}
+            className={`tab ${tab === k ? 'is-active' : ''}`}
+            onClick={() => navigate(`/settings?tab=${k}`)}
+          >
             {label}
           </button>
         ))}

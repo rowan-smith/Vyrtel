@@ -44,7 +44,7 @@ cla@vyrtel.com, along with the list of people it covers. The steps are in the do
 
    ```bash
    cargo fmt --all && cargo clippy --workspace --all-targets && cargo test --workspace
-   cd web && npm run lint && npm run typecheck && npm test
+   cd web && npm run format && npm run lint && npm run typecheck && npm test
    ```
 
 5. Open a pull request describing **what** changed and **why**. Screenshots help for UI changes.

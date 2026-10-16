@@ -22,7 +22,13 @@ export function logEvent(overrides: Partial<TelemetryEvent> = {}): TelemetryEven
     spanId: '00f067aa0ba902b7',
     level: 'Error',
     message: 'Payment provider timed out',
-    properties: { customerId: 481, paymentProvider: 'stripe', http: { statusCode: 504, method: 'POST' }, tags: ['a', 'b'], note: null },
+    properties: {
+      customerId: 481,
+      paymentProvider: 'stripe',
+      http: { statusCode: 504, method: 'POST' },
+      tags: ['a', 'b'],
+      note: null,
+    },
     resource: { 'host.name': 'web-1' },
     exception: {
       type: 'TimeoutException',
@@ -52,7 +58,9 @@ export class FakeEventSource {
   }
 
   emit(type: string, data: unknown) {
-    for (const fn of this.listeners.get(type) ?? []) fn(new MessageEvent(type, { data: typeof data === 'string' ? data : JSON.stringify(data) }));
+    for (const fn of this.listeners.get(type) ?? []) {
+      fn(new MessageEvent(type, { data: typeof data === 'string' ? data : JSON.stringify(data) }));
+    }
   }
 
   close() {
@@ -77,7 +85,9 @@ export function mockFetch(routes: Record<string, Handler>) {
     calls.push({ url, body });
     const path = url.split('?')[0];
     const h = routes[path];
-    if (!h) return new Response(JSON.stringify({ error: { code: 'not_found', message: 'not found' } }), { status: 404 });
+    if (!h) {
+      return new Response(JSON.stringify({ error: { code: 'not_found', message: 'not found' } }), { status: 404 });
+    }
     const out = h(body, url);
     if (out instanceof Response) return out;
     return new Response(JSON.stringify(out), { status: 200, headers: { 'content-type': 'application/json' } });

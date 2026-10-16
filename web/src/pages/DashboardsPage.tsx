@@ -42,7 +42,13 @@ export function DashboardsPage() {
         create();
       }}
     >
-      <input className="input" aria-label="New dashboard name" placeholder="New dashboard name" value={name} onChange={(e) => setName(e.target.value)} />
+      <input
+        className="input"
+        aria-label="New dashboard name"
+        placeholder="New dashboard name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+      />
       <button className="btn btn-primary" type="submit" disabled={!name.trim()}>
         Create
       </button>
@@ -93,7 +99,15 @@ const KIND_LABELS: Record<PanelKind, string> = {
   saved_query: 'Saved log query',
 };
 
-type Draft = { title: string; kind: PanelKind; query: string; metric: string; agg: Agg; groupBy: string; width: number };
+interface Draft {
+  title: string;
+  kind: PanelKind;
+  query: string;
+  metric: string;
+  agg: Agg;
+  groupBy: string;
+  width: number;
+}
 
 function draftOf(p?: Panel): Draft {
   const c = p?.config ?? {};
@@ -112,7 +126,12 @@ function draftOf(p?: Panel): Draft {
 function configOf(d: Draft): { [k: string]: Json } {
   switch (d.kind) {
     case 'metric_line':
-      return { metric: d.metric, agg: d.agg, ...(d.groupBy ? { groupBy: d.groupBy } : {}), ...(d.query ? { query: d.query } : {}) };
+      return {
+        metric: d.metric,
+        agg: d.agg,
+        ...(d.groupBy ? { groupBy: d.groupBy } : {}),
+        ...(d.query ? { query: d.query } : {}),
+      };
     case 'single_stat':
       return d.metric ? { metric: d.metric, agg: d.agg } : { query: d.query };
     default:
@@ -120,7 +139,17 @@ function configOf(d: Draft): { [k: string]: Json } {
   }
 }
 
-function PanelEditor({ panel, metrics, onSave, onClose }: { panel?: Panel; metrics: string[]; onSave: (d: Draft) => Promise<void>; onClose: () => void }) {
+function PanelEditor({
+  panel,
+  metrics,
+  onSave,
+  onClose,
+}: {
+  panel?: Panel;
+  metrics: string[];
+  onSave: (d: Draft) => Promise<void>;
+  onClose: () => void;
+}) {
   const [d, setD] = useState<Draft>(() => draftOf(panel));
   const [error, setError] = useState<unknown>(null);
   const usesMetric = d.kind === 'metric_line' || (d.kind === 'single_stat' && d.metric !== '');
@@ -153,7 +182,9 @@ function PanelEditor({ panel, metrics, onSave, onClose }: { panel?: Panel; metri
         </label>
         {(d.kind === 'metric_line' || d.kind === 'single_stat') && (
           <label>
-            <span className="label">Metric {d.kind === 'single_stat' && <span className="muted">(leave empty to count logs)</span>}</span>
+            <span className="label">
+              Metric {d.kind === 'single_stat' && <span className="muted">(leave empty to count logs)</span>}
+            </span>
             <select className="select" value={d.metric} onChange={(e) => setD({ ...d, metric: e.target.value })}>
               {d.kind === 'single_stat' && <option value="">— count log events —</option>}
               {metrics.map((m) => (
@@ -181,7 +212,12 @@ function PanelEditor({ panel, metrics, onSave, onClose }: { panel?: Panel; metri
         {!usesMetric && (
           <label>
             <span className="label">Log query</span>
-            <input className="input mono" value={d.query} placeholder='level = "Error"' onChange={(e) => setD({ ...d, query: e.target.value })} />
+            <input
+              className="input mono"
+              value={d.query}
+              placeholder='level = "Error"'
+              onChange={(e) => setD({ ...d, query: e.target.value })}
+            />
           </label>
         )}
         <label>
@@ -228,7 +264,10 @@ function PanelBody({ panel, range, refresh }: { panel: Panel; range: string; ref
         break;
       case 'single_stat':
         p = metric
-          ? api.metricQuery({ name: metric, agg, ...win, stepMs: Math.max(1000, Date.parse(win.to) - Date.parse(win.from)) }, ctrl.signal)
+          ? api.metricQuery(
+              { name: metric, agg, ...win, stepMs: Math.max(1000, Date.parse(win.to) - Date.parse(win.from)) },
+              ctrl.signal,
+            )
           : api.count('logs', { query, ...win }, ctrl.signal);
         break;
       case 'saved_query':
@@ -278,7 +317,8 @@ function PanelBody({ panel, range, refresh }: { panel: Panel; range: string; ref
           <ul className="mini-logs">
             {events.map((e) => (
               <li key={e.id}>
-                <span className="muted">{formatDateTime(e.timestamp)}</span> <span className={`lvl-dot lvl-${(e.level ?? '').toLowerCase()}`} /> {e.message}
+                <span className="muted">{formatDateTime(e.timestamp)}</span>{' '}
+                <span className={`lvl-dot lvl-${(e.level ?? '').toLowerCase()}`} /> {e.message}
               </li>
             ))}
           </ul>
@@ -316,8 +356,20 @@ export function DashboardPage({ id }: { id: number }) {
     return () => window.clearInterval(t);
   }, []);
 
-  if (error) return <div className="page"><ErrorBanner error={error} /></div>;
-  if (!dash) return <div className="page"><Spinner /></div>;
+  if (error) {
+    return (
+      <div className="page">
+        <ErrorBanner error={error} />
+      </div>
+    );
+  }
+  if (!dash) {
+    return (
+      <div className="page">
+        <Spinner />
+      </div>
+    );
+  }
 
   const save = async (d: Draft) => {
     const body = { title: d.title, kind: d.kind, config: configOf(d), width: d.width };
@@ -333,7 +385,13 @@ export function DashboardPage({ id }: { id: number }) {
     const j = i + delta;
     if (j < 0 || j >= ordered.length) return;
     [ordered[i], ordered[j]] = [ordered[j], ordered[i]];
-    await Promise.all(ordered.map((x, pos) => (x.position === pos ? null : api.updatePanel(dash.id, x.id, { title: x.title, kind: x.kind, config: x.config, position: pos }))));
+    await Promise.all(
+      ordered.map((x, pos) =>
+        x.position === pos
+          ? null
+          : api.updatePanel(dash.id, x.id, { title: x.title, kind: x.kind, config: x.config, position: pos }),
+      ),
+    );
     load();
   };
 
@@ -357,7 +415,13 @@ export function DashboardPage({ id }: { id: number }) {
               load();
             }}
           >
-            <input className="input" aria-label="Dashboard name" value={renaming} onChange={(e) => setRenaming(e.target.value)} autoFocus />
+            <input
+              className="input"
+              aria-label="Dashboard name"
+              value={renaming}
+              onChange={(e) => setRenaming(e.target.value)}
+              autoFocus
+            />
             <button className="btn btn-primary">Save</button>
             <button type="button" className="btn" onClick={() => setRenaming(null)}>
               Cancel
@@ -394,7 +458,12 @@ export function DashboardPage({ id }: { id: number }) {
                 <button className="icon-btn" aria-label="Move left" disabled={i === 0} onClick={() => move(p, -1)}>
                   ←
                 </button>
-                <button className="icon-btn" aria-label="Move right" disabled={i === dash.panels.length - 1} onClick={() => move(p, 1)}>
+                <button
+                  className="icon-btn"
+                  aria-label="Move right"
+                  disabled={i === dash.panels.length - 1}
+                  onClick={() => move(p, 1)}
+                >
                   →
                 </button>
                 <button className="icon-btn" aria-label="Edit panel" onClick={() => setEditing(p)}>
@@ -416,7 +485,14 @@ export function DashboardPage({ id }: { id: number }) {
           </div>
         ))}
       </div>
-      {editing && <PanelEditor panel={editing === 'new' ? undefined : editing} metrics={metrics} onSave={save} onClose={() => setEditing(null)} />}
+      {editing && (
+        <PanelEditor
+          panel={editing === 'new' ? undefined : editing}
+          metrics={metrics}
+          onSave={save}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
   );
 }

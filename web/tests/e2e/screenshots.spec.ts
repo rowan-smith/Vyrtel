@@ -13,10 +13,22 @@ test.skip(!process.env.SCREENSHOTS, 'set SCREENSHOTS=1 to regenerate documentati
 test('documentation screenshots', async ({ page, request }) => {
   await page.setViewportSize({ width: 1400, height: 860 });
   await page.emulateMedia({ colorScheme: 'dark' });
-  await request.post('/api/v1/events', { headers: { 'content-type': 'application/x-ndjson' }, data: loadFixture('logs.ndjson') });
-  await request.post('/v1/traces', { headers: { 'content-type': 'application/json' }, data: loadFixture('otlp-traces.json') });
-  await request.post('/v1/logs', { headers: { 'content-type': 'application/json' }, data: loadFixture('otlp-logs.json') });
-  await request.post('/v1/metrics', { headers: { 'content-type': 'application/json' }, data: loadFixture('otlp-metrics.json') });
+  await request.post('/api/v1/events', {
+    headers: { 'content-type': 'application/x-ndjson' },
+    data: loadFixture('logs.ndjson'),
+  });
+  await request.post('/v1/traces', {
+    headers: { 'content-type': 'application/json' },
+    data: loadFixture('otlp-traces.json'),
+  });
+  await request.post('/v1/logs', {
+    headers: { 'content-type': 'application/json' },
+    data: loadFixture('otlp-logs.json'),
+  });
+  await request.post('/v1/metrics', {
+    headers: { 'content-type': 'application/json' },
+    data: loadFixture('otlp-metrics.json'),
+  });
 
   await page.goto('/logs');
   const row = page.getByTestId('log-row').filter({ hasText: 'Payment provider timed out' });

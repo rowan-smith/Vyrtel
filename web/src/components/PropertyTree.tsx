@@ -8,7 +8,15 @@ export type FilterAction = (field: string, value: Json, negate: boolean) => void
  * Structured properties rendered vertically: one row per key, nested
  * objects indented underneath. Never a wide horizontal table.
  */
-export function PropertyTree({ fields, prefix = '', onFilter }: { fields: Fields; prefix?: string; onFilter?: FilterAction }) {
+export function PropertyTree({
+  fields,
+  prefix = '',
+  onFilter,
+}: {
+  fields: Fields;
+  prefix?: string;
+  onFilter?: FilterAction;
+}) {
   const entries = Object.entries(fields);
   if (!entries.length) return <div className="muted small">No properties</div>;
   return (
@@ -20,7 +28,17 @@ export function PropertyTree({ fields, prefix = '', onFilter }: { fields: Fields
   );
 }
 
-function PropertyRow({ name, path, value, onFilter }: { name: string; path: string; value: Json; onFilter?: FilterAction }) {
+function PropertyRow({
+  name,
+  path,
+  value,
+  onFilter,
+}: {
+  name: string;
+  path: string;
+  value: Json;
+  onFilter?: FilterAction;
+}) {
   const nested = value !== null && typeof value === 'object' && !Array.isArray(value);
   const scalarArray = Array.isArray(value) && value.every((x) => x === null || typeof x !== 'object');
   return (
@@ -36,10 +54,22 @@ function PropertyRow({ name, path, value, onFilter }: { name: string; path: stri
             <span className={`val val-${value === null ? 'null' : typeof value}`}>{valueText(value)}</span>
             {onFilter && isPlainField(path) && !Array.isArray(value) && (
               <span className="prop-actions">
-                <button type="button" className="mini-btn" title={`Filter: ${path} = value`} aria-label={`Include ${path}`} onClick={() => onFilter(path, value, false)}>
+                <button
+                  type="button"
+                  className="mini-btn"
+                  title={`Filter: ${path} = value`}
+                  aria-label={`Include ${path}`}
+                  onClick={() => onFilter(path, value, false)}
+                >
                   =
                 </button>
-                <button type="button" className="mini-btn" title={`Exclude: ${path} != value`} aria-label={`Exclude ${path}`} onClick={() => onFilter(path, value, true)}>
+                <button
+                  type="button"
+                  className="mini-btn"
+                  title={`Exclude: ${path} != value`}
+                  aria-label={`Exclude ${path}`}
+                  onClick={() => onFilter(path, value, true)}
+                >
                   ≠
                 </button>
               </span>
