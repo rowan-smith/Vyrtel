@@ -27,7 +27,8 @@ export function spanTree(spans: TelemetryEvent[]): Row[] {
       roots.push(s);
     }
   }
-  const byStart = (a: TelemetryEvent, b: TelemetryEvent) => Date.parse(a.timestamp) - Date.parse(b.timestamp) || a.id.localeCompare(b.id);
+  const byStart = (a: TelemetryEvent, b: TelemetryEvent) =>
+    Date.parse(a.timestamp) - Date.parse(b.timestamp) || a.id.localeCompare(b.id);
   const out: Row[] = [];
   const seen = new Set<string>();
   const walk = (s: TelemetryEvent, depth: number) => {
@@ -69,8 +70,18 @@ export function TraceDetailPage({ traceId }: { traceId: string }) {
   }, [traceId]);
 
   const rows = useMemo(() => (trace ? spanTree(trace.spans) : []), [trace]);
-  if (error) return <div className="page"><ErrorBanner error={error} /></div>;
-  if (!trace) return <div className="page"><Spinner /></div>;
+  if (error)
+    return (
+      <div className="page">
+        <ErrorBanner error={error} />
+      </div>
+    );
+  if (!trace)
+    return (
+      <div className="page">
+        <Spinner />
+      </div>
+    );
 
   const base = Math.floor(Date.parse(trace.spans[0].timestamp) / 1000);
   const nanos = (iso: string) => nanosSince(iso, base);
@@ -113,7 +124,14 @@ export function TraceDetailPage({ traceId }: { traceId: string }) {
           const isErr = span.status?.code === 'Error';
           const open = selected === span.id;
           return (
-            <div key={span.id} className={`wf-row ${open ? 'is-open' : ''}`} role="treeitem" aria-level={depth + 1} aria-expanded={open} data-testid="span-row">
+            <div
+              key={span.id}
+              className={`wf-row ${open ? 'is-open' : ''}`}
+              role="treeitem"
+              aria-level={depth + 1}
+              aria-expanded={open}
+              data-testid="span-row"
+            >
               <button type="button" className="wf-line" onClick={() => setSelected(open ? null : span.id)}>
                 <span className="wf-name" style={{ paddingLeft: `${depth * 16}px` }}>
                   <span className={`wf-dot ${isErr ? 'err' : ''}`} />
@@ -183,7 +201,12 @@ export function TraceDetailPage({ traceId }: { traceId: string }) {
         ) : (
           <div className="log-list">
             {logs.map((e) => (
-              <LogRow key={e.id} event={e} expanded={expandedLog === e.id} onToggle={() => setExpandedLog(expandedLog === e.id ? null : e.id)} />
+              <LogRow
+                key={e.id}
+                event={e}
+                expanded={expandedLog === e.id}
+                onToggle={() => setExpandedLog(expandedLog === e.id ? null : e.id)}
+              />
             ))}
           </div>
         )}

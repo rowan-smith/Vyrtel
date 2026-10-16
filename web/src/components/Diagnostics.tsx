@@ -60,7 +60,10 @@ export function DiagnosticsPanel({ diagnostics, count }: { diagnostics: D | null
               <tr>
                 <th>Blocks read</th>
                 <td>
-                  {d.blocksRead} <span className="muted">({d.blocksSkipped} of {d.blocksConsidered} skipped)</span>
+                  {d.blocksRead}{' '}
+                  <span className="muted">
+                    ({d.blocksSkipped} of {d.blocksConsidered} skipped)
+                  </span>
                 </td>
               </tr>
               <tr>

@@ -38,7 +38,10 @@ function BrandMark() {
         <circle className="brand-node" cx="48" cy="73" r="4" fill="var(--brand-node)" />
       </svg>
       <span className="brand-word" aria-hidden="true">
-        <svg viewBox={`0 ${-WORD.ascender} ${WORD.width} ${WORD.ascender + WORD.descender}`} style={{ width: `${WORD.width / 100}em` }}>
+        <svg
+          viewBox={`0 ${-WORD.ascender} ${WORD.width} ${WORD.ascender + WORD.descender}`}
+          style={{ width: `${WORD.width / 100}em` }}
+        >
           <path d={WORD.path} fill="currentColor" />
         </svg>
       </span>
@@ -79,11 +82,23 @@ function LoginPage({ onLogin }: { onLogin: (a: AuthState) => void }) {
         <LoginBrand />
         <label>
           <span className="label">Username</span>
-          <input className="input" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
+          <input
+            className="input"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+          />
         </label>
         <label>
           <span className="label">Password</span>
-          <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" autoFocus />
+          <input
+            className="input"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            autoFocus
+          />
         </label>
         {error && (
           <div className="error-banner" role="alert">
@@ -156,7 +171,12 @@ export function App() {
       </div>
     );
   }
-  if (!auth) return <div className="center"><Spinner /></div>;
+  if (!auth)
+    return (
+      <div className="center">
+        <Spinner />
+      </div>
+    );
   if (auth.authEnabled && !auth.user) return <LoginPage onLogin={setAuth} />;
 
   const active = (p: string) => location.path === p || location.path.startsWith(`${p}/`);

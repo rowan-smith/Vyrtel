@@ -68,7 +68,14 @@ export function LogRow({
     <div className={`log ${expanded ? 'is-expanded' : ''} ${isNew ? 'is-new' : ''}`} data-testid="log-row">
       <button type="button" className="log-line" aria-expanded={expanded} onClick={onToggle}>
         <svg className="log-chevron" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-          <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          <path
+            d="M6 4l4 4-4 4"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
         </svg>
         {columns.map(cell)}
       </button>
@@ -90,7 +97,12 @@ export function LogDetails({ event, onFilter }: { event: TelemetryEvent; onFilte
   const [raw, setRaw] = useState(false);
   const filter = (field: string, value: string | undefined) =>
     onFilter && value ? (
-      <button type="button" className="mini-btn" aria-label={`Include ${field}`} onClick={() => onFilter(field, value, false)}>
+      <button
+        type="button"
+        className="mini-btn"
+        aria-label={`Include ${field}`}
+        onClick={() => onFilter(field, value, false)}
+      >
         =
       </button>
     ) : null;

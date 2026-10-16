@@ -50,15 +50,15 @@ test('a read-only data directory makes readiness degraded until it is writable a
 
   const tmp = path.join(dataDir, 'tmp');
   const marker = `E2E before read-only ${Date.now()}`;
-  const before = await request.post('/api/v1/events', { data: { level: 'Information', message: marker, service: 'e2e' } });
+  const before = await request.post('/api/v1/events', {
+    data: { level: 'Information', message: marker, service: 'e2e' },
+  });
   expect(before.ok()).toBeTruthy();
 
   fs.chmodSync(tmp, 0o555);
   try {
     // Readiness results are reused for up to a second.
-    await expect
-      .poll(async () => (await request.get('/ready')).status(), { timeout: 5_000 })
-      .toBe(503);
+    await expect.poll(async () => (await request.get('/ready')).status(), { timeout: 5_000 }).toBe(503);
     const body = await (await request.get('/ready')).json();
     // Unauthenticated: which signals, never why or where.
     expect(body).toEqual({ status: 'degraded', storageWritable: false, signals: ['logs', 'traces', 'metrics'] });
@@ -73,9 +73,7 @@ test('a read-only data directory makes readiness degraded until it is writable a
     fs.chmodSync(tmp, 0o755);
   }
 
-  await expect
-    .poll(async () => (await request.get('/ready')).status(), { timeout: 5_000 })
-    .toBe(200);
+  await expect.poll(async () => (await request.get('/ready')).status(), { timeout: 5_000 }).toBe(200);
   // Data acknowledged before the fault is still there.
   const result = await request.post('/api/v1/query/logs', { data: { query: `message = "${marker}"`, limit: 10 } });
   expect(result.ok()).toBeTruthy();

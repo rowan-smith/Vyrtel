@@ -86,7 +86,10 @@ describe('LogRow', () => {
     expect(within(details).getByText('00f067aa0ba902b7')).toBeInTheDocument();
     expect(within(details).getByText('TimeoutException')).toBeInTheDocument();
     expect(within(details).getByTestId('stacktrace')).toHaveTextContent('at Payments.Charge()');
-    expect(within(details).getByRole('link', { name: 'View trace' })).toHaveAttribute('href', '/traces/4bf92f3577b34da6a3ce929d0e0e4736');
+    expect(within(details).getByRole('link', { name: 'View trace' })).toHaveAttribute(
+      'href',
+      '/traces/4bf92f3577b34da6a3ce929d0e0e4736',
+    );
     // Raw event toggle.
     await userEvent.click(within(details).getByRole('button', { name: 'Show JSON' }));
     expect(within(details).getByText(/"paymentProvider": "stripe"/)).toBeInTheDocument();
@@ -127,14 +130,31 @@ describe('PropertyTree', () => {
 
 describe('LogsSidebar', () => {
   const facets = [
-    { field: 'level', count: 100, truncated: false, values: [{ value: 'Error', count: 381 }, { value: 'Warning', count: 142 }] },
+    {
+      field: 'level',
+      count: 100,
+      truncated: false,
+      values: [
+        { value: 'Error', count: 381 },
+        { value: 'Warning', count: 142 },
+      ],
+    },
     { field: 'environment', count: 100, truncated: false, values: [{ value: 'production', count: 90 }] },
     { field: 'customerId', count: 50, truncated: false, values: [{ value: 481, count: 50 }] },
   ];
   const renderSidebar = (query: string, columns = ['timestamp', 'level', 'message']) => {
     const onFilter = vi.fn();
     const onColumnsChange = vi.fn();
-    render(<LogsSidebar facets={facets} sampled={100} query={query} columns={columns} onFilter={onFilter} onColumnsChange={onColumnsChange} />);
+    render(
+      <LogsSidebar
+        facets={facets}
+        sampled={100}
+        query={query}
+        columns={columns}
+        onFilter={onFilter}
+        onColumnsChange={onColumnsChange}
+      />,
+    );
     return { onFilter, onColumnsChange };
   };
 
@@ -156,7 +176,11 @@ describe('LogsSidebar', () => {
   it('offers timestamp, level and message as columns', async () => {
     const { onColumnsChange } = renderSidebar('', ['timestamp', 'level']);
     const cols = screen.getByRole('list', { name: 'Columns' });
-    expect(within(cols).getAllByRole('button').map((b) => b.textContent)).toEqual(['Timestamp', 'Level', 'Message']);
+    expect(
+      within(cols)
+        .getAllByRole('button')
+        .map((b) => b.textContent),
+    ).toEqual(['Timestamp', 'Level', 'Message']);
     expect(within(cols).getByRole('button', { name: 'Message' })).toHaveAttribute('aria-pressed', 'false');
     await userEvent.click(within(cols).getByRole('button', { name: 'Message' }));
     expect(onColumnsChange).toHaveBeenCalledWith(['timestamp', 'level', 'message']);
@@ -167,7 +191,12 @@ describe('LogsSidebar', () => {
 
 describe('ErrorBanner', () => {
   it('renders query errors with a caret at the error position', () => {
-    render(<ErrorBanner error={new ApiError(400, 'invalid_query', "Expected expression after 'and'", 19)} query='level = "Error" and' />);
+    render(
+      <ErrorBanner
+        error={new ApiError(400, 'invalid_query', "Expected expression after 'and'", 19)}
+        query='level = "Error" and'
+      />,
+    );
     const alert = screen.getByRole('alert');
     expect(alert).toHaveTextContent('Query error');
     expect(alert).toHaveTextContent("Expected expression after 'and'");

@@ -12,10 +12,12 @@ const TITLE: Record<Exclude<RecoveryStatus, 'clean'>, string> = {
 };
 
 const LEAD: Record<Exclude<RecoveryStatus, 'clean'>, string> = {
-  damaged: 'Vyrtel found unreadable storage files when it started and moved them to quarantine instead of guessing their contents.',
+  damaged:
+    'Vyrtel found unreadable storage files when it started and moved them to quarantine instead of guessing their contents.',
   unknown:
     'Vyrtel could not read a quarantine directory, so it cannot tell whether an earlier recovery set data aside. Check the permissions on data/quarantine/.',
-  quarantineRetained: 'This start found no new damage, but files an earlier recovery set aside are still in quarantine.',
+  quarantineRetained:
+    'This start found no new damage, but files an earlier recovery set aside are still in quarantine.',
 };
 
 const ROW_STATUS: Record<RecoveryStatus, string> = {
@@ -27,7 +29,8 @@ const ROW_STATUS: Record<RecoveryStatus, string> = {
 
 function inQuarantine(r: SignalRecovery) {
   const d = r.quarantineDir;
-  if (d.error || d.files == null || d.bytes == null) return `unreadable (${d.error?.reason ?? 'unknown'}: ${d.error?.message ?? 'no details'})`;
+  if (d.error || d.files == null || d.bytes == null)
+    return `unreadable (${d.error?.reason ?? 'unknown'}: ${d.error?.message ?? 'no details'})`;
   return `${d.files} ${d.files === 1 ? 'file' : 'files'} (${formatBytes(d.bytes)})`;
 }
 
@@ -51,9 +54,8 @@ export function RecoveryHealth({ storage }: { storage: StorageStats }) {
     <div className="warning-banner" role="alert" data-testid="recovery-health">
       <strong>{TITLE[summary.status]}</strong>
       <p>
-        {LEAD[summary.status]}{' '}
-        Events in quarantined files are not queryable and Vyrtel does not repair them, so data for {affected.join(', ')} may be
-        incomplete. Copy the files off for diagnosis if needed, then delete them.{' '}
+        {LEAD[summary.status]} Events in quarantined files are not queryable and Vyrtel does not repair them, so data
+        for {affected.join(', ')} may be incomplete. Copy the files off for diagnosis if needed, then delete them.{' '}
         <a href={RECOVERY_DOCS_URL} target="_blank" rel="noreferrer">
           Recovery documentation
         </a>
@@ -90,8 +92,8 @@ export function RecoveryHealth({ storage }: { storage: StorageStats }) {
         <ul className="small">
           {items.map((q, i) => (
             <li key={i}>
-              {q.signal} {KIND_LABEL[q.kind]} <span className="mono">{q.source}</span>: {q.reason} → <span className="mono">{q.file}</span> (
-              {formatBytes(q.bytes)})
+              {q.signal} {KIND_LABEL[q.kind]} <span className="mono">{q.source}</span>: {q.reason} →{' '}
+              <span className="mono">{q.file}</span> ({formatBytes(q.bytes)})
             </li>
           ))}
         </ul>

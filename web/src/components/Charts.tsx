@@ -4,7 +4,15 @@
 import type { HistogramBucket, MetricSeries } from '../lib/types';
 import { formatCount, formatDateTime } from '../lib/format';
 
-const LEVEL_COLORS = ['var(--c-none)', 'var(--c-trace)', 'var(--c-debug)', 'var(--c-info)', 'var(--c-warn)', 'var(--c-error)', 'var(--c-fatal)'];
+const LEVEL_COLORS = [
+  'var(--c-none)',
+  'var(--c-trace)',
+  'var(--c-debug)',
+  'var(--c-info)',
+  'var(--c-warn)',
+  'var(--c-error)',
+  'var(--c-fatal)',
+];
 
 /** Count-over-time bars, stacked by level when level counts are present. */
 export function HistogramChart({ buckets, height = 64 }: { buckets: HistogramBucket[]; height?: number }) {
@@ -12,7 +20,14 @@ export function HistogramChart({ buckets, height = 64 }: { buckets: HistogramBuc
   const w = 1000;
   const bw = w / Math.max(1, buckets.length);
   return (
-    <svg className="histogram" viewBox={`0 0 ${w} ${height}`} preserveAspectRatio="none" role="img" aria-label="Events over time" height={height}>
+    <svg
+      className="histogram"
+      viewBox={`0 0 ${w} ${height}`}
+      preserveAspectRatio="none"
+      role="img"
+      aria-label="Events over time"
+      height={height}
+    >
       {buckets.map((b, i) => {
         const x = i * bw;
         const title = `${formatDateTime(b.start)} — ${formatCount(b.count)} events`;
@@ -32,7 +47,9 @@ export function HistogramChart({ buckets, height = 64 }: { buckets: HistogramBuc
               if (!n) return null;
               const h = (n / max) * (height - 2);
               y -= h;
-              return <rect key={li} x={x + 0.5} y={y} width={Math.max(bw - 1, 0.5)} height={h} fill={LEVEL_COLORS[li]} />;
+              return (
+                <rect key={li} x={x + 0.5} y={y} width={Math.max(bw - 1, 0.5)} height={h} fill={LEVEL_COLORS[li]} />
+              );
             })}
           </g>
         );
@@ -65,7 +82,14 @@ export function LineChart({ series, height = 220, unit }: { series: MetricSeries
   const y = (v: number) => 6 + (1 - (v - min) / span) * (height - padB - 12);
   const ticks = [min, min + span / 2, max];
   return (
-    <svg className="linechart" viewBox={`0 0 ${w} ${height}`} role="img" aria-label="Metric chart" width="100%" height={height}>
+    <svg
+      className="linechart"
+      viewBox={`0 0 ${w} ${height}`}
+      role="img"
+      aria-label="Metric chart"
+      width="100%"
+      height={height}
+    >
       {ticks.map((t, i) => (
         <g key={i}>
           <line x1={padL} x2={w} y1={y(t)} y2={y(t)} className="grid" />
@@ -97,7 +121,14 @@ export function LineChart({ series, height = 220, unit }: { series: MetricSeries
         return (
           <g key={si}>
             {parts.map((d, i) => (
-              <path key={i} d={d} fill="none" stroke={seriesColor(si)} strokeWidth={2} vectorEffect="non-scaling-stroke" />
+              <path
+                key={i}
+                d={d}
+                fill="none"
+                stroke={seriesColor(si)}
+                strokeWidth={2}
+                vectorEffect="non-scaling-stroke"
+              />
             ))}
             {s.points.map((p, i) =>
               p.value == null ? null : (

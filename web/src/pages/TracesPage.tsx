@@ -116,9 +116,9 @@ function TracesView() {
                     </span>
                   ))}
                 </td>
-                <td className="num" title={t.truncated ? "more spans than the summary counts" : undefined}>
+                <td className="num" title={t.truncated ? 'more spans than the summary counts' : undefined}>
                   {t.spanCount}
-                  {t.truncated && "+"}
+                  {t.truncated && '+'}
                 </td>
                 <td className="num">
                   <div className="duration-cell">
@@ -126,14 +126,24 @@ function TracesView() {
                     <span>{formatDuration(t.durationMs)}</span>
                   </div>
                 </td>
-                <td>{t.errorCount > 0 ? <span className="badge badge-error">{t.errorCount} error{t.errorCount > 1 ? 's' : ''}</span> : <span className="badge badge-ok">OK</span>}</td>
+                <td>
+                  {t.errorCount > 0 ? (
+                    <span className="badge badge-error">
+                      {t.errorCount} error{t.errorCount > 1 ? 's' : ''}
+                    </span>
+                  ) : (
+                    <span className="badge badge-ok">OK</span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
       {!loading && !error && traces.length === 0 && (
-        <Empty title="No traces found">{query ? 'Try a wider time range or a simpler query.' : 'Nothing in this time range. Try a wider one.'}</Empty>
+        <Empty title="No traces found">
+          {query ? 'Try a wider time range or a simpler query.' : 'Nothing in this time range. Try a wider one.'}
+        </Empty>
       )}
     </div>
   );

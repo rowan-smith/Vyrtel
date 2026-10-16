@@ -77,7 +77,9 @@ function equalsRhs(part: string, field: string): string | null {
 /** Fields the query filters on with `field = value` (simple `and` queries only). */
 export function filteredFields(query: string): string[] {
   const parts = andParts(query) ?? [];
-  return [...new Set(parts.map((p) => /^(\S+)\s*=\s*[^=]/.exec(p)?.[1]).filter((f): f is string => !!f && isPlainField(f)))];
+  return [
+    ...new Set(parts.map((p) => /^(\S+)\s*=\s*[^=]/.exec(p)?.[1]).filter((f): f is string => !!f && isPlainField(f))),
+  ];
 }
 
 /** Whether the query currently filters on `field = value` (quoted or bare). */

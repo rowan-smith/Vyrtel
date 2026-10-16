@@ -2,7 +2,17 @@ import { describe, expect, it } from 'vitest';
 
 import { formatBytes, formatCount, formatDuration, levelShort } from '../../src/lib/format';
 import { columnLabel, columnTemplate, columnValue, orderColumns } from '../../src/lib/columns';
-import { andParts, andQuery, clause, filteredFields, isFilterActive, isPlainField, literal, rangeWindow, setFieldFilter } from '../../src/lib/query';
+import {
+  andParts,
+  andQuery,
+  clause,
+  filteredFields,
+  isFilterActive,
+  isPlainField,
+  literal,
+  rangeWindow,
+  setFieldFilter,
+} from '../../src/lib/query';
 import { matchPath } from '../../src/lib/router';
 import { nanosSince, spanTree } from '../../src/pages/TraceDetailPage';
 import { logEvent } from './helpers';
@@ -39,7 +49,10 @@ describe('query helpers', () => {
 
 describe('side-panel filters', () => {
   it('splits simple and-queries, respecting quoted strings', () => {
-    expect(andParts('level = "Error" and message contains "a and b"')).toEqual(['level = "Error"', 'message contains "a and b"']);
+    expect(andParts('level = "Error" and message contains "a and b"')).toEqual([
+      'level = "Error"',
+      'message contains "a and b"',
+    ]);
     expect(andParts('')).toEqual([]);
     // Anything with or / not / parentheses is left alone.
     expect(andParts('a = 1 or b = 2')).toBeNull();
@@ -49,7 +62,9 @@ describe('side-panel filters', () => {
 
   it('keeps one value per field: set, swap, clear', () => {
     expect(setFieldFilter('', 'level', 'Error')).toBe('level = "Error"');
-    expect(setFieldFilter('level = "Error" and service = "payments"', 'level', 'Warning')).toBe('service = "payments" and level = "Warning"');
+    expect(setFieldFilter('level = "Error" and service = "payments"', 'level', 'Warning')).toBe(
+      'service = "payments" and level = "Warning"',
+    );
     expect(setFieldFilter('level = Error and service = "payments"', 'level', null)).toBe('service = "payments"');
     // Other operators on the same field are kept; complex queries only get a clause appended.
     expect(setFieldFilter('level >= Warning', 'level', null)).toBe('level >= Warning');
@@ -57,7 +72,10 @@ describe('side-panel filters', () => {
   });
 
   it('lists the fields with an equality filter', () => {
-    expect(filteredFields('level = "Error" and http.statusCode >= 500 and service = "payments"')).toEqual(['level', 'service']);
+    expect(filteredFields('level = "Error" and http.statusCode >= 500 and service = "payments"')).toEqual([
+      'level',
+      'service',
+    ]);
     expect(filteredFields('a = 1 or b = 2')).toEqual([]);
   });
 

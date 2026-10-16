@@ -17,7 +17,15 @@ const BLANK: AlertInput = {
   enabled: true,
 };
 
-function AlertForm({ initial, onSave, onClose }: { initial: AlertInput; onSave: (a: AlertInput) => Promise<void>; onClose: () => void }) {
+function AlertForm({
+  initial,
+  onSave,
+  onClose,
+}: {
+  initial: AlertInput;
+  onSave: (a: AlertInput) => Promise<void>;
+  onClose: () => void;
+}) {
   const [a, setA] = useState<AlertInput>(initial);
   const [error, setError] = useState<unknown>(null);
   return (
@@ -35,7 +43,13 @@ function AlertForm({ initial, onSave, onClose }: { initial: AlertInput; onSave: 
       >
         <label>
           <span className="label">Name</span>
-          <input className="input" required value={a.name} onChange={(e) => setA({ ...a, name: e.target.value })} placeholder="Payment error spike" />
+          <input
+            className="input"
+            required
+            value={a.name}
+            onChange={(e) => setA({ ...a, name: e.target.value })}
+            placeholder="Payment error spike"
+          />
         </label>
         <label>
           <span className="label">Log query</span>
@@ -46,29 +60,58 @@ function AlertForm({ initial, onSave, onClose }: { initial: AlertInput; onSave: 
             <span className="label">Condition</span>
             <div className="inline-form">
               <span className="muted">count</span>
-              <select className="select" value={a.op} aria-label="Operator" onChange={(e) => setA({ ...a, op: e.target.value })}>
+              <select
+                className="select"
+                value={a.op}
+                aria-label="Operator"
+                onChange={(e) => setA({ ...a, op: e.target.value })}
+              >
                 {['>', '>=', '<', '<=', '=', '!='].map((o) => (
                   <option key={o}>{o}</option>
                 ))}
               </select>
-              <input className="input num-input" type="number" aria-label="Threshold" value={a.threshold} onChange={(e) => setA({ ...a, threshold: Number(e.target.value) })} />
+              <input
+                className="input num-input"
+                type="number"
+                aria-label="Threshold"
+                value={a.threshold}
+                onChange={(e) => setA({ ...a, threshold: Number(e.target.value) })}
+              />
             </div>
           </label>
           <label>
             <span className="label">Window (minutes)</span>
-            <input className="input num-input" type="number" min={1} value={a.windowSecs / 60} onChange={(e) => setA({ ...a, windowSecs: Math.round(Number(e.target.value) * 60) })} />
+            <input
+              className="input num-input"
+              type="number"
+              min={1}
+              value={a.windowSecs / 60}
+              onChange={(e) => setA({ ...a, windowSecs: Math.round(Number(e.target.value) * 60) })}
+            />
           </label>
           <label>
             <span className="label">Evaluate every (minutes)</span>
-            <input className="input num-input" type="number" min={1} value={a.intervalSecs / 60} onChange={(e) => setA({ ...a, intervalSecs: Math.max(10, Math.round(Number(e.target.value) * 60)) })} />
+            <input
+              className="input num-input"
+              type="number"
+              min={1}
+              value={a.intervalSecs / 60}
+              onChange={(e) => setA({ ...a, intervalSecs: Math.max(10, Math.round(Number(e.target.value) * 60)) })}
+            />
           </label>
         </div>
         <label>
           <span className="label">Webhook URL (optional)</span>
-          <input className="input" value={a.webhookUrl ?? ''} onChange={(e) => setA({ ...a, webhookUrl: e.target.value })} placeholder="https://example.com/hooks/vyrtel" />
+          <input
+            className="input"
+            value={a.webhookUrl ?? ''}
+            onChange={(e) => setA({ ...a, webhookUrl: e.target.value })}
+            placeholder="https://example.com/hooks/vyrtel"
+          />
         </label>
         <label className="checkbox">
-          <input type="checkbox" checked={a.enabled} onChange={(e) => setA({ ...a, enabled: e.target.checked })} /> Enabled
+          <input type="checkbox" checked={a.enabled} onChange={(e) => setA({ ...a, enabled: e.target.checked })} />{' '}
+          Enabled
         </label>
         <ErrorBanner error={error} query={a.query} />
         <div className="form-actions">
@@ -129,7 +172,10 @@ export function AlertsPage() {
               New alert
             </button>
           </div>
-          <p className="muted">Log-count threshold alerts. Each transition (OK ⇄ FIRING, ERROR) is recorded and sent to the alert's webhook.</p>
+          <p className="muted">
+            Log-count threshold alerts. Each transition (OK ⇄ FIRING, ERROR) is recorded and sent to the alert's
+            webhook.
+          </p>
         </>
       )}
       <ErrorBanner error={error} />
@@ -172,7 +218,9 @@ export function AlertsPage() {
                   count {a.op} {a.threshold} in {a.windowSecs / 60} min
                 </td>
                 <td className="num">{a.state.lastValue ?? '–'}</td>
-                <td className="nowrap">{a.state.lastEvaluatedAt ? formatDateTime(a.state.lastEvaluatedAt) : 'never'}</td>
+                <td className="nowrap">
+                  {a.state.lastEvaluatedAt ? formatDateTime(a.state.lastEvaluatedAt) : 'never'}
+                </td>
                 <td className="nowrap actions">
                   <button className="btn btn-small" onClick={() => api.evaluateAlert(a.id).then(load).catch(setError)}>
                     Evaluate
@@ -220,7 +268,9 @@ export function AlertsPage() {
             <p className="small">
               Webhook: <span className="mono">{open.webhookUrl}</span>
               {open.state.lastNotificationAt && <> — last sent {formatDateTime(open.state.lastNotificationAt)}</>}
-              {open.state.lastNotificationError && <span className="text-error"> ({open.state.lastNotificationError})</span>}
+              {open.state.lastNotificationError && (
+                <span className="text-error"> ({open.state.lastNotificationError})</span>
+              )}
             </p>
           )}
           <h3>History</h3>
@@ -228,7 +278,8 @@ export function AlertsPage() {
             <ul className="history">
               {open.history.map((h, i) => (
                 <li key={i}>
-                  <span className="muted">{formatDateTime(h.at)}</span> <StatusBadge status={h.from} /> → <StatusBadge status={h.to} /> {h.value != null && `(value ${h.value})`} {h.message}
+                  <span className="muted">{formatDateTime(h.at)}</span> <StatusBadge status={h.from} /> →{' '}
+                  <StatusBadge status={h.to} /> {h.value != null && `(value ${h.value})`} {h.message}
                 </li>
               ))}
             </ul>

@@ -25,7 +25,8 @@ export function LogsPage() {
     return (
       <div className="page">
         <Empty title="No logs yet">
-          Send JSON or NDJSON events to <code>/api/v1/events</code>, or OTLP logs to <code>/v1/logs</code>. See the README quick start.
+          Send JSON or NDJSON events to <code>/api/v1/events</code>, or OTLP logs to <code>/v1/logs</code>. See the
+          README quick start.
         </Empty>
       </div>
     );
@@ -101,7 +102,9 @@ function LogsView() {
     const own = filteredFields(query);
     Promise.all([
       api.facets('logs', { query, sample: 2000, ...win }, ctrl.signal),
-      ...own.map((field) => api.facets('logs', { query: setFieldFilter(query, field, null), sample: 2000, ...win }, ctrl.signal)),
+      ...own.map((field) =>
+        api.facets('logs', { query: setFieldFilter(query, field, null), sample: 2000, ...win }, ctrl.signal),
+      ),
     ])
       .then(([main, ...others]) => {
         const fields = main.fields.map((f) => {
@@ -177,11 +180,7 @@ function LogsView() {
   return (
     <div className="page logs-page">
       <div className="toolbar">
-        <QueryBar
-          query={query}
-          onRun={run}
-          running={loading}
-        >
+        <QueryBar query={query} onRun={run} running={loading}>
           <RangeSelect value={range} onChange={(r) => setUrl(query, r)} />
           <LiveToggle live={live} status={liveStatus} onChange={setLive} />
         </QueryBar>
@@ -193,10 +192,16 @@ function LogsView() {
             <div className="results-head">
               {hasResults && <DiagnosticsPanel diagnostics={diagnostics} count={events.length} />}
               {loading && <Spinner />}
-              {live && dropped > 0 && <span className="muted small">{dropped} live events skipped (too fast to display)</span>}
+              {live && dropped > 0 && (
+                <span className="muted small">{dropped} live events skipped (too fast to display)</span>
+              )}
             </div>
           )}
-          <div className="log-list" data-testid="log-list" style={{ '--log-cols': columnTemplate(shownColumns) } as CSSProperties}>
+          <div
+            className="log-list"
+            data-testid="log-list"
+            style={{ '--log-cols': columnTemplate(shownColumns) } as CSSProperties}
+          >
             {events.map((e) => (
               <LogRow
                 key={e.id}
