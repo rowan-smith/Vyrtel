@@ -709,6 +709,24 @@ h3 {
   margin: 8px 0;
 }
 
+.warning-banner {
+  border: 1px solid color-mix(in srgb, var(--warn) 60%, transparent);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  margin: 8px 0 12px;
+}
+
+.warning-banner p {
+  margin: 4px 0 8px;
+}
+
+.warning-banner ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
 .error-caret {
   margin: 6px 0 0;
   font-family: var(--mono);

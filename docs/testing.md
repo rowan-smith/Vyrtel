@@ -121,6 +121,21 @@ cargo test -p storage --features crash-points --test crash
 restarts it and checks every acknowledged event through the query API, plus
 the `recovery` section of `/api/v1/system/storage`.
 
+`tests/integration/recovery_health.rs` covers what operators see (REL-11):
+a clean restart is `clean` although the WAL was replayed; a torn WAL record
+is `damaged` for that signal only, with per-kind counts and discarded bytes,
+and neither the storage nor the info response contains the record's bytes,
+the admin password, the API key or the data directory, while `/health` and
+`/ready` are unchanged; the next start is `quarantineRetained`; and after the
+quarantine directory is deleted it is `clean` again. A segment left in
+quarantine by an interrupted recovery is reported as `quarantineRetained`
+for the right signal. A quarantine directory that cannot be listed (a file
+in its place everywhere; mode `000` on Unix, skipped as root) is `unknown`
+with the reason, never `clean`, and is reported again once readable.
+`web/tests/unit/recovery-health.test.tsx` checks the
+Settings → Storage warning, and `web/tests/e2e/storage.spec.ts` that a clean
+start shows none.
+
 ## Storage write-failure tests
 
 `crates/storage/tests/faults.rs` injects storage errors at named points in

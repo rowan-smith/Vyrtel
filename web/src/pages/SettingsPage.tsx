@@ -5,6 +5,7 @@ import type { ApiKey, QueryFieldStats, StorageStats, SystemInfo } from '../lib/t
 import { formatBytes, formatCount, formatDateTime, formatDuration, formatUptime } from '../lib/format';
 import { useRouter } from '../lib/router';
 import { ErrorBanner, Spinner, Stat } from '../components/common';
+import { RecoveryHealth } from '../components/RecoveryHealth';
 
 const TABS = [
   ['storage', 'Storage'],
@@ -23,6 +24,7 @@ function StorageTab() {
   if (!s) return <Spinner />;
   return (
     <div>
+      <RecoveryHealth storage={s} />
       <div className="stats" data-testid="storage-stats">
         <Stat label="Raw ingested" value={formatBytes(s.rawBytes)} hint="Uncompressed size in Vyrtel's binary event encoding" />
         <Stat label="Stored" value={formatBytes(s.storedBytes)} hint="Segments + indexes + WAL + metadata on disk" />
@@ -66,7 +68,7 @@ function StorageTab() {
       <p className="muted small">
         Index overhead {s.indexOverhead != null ? `${(s.indexOverhead * 100).toFixed(1)}%` : '–'} of compressed data · metadata{' '}
         {formatBytes(s.metadataBytes)} · index cache {formatBytes(s.indexCache.usedBytes)} / {formatBytes(s.indexCache.budgetBytes)} ({s.indexCache.hits} hits,{' '}
-        {s.indexCache.misses} misses) · received since start {formatBytes(s.receivedBytes)}
+        {s.indexCache.misses} misses) · quarantine {formatBytes(s.quarantineBytes)} · received since start {formatBytes(s.receivedBytes)}
       </p>
     </div>
   );

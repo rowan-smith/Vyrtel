@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
-use storage::{RecoveryReport, StorageFault, StreamStats};
+use storage::{QuarantineKind, QuarantineScan, StorageFault, StorageStats, StreamStats};
 use telemetry::Signal;
 
 use crate::error::ApiResult;
@@ -84,21 +84,85 @@ fn stream_json(s: &StreamStats) -> Value {
         "healthy": s.faults.is_empty(),
         "ingestHealthy": s.ingest_fault().is_none(),
         "faults": s.faults.iter().map(fault_json).collect::<Vec<_>>(),
-        "recovery": recovery_json(&s.recovery),
+        "recovery": recovery_json(s),
     })
 }
 
-/// What startup recovery did for one signal. Quarantine paths are relative
-/// to the data directory so the response never discloses host paths.
-fn recovery_json(r: &RecoveryReport) -> Value {
+/// How a signal's storage looks after startup recovery, worst first so the
+/// most severe status of several signals is the smallest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RecoveryStatus {
+    /// This start quarantined files or dropped WAL bytes for the signal.
+    Damaged,
+    /// This start found nothing, but `quarantine/<signal>/` could not be
+    /// read, so whether earlier evidence is there is not known. Never
+    /// reported as `clean`: not being able to look is not proof.
+    Unknown,
+    /// This start found nothing, but `quarantine/<signal>/` still holds
+    /// files from an earlier start (or a recovery that was interrupted
+    /// after moving them there).
+    QuarantineRetained,
+    /// Nothing damaged and nothing in quarantine. WAL replay alone is
+    /// normal and does not change this.
+    Clean,
+}
+
+impl RecoveryStatus {
+    fn of(s: &StreamStats) -> Self {
+        if s.recovery.found_damage() {
+            RecoveryStatus::Damaged
+        } else {
+            match s.quarantine.usage() {
+                None => RecoveryStatus::Unknown,
+                Some(u) if u.files > 0 => RecoveryStatus::QuarantineRetained,
+                Some(_) => RecoveryStatus::Clean,
+            }
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            RecoveryStatus::Damaged => "damaged",
+            RecoveryStatus::Unknown => "unknown",
+            RecoveryStatus::QuarantineRetained => "quarantineRetained",
+            RecoveryStatus::Clean => "clean",
+        }
+    }
+}
+
+/// The overall recovery status and the signals that are not `clean`.
+/// Counts only, never file names or reasons, for the summary views.
+fn recovery_summary(stats: &StorageStats) -> Value {
+    let per: Vec<(Signal, RecoveryStatus)> =
+        Signal::ALL.iter().map(|s| (*s, RecoveryStatus::of(stats.get(*s)))).collect();
+    let worst = per.iter().map(|(_, st)| *st).min().unwrap_or(RecoveryStatus::Clean);
     json!({
+        "status": worst.as_str(),
+        "signals": per.iter().filter(|(_, st)| *st != RecoveryStatus::Clean).map(|(s, _)| s.as_str()).collect::<Vec<_>>(),
+    })
+}
+
+/// What startup recovery did for one signal, and what is in its quarantine
+/// directory now. Quarantine paths are relative to the data directory and
+/// reasons never contain host paths or file contents, so the response
+/// discloses neither.
+fn recovery_json(s: &StreamStats) -> Value {
+    let r = &s.recovery;
+    json!({
+        "status": RecoveryStatus::of(s).as_str(),
         "segmentsLoaded": r.segments_loaded,
         "walRecordsReplayed": r.wal_records_replayed,
         "walEventsReplayed": r.wal_events_replayed,
         "segmentsSealed": r.segments_sealed,
         "staleWalsRemoved": r.stale_wals_removed,
         "replacedSegmentsRemoved": r.replaced_segments_removed,
+        "walFilesReplayed": r.wal_files_replayed,
         "walBytesDiscarded": r.wal_bytes_discarded,
+        "segmentsQuarantined": r.quarantined_count(QuarantineKind::Segment),
+        "walFilesQuarantined": r.quarantined_count(QuarantineKind::Wal),
+        "walTailsQuarantined": r.quarantined_count(QuarantineKind::WalTail),
+        "quarantinedBytes": r.quarantined_bytes(),
+        "quarantineDir": quarantine_dir_json(&s.quarantine),
         "quarantined": r.quarantined.iter().map(|q| json!({
             "signal": q.signal.as_str(),
             "kind": q.kind.as_str(),
@@ -108,6 +172,19 @@ fn recovery_json(r: &RecoveryReport) -> Value {
             "reason": q.reason,
         })).collect::<Vec<_>>(),
     })
+}
+
+/// `files` and `bytes` in `quarantine/<signal>/`, or `null` for both with
+/// the reason the directory could not be read. The OS message has no path.
+fn quarantine_dir_json(q: &QuarantineScan) -> Value {
+    match q {
+        QuarantineScan::Read(u) => json!({ "files": u.files, "bytes": u.bytes, "error": null }),
+        QuarantineScan::Unreadable { reason, message } => json!({
+            "files": null,
+            "bytes": null,
+            "error": { "reason": reason.as_str(), "message": message },
+        }),
+    }
 }
 
 fn ratio(raw: u64, stored: u64) -> Option<f64> {
@@ -137,6 +214,7 @@ pub async fn storage_stats(State(state): State<SharedState>) -> ApiResult<Json<V
         "metadataBytes": meta,
         "tmpBytes": stats.tmp_bytes,
         "quarantineBytes": stats.quarantine_bytes,
+        "recovery": recovery_summary(&stats),
         "eventCount": sum(|s| s.segment_events + s.active_events + s.frozen_events),
         "segmentCount": all.iter().map(|s| s.segments).sum::<usize>(),
         "compressionRatio": ratio(raw_sealed, data + index),
@@ -220,6 +298,7 @@ pub async fn info(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
         "retention": state.config.retention,
         "receivedRequests": state.received_requests.load(Ordering::Relaxed),
         "liveSubscribers": state.live.receiver_count(),
+        "recovery": recovery_summary(&stats),
     })))
 }
 
@@ -257,4 +336,110 @@ pub async fn query_stats(State(state): State<SharedState>) -> ApiResult<Json<Val
 /// Effective configuration (secrets omitted).
 pub async fn config(State(state): State<SharedState>) -> Json<Value> {
     Json(json!({ "config": state.config, "budgets": state.budgets }))
+}
+
+#[cfg(test)]
+mod tests {
+    use storage::fsutil::DirUsage;
+    use storage::{FaultReason, QuarantinedFile, RecoveryReport};
+
+    use super::*;
+
+    fn stream(recovery: RecoveryReport, quarantine: DirUsage) -> StreamStats {
+        StreamStats { recovery, quarantine: QuarantineScan::Read(quarantine), ..Default::default() }
+    }
+
+    fn unreadable(recovery: RecoveryReport) -> StreamStats {
+        let quarantine = QuarantineScan::Unreadable {
+            reason: FaultReason::PermissionDenied,
+            message: "Permission denied (os error 13)".into(),
+        };
+        StreamStats { recovery, quarantine, ..Default::default() }
+    }
+
+    fn torn_tail() -> RecoveryReport {
+        RecoveryReport {
+            wal_files_replayed: 1,
+            wal_records_replayed: 3,
+            wal_bytes_discarded: 61,
+            quarantined: vec![QuarantinedFile {
+                signal: Signal::Logs,
+                kind: QuarantineKind::WalTail,
+                source: "000000000002.wal".into(),
+                path: "/srv/vyrtel/data/quarantine/logs/000000000002.wal.tail-80.1791622413000".into(),
+                bytes: 61,
+                reason: "incomplete record at offset 80 (torn write)".into(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn replay_alone_is_clean() {
+        let replayed = RecoveryReport {
+            wal_files_replayed: 1,
+            wal_records_replayed: 40,
+            wal_events_replayed: 400,
+            ..Default::default()
+        };
+        let s = stream(replayed, DirUsage::default());
+        assert_eq!(RecoveryStatus::of(&s), RecoveryStatus::Clean);
+        let v = recovery_json(&s);
+        assert_eq!(v["status"], "clean");
+        assert_eq!(v["walBytesDiscarded"], 0);
+        assert_eq!(v["quarantined"], json!([]));
+        assert_eq!(v["quarantineDir"], json!({ "files": 0, "bytes": 0, "error": null }));
+    }
+
+    #[test]
+    fn damage_this_start_is_counted_per_kind() {
+        let s = stream(torn_tail(), DirUsage { files: 1, bytes: 61 });
+        let v = recovery_json(&s);
+        assert_eq!(v["status"], "damaged");
+        assert_eq!(v["walBytesDiscarded"], 61);
+        assert_eq!(v["walTailsQuarantined"], 1);
+        assert_eq!(v["segmentsQuarantined"], 0);
+        assert_eq!(v["walFilesQuarantined"], 0);
+        assert_eq!(v["quarantinedBytes"], 61);
+        assert_eq!(v["quarantined"][0]["file"], "quarantine/logs/000000000002.wal.tail-80.1791622413000");
+        assert!(!v.to_string().contains("/srv/vyrtel"), "no host paths: {v}");
+    }
+
+    #[test]
+    fn files_left_in_quarantine_are_reported_after_a_clean_start() {
+        // An earlier start (or an interrupted recovery) moved them there.
+        let s = stream(RecoveryReport::default(), DirUsage { files: 2, bytes: 4096 });
+        let v = recovery_json(&s);
+        assert_eq!(v["status"], "quarantineRetained");
+        assert_eq!(v["quarantined"], json!([]));
+        assert_eq!(v["quarantineDir"], json!({ "files": 2, "bytes": 4096, "error": null }));
+    }
+
+    #[test]
+    fn an_unreadable_quarantine_directory_is_unknown_not_clean() {
+        let v = recovery_json(&unreadable(RecoveryReport::default()));
+        assert_eq!(v["status"], "unknown");
+        assert_eq!(
+            v["quarantineDir"],
+            json!({
+                "files": null,
+                "bytes": null,
+                "error": { "reason": "permissionDenied", "message": "Permission denied (os error 13)" },
+            })
+        );
+        // Damage found this start is still the more specific answer.
+        assert_eq!(recovery_json(&unreadable(torn_tail()))["status"], "damaged");
+    }
+
+    #[test]
+    fn summary_reports_the_worst_status_and_affected_signals() {
+        let mut stats = StorageStats::default();
+        assert_eq!(recovery_summary(&stats), json!({ "status": "clean", "signals": [] }));
+        stats.metrics = stream(RecoveryReport::default(), DirUsage { files: 1, bytes: 10 });
+        assert_eq!(recovery_summary(&stats), json!({ "status": "quarantineRetained", "signals": ["metrics"] }));
+        stats.traces = unreadable(RecoveryReport::default());
+        assert_eq!(recovery_summary(&stats), json!({ "status": "unknown", "signals": ["traces", "metrics"] }));
+        stats.logs = stream(torn_tail(), DirUsage { files: 1, bytes: 61 });
+        assert_eq!(recovery_summary(&stats), json!({ "status": "damaged", "signals": ["logs", "traces", "metrics"] }));
+    }
 }

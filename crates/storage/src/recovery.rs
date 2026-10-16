@@ -29,7 +29,8 @@ use telemetry::{Signal, TelemetryEvent};
 use crate::codec;
 use crate::crash;
 use crate::error::{DecodeError, IoContext, Result, StorageError};
-use crate::fsutil;
+use crate::fault::FaultReason;
+use crate::fsutil::{self, DirUsage};
 use crate::segment::{Segment, SegmentWriteOptions, check_segment_format, parse_segment_file_name, write_segment};
 use crate::stream::Batch;
 use crate::wal::{self, ReplayError, TailState, WalHeader, WalReplay, WalWriter, parse_wal_file_name, wal_file_name};
@@ -115,6 +116,60 @@ pub struct RecoveryReport {
     pub segments_sealed: usize,
     /// Everything moved to quarantine by this recovery, in discovery order.
     pub quarantined: Vec<QuarantinedFile>,
+}
+
+impl RecoveryReport {
+    /// Whether this recovery found damage: it moved something to quarantine
+    /// or dropped bytes from a WAL. Replaying a WAL is not damage; every
+    /// start does it.
+    pub fn found_damage(&self) -> bool {
+        !self.quarantined.is_empty() || self.wal_bytes_discarded > 0
+    }
+
+    /// How many items of `kind` this recovery moved to quarantine.
+    pub fn quarantined_count(&self, kind: QuarantineKind) -> usize {
+        self.quarantined.iter().filter(|q| q.kind == kind).count()
+    }
+
+    /// Total size of everything this recovery moved to quarantine.
+    pub fn quarantined_bytes(&self) -> u64 {
+        self.quarantined.iter().map(|q| q.bytes).sum()
+    }
+}
+
+/// What is in one signal's quarantine directory now, whichever start put
+/// it there, or why that could not be determined.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuarantineScan {
+    /// The directory was listed; a missing directory is empty.
+    Read(DirUsage),
+    /// The directory or something in it could not be listed or examined,
+    /// so whether quarantined files exist is unknown. `message` is the OS
+    /// error text, which carries no path.
+    Unreadable { reason: FaultReason, message: String },
+}
+
+impl Default for QuarantineScan {
+    fn default() -> Self {
+        QuarantineScan::Read(DirUsage::default())
+    }
+}
+
+impl QuarantineScan {
+    pub fn of(dir: &Path) -> Self {
+        match fsutil::try_dir_usage(dir) {
+            Ok(u) => QuarantineScan::Read(u),
+            Err(e) => QuarantineScan::Unreadable { reason: FaultReason::from_io(&e), message: e.to_string() },
+        }
+    }
+
+    /// The usage, if the directory could be read.
+    pub fn usage(&self) -> Option<DirUsage> {
+        match self {
+            QuarantineScan::Read(u) => Some(*u),
+            QuarantineScan::Unreadable { .. } => None,
+        }
+    }
 }
 
 pub struct Recovered {

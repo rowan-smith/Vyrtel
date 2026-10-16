@@ -50,6 +50,8 @@ async fn killed_server_keeps_acknowledged_events() {
         let rec = &storage["signals"]["logs"]["recovery"];
         assert_eq!(rec["walEventsReplayed"], acked.len(), "{durability}: {rec}");
         assert_eq!(rec["quarantined"], json!([]), "{durability}: a process kill damages nothing");
+        assert_eq!(rec["status"], "clean", "{durability}: replaying the WAL is not damage");
+        assert_eq!(storage["recovery"], json!({ "status": "clean", "signals": [] }), "{durability}");
         p.kill();
     }
 }
@@ -81,5 +83,8 @@ async fn storage_api_reports_quarantined_wal_tail() {
     assert!(file.starts_with("quarantine/logs/"), "{file}");
     assert!(s.data_dir().join(file).exists());
     assert_eq!(storage["signals"]["traces"]["recovery"]["quarantined"], json!([]));
+    assert_eq!(storage["signals"]["logs"]["recovery"]["status"], "damaged");
+    assert_eq!(storage["signals"]["logs"]["recovery"]["walTailsQuarantined"], 1);
+    assert_eq!(storage["signals"]["traces"]["recovery"]["status"], "clean");
     s.stop().await;
 }
