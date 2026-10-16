@@ -1,9 +1,10 @@
 //! Execution budgets and cancellation (REL-12) at the engine level.
 //!
-//! Fixture: 2,000 logs and 300 spans (30 traces of 10 spans) with 16-event
-//! blocks, sealed into three segments per signal plus an unsealed tail, so
-//! every query crosses segments, blocks and the unsealed batches. Event `i`
-//! is at `BASE + i s`; every seventh log is an `Error`.
+//! Fixture: 2,000 logs, 300 spans (30 traces of 10 spans) and 600 metric
+//! points (two each of 300 names, `m-000` to `m-299`) with 16-event blocks,
+//! sealed into three segments per signal plus an unsealed tail, so every
+//! query crosses segments, blocks and the unsealed batches. Event `i` is at
+//! `BASE + i s`; every seventh log is an `Error`.
 
 use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -26,6 +27,7 @@ const LOGS: usize = 2_000;
 const ERRORS: u64 = LOGS.div_ceil(7) as u64;
 const TRACES: usize = 30;
 const SPANS_PER_TRACE: usize = 10;
+const METRIC_NAMES: usize = 300;
 
 fn log(i: usize) -> TelemetryEvent {
     TelemetryEvent {
@@ -74,6 +76,33 @@ fn span(t: usize, s: usize) -> TelemetryEvent {
     }
 }
 
+fn point(i: usize) -> TelemetryEvent {
+    TelemetryEvent {
+        id: EventId(0),
+        timestamp: Timestamp(BASE + i as i64 * NANOS_PER_SEC),
+        observed_timestamp: Timestamp(BASE),
+        service: Some("api".into()),
+        environment: None,
+        trace_id: None,
+        span_id: None,
+        resource: Fields::new(),
+        attributes: Fields::new(),
+        payload: TelemetryPayload::Metric(MetricEvent {
+            name: metric_name(i % METRIC_NAMES),
+            description: None,
+            unit: None,
+            kind: MetricKind::Gauge,
+            temporality: Temporality::Unspecified,
+            monotonic: false,
+            value: MetricValue::Number(i as f64),
+        }),
+    }
+}
+
+fn metric_name(n: usize) -> String {
+    format!("m-{n:03}")
+}
+
 struct Fixture {
     _dir: tempfile::TempDir,
     storage: Arc<Storage>,
@@ -89,7 +118,8 @@ impl Fixture {
         let storage = Arc::new(Storage::open(cfg, None).unwrap());
         let logs: Vec<_> = (0..LOGS).map(log).collect();
         let spans: Vec<_> = (0..TRACES).flat_map(|t| (0..SPANS_PER_TRACE).map(move |s| span(t, s))).collect();
-        for (signal, events) in [(Signal::Logs, logs), (Signal::Traces, spans)] {
+        let points: Vec<_> = (0..2 * METRIC_NAMES).map(point).collect();
+        for (signal, events) in [(Signal::Logs, logs), (Signal::Traces, spans), (Signal::Metrics, points)] {
             // Three segments, then an unsealed tail.
             for (k, chunk) in events.chunks(events.len() / 4 + 1).enumerate() {
                 let (tx, rx) = mpsc::sync_channel(1);
@@ -131,6 +161,7 @@ fn every_request(e: &Engine, cancel: &CancelToken) -> Vec<(&'static str, Result<
         ("traceSearch", e.trace_search("", all(), 10, cancel).map(drop)),
         ("trace", e.trace(&t, all(), cancel).map(drop)),
         ("metric", e.metric_query(&metric(bounded(), None), cancel).map(drop)),
+        ("metricNames", e.metric_names(cancel).map(drop)),
     ]
 }
 
@@ -379,4 +410,77 @@ fn hook_can_be_removed() {
     let mut sink = CountSink { count: 0 };
     exec::scan(&fx.storage.snapshot(Signal::Logs), Signal::Logs, None, all(), &mut sink, &mut ctx).unwrap();
     assert_eq!(sink.count, LOGS as u64);
+}
+
+// Review finding 1: metric-name discovery runs within the request budget.
+// Cancelled while it collects names, it stops at the next check and
+// returns only the error; the next discovery is complete.
+#[test]
+fn metric_name_discovery_stops_when_cancelled_during_enumeration() {
+    let fx = Fixture::new();
+    let e = fx.engine(QueryLimits::default());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    e.set_checkpoint_hook(Some(cancel_at(Checkpoint::Aggregate, 1, seen.clone())));
+    let r = e.metric_names(&CancelToken::new());
+    assert!(matches!(r, Err(QueryError::Cancelled)), "{r:?}");
+    {
+        let seen = seen.lock().unwrap();
+        assert!(seen.contains(&Checkpoint::Segment), "checked per segment: {seen:?}");
+        assert_eq!(seen.last(), Some(&Checkpoint::Aggregate), "stopped while collecting names");
+        assert!(!seen.contains(&Checkpoint::Assemble), "never reached the end");
+    }
+
+    e.set_checkpoint_hook(None);
+    let names = e.metric_names(&CancelToken::new()).unwrap();
+    let expected: Vec<String> = (0..METRIC_NAMES).map(metric_name).collect();
+    assert_eq!(names.metrics.iter().map(|m| m.name.clone()).collect::<Vec<_>>(), expected);
+    assert!(!names.truncated);
+}
+
+// Discovery returns at most `max_metric_names`, the first by name, and
+// says when more exist. Exactly the limit is complete.
+#[test]
+fn metric_name_budget_boundary() {
+    let fx = Fixture::new();
+    let c = CancelToken::new();
+    for (max, truncated) in [(METRIC_NAMES + 1, false), (METRIC_NAMES, false), (METRIC_NAMES - 1, true), (1, true)] {
+        let e = fx.engine(QueryLimits { max_metric_names: max, ..QueryLimits::default() });
+        let names = e.metric_names(&c).unwrap();
+        let expected: Vec<String> = (0..max.min(METRIC_NAMES)).map(metric_name).collect();
+        assert_eq!(names.metrics.iter().map(|m| m.name.clone()).collect::<Vec<_>>(), expected, "max {max}");
+        assert_eq!(names.truncated, truncated, "max {max}");
+    }
+}
+
+// Review finding 2: facet counting after the sample scan checks the budget
+// too. Cancelled there, facets return only the error.
+#[test]
+fn facet_counting_after_the_scan_checks_the_budget() {
+    let fx = Fixture::new();
+    let e = fx.engine(QueryLimits::default());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    e.set_checkpoint_hook(Some(cancel_at(Checkpoint::Aggregate, 1, seen.clone())));
+    let r = e.facets(Signal::Logs, "", all(), 1000, &CancelToken::new());
+    assert!(matches!(r, Err(QueryError::Cancelled)), "{:?}", r.map(drop));
+    let seen = seen.lock().unwrap();
+    let assemble = seen.iter().position(|c| *c == Checkpoint::Assemble).expect("the scan finished");
+    assert!(seen[assemble..].contains(&Checkpoint::Aggregate), "cancelled after the scan: {seen:?}");
+}
+
+// A single deeply structured event is enough to reach a check: property
+// leaves count, not only events.
+#[test]
+fn facet_counting_checks_within_one_event() {
+    let mut attributes = Fields::new();
+    for i in 0..2 * ROWS_PER_CHECK {
+        attributes.insert(format!("p{i}"), Value::Int(i as i64));
+    }
+    let event = TelemetryEvent { attributes, ..log(1) };
+    let limits = QueryLimits::default();
+    let cancel = CancelToken::new();
+    let f = query::aggregate::facets(std::slice::from_ref(&event), 10, &Budget::new(&limits, cancel.clone())).unwrap();
+    assert_eq!(f.sampled, 1);
+    cancel.cancel();
+    let r = query::aggregate::facets(std::slice::from_ref(&event), 10, &Budget::new(&limits, cancel));
+    assert!(matches!(r, Err(QueryError::Cancelled)), "{:?}", r.map(drop));
 }

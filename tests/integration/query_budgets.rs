@@ -258,3 +258,43 @@ async fn scan_and_result_budgets_are_explicit_errors() {
     assert_eq!(info["query"]["resultLimited"], 2);
     s.stop().await;
 }
+
+// Review finding 1 over HTTP: metric-name discovery holds a query slot, so
+// a client that disconnects during it cancels it and frees the slot for the
+// next query. Discovery then answers in full.
+#[tokio::test(flavor = "multi_thread")]
+async fn metric_name_discovery_is_cancelled_on_disconnect_and_frees_its_slot() {
+    use tokio::io::AsyncWriteExt;
+
+    let s = TestServer::start_with(|c| {
+        c.query.max_concurrent = 1;
+        c.query.queue_timeout = Duration::from_millis(100);
+    })
+    .await;
+    assert_eq!(s.otlp_json("/v1/metrics", fixture("otlp-metrics.json")).await.status(), 200);
+    let complete = s.get_ok("/api/v1/metrics").await;
+    assert_eq!(complete["truncated"], false);
+    assert!(!complete["metrics"].as_array().unwrap().is_empty());
+    let hold = hold_queries(&s);
+
+    let addr = s.url.trim_start_matches("http://").to_string();
+    let mut tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    tcp.write_all(format!("GET /api/v1/metrics HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    wait_until("discovery parked", || hold.held() == 1).await;
+    assert_eq!(queries_in_flight(&s), 1, "discovery takes a query slot");
+    let (status, err) = error_of(s.post("/api/v1/query/logs", json!({ "query": "" })).await).await;
+    assert_eq!((status, err["code"].as_str()), (503, Some("unavailable")), "{err}");
+
+    drop(tcp);
+    wait_until("cancelled discovery gives its slot back", || queries_in_flight(&s) == 0).await;
+    assert_eq!(hold.cancelled.load(Ordering::SeqCst), 1);
+
+    hold.release();
+    assert_eq!(count(&s, "").await, 0, "the freed slot serves the next query");
+    assert_eq!(s.get_ok("/api/v1/metrics").await, complete);
+    let info = s.get_ok("/api/v1/system/info").await;
+    assert_eq!(info["query"]["cancelled"], 1);
+    s.stop().await;
+}

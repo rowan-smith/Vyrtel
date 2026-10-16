@@ -235,8 +235,8 @@ pub async fn trace_get(
 }
 
 pub async fn metric_names(State(state): State<SharedState>) -> ApiResult<Json<Json_>> {
-    let names = state.query(|e, _| Ok(e.metric_names())).await?;
-    Ok(Json(json!({ "metrics": names })))
+    let names = state.query(|e, c| Ok(e.metric_names(c)?)).await?;
+    Ok(Json(serde_json::to_value(names).map_err(ApiError::internal)?))
 }
 
 #[derive(Deserialize)]

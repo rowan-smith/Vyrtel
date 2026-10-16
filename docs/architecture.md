@@ -156,7 +156,8 @@ flowchart LR
   (`query.max_concurrent` slots, `query.queue_timeout` to get one). Each
   request gets one `query::Budget` (time, scan bytes, a cancellation
   token), shared by all of its scans and checked at the start, per segment,
-  around each block read and every 256 rows. Dropping the HTTP handler
+  around each block read and every 256 rows, and during the in-memory work
+  after a scan (facet counting, metric-name discovery). Dropping the HTTP handler
   (client disconnect) cancels the token; the query stops at its next
   checkpoint and only then frees its slot. A failed query returns only its
   error ([details](query-language.md#execution-limits-and-cancellation)).

@@ -3,7 +3,7 @@
 //! Every request takes a [`CancelToken`] and runs within one [`Budget`]
 //! built from the engine's [`QueryLimits`]; see [`crate::budget`].
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 
 use serde::Serialize;
@@ -43,6 +43,15 @@ pub struct SearchOutput {
 #[serde(rename_all = "camelCase")]
 pub struct MetricInfo {
     pub name: String,
+}
+
+/// `GET /api/v1/metrics`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricNames {
+    pub metrics: Vec<MetricInfo>,
+    /// More names exist than `query.max_metric_names`.
+    pub truncated: bool,
 }
 
 pub struct MetricQuery {
@@ -207,28 +216,50 @@ impl Engine {
         )?;
         ctx.diag.merge(&inner.finish());
         ctx.check(Checkpoint::Assemble)?;
-        Ok((aggregate::facets(&r.events, 10), self.finish(signal, ctx, filter.as_ref())))
+        let facets = aggregate::facets(&r.events, 10, &budget)?;
+        Ok((facets, self.finish(signal, ctx, filter.as_ref())))
     }
 
-    /// Distinct metric names, newest data first.
-    pub fn metric_names(&self) -> Vec<MetricInfo> {
+    /// Distinct metric names in name order, at most
+    /// `QueryLimits::max_metric_names` of them (the first ones by name;
+    /// `truncated` says more exist). Memory stays bounded by that limit
+    /// however many names are stored, and the request's budget is checked
+    /// per segment and every [`crate::budget::ROWS_PER_CHECK`] names or
+    /// unsealed events.
+    pub fn metric_names(&self, cancel: &CancelToken) -> Result<MetricNames, QueryError> {
+        let budget = self.budget(cancel);
+        budget.check(Checkpoint::Start)?;
+        let max = self.limits.max_metric_names.max(1);
         let snap = self.storage.snapshot(Signal::Metrics);
-        let mut names: HashMap<String, ()> = HashMap::new();
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        let mut truncated = false;
+        let mut add = |name: &str| -> Result<(), QueryError> {
+            budget.tick(Checkpoint::Aggregate)?;
+            // Keep the `max` smallest names: past the largest kept one,
+            // nothing new can get in.
+            if names.len() >= max && names.last().is_some_and(|l| name >= l.as_str()) {
+                truncated |= !names.contains(name);
+                return Ok(());
+            }
+            if names.insert(name.to_string()) && names.len() > max {
+                names.pop_last();
+                truncated = true;
+            }
+            Ok(())
+        };
         for s in &snap.segments {
-            if let Some(n) = &s.summary.names {
-                for name in n {
-                    names.insert(name.clone(), ());
-                }
+            budget.check(Checkpoint::Segment)?;
+            for name in s.summary.names.iter().flatten() {
+                add(name)?;
             }
         }
         for b in &snap.batches {
             for e in &b.events {
-                names.insert(e.message().to_string(), ());
+                add(e.message())?;
             }
         }
-        let mut v: Vec<MetricInfo> = names.into_keys().map(|name| MetricInfo { name }).collect();
-        v.sort_by(|a, b| a.name.cmp(&b.name));
-        v
+        budget.check(Checkpoint::Assemble)?;
+        Ok(MetricNames { metrics: names.into_iter().map(|name| MetricInfo { name }).collect(), truncated })
     }
 
     pub fn metric_query(&self, q: &MetricQuery, cancel: &CancelToken) -> Result<MetricOutput, QueryError> {

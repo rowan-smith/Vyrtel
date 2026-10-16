@@ -21,7 +21,9 @@ pub mod stats;
 pub mod traces;
 
 pub use budget::{Budget, CancelToken, Checkpoint, CheckpointHook};
-pub use engine::{Engine, MAX_METRIC_POINTS, MetricInfo, MetricOutput, MetricQuery, SearchOutput, compile_query};
+pub use engine::{
+    Engine, MAX_METRIC_POINTS, MetricInfo, MetricNames, MetricOutput, MetricQuery, SearchOutput, compile_query,
+};
 pub use error::{ParseError, QueryError};
 pub use exec::{Cursor, Diagnostics, Direction, QueryLimits, TimeRange};
 pub use parser::parse;

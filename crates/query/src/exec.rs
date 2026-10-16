@@ -39,6 +39,8 @@ pub struct QueryLimits {
     pub max_results: usize,
     /// Spans one trace may hold when it is assembled.
     pub max_trace_spans: usize,
+    /// Names metric discovery returns.
+    pub max_metric_names: usize,
 }
 
 impl Default for QueryLimits {
@@ -48,6 +50,7 @@ impl Default for QueryLimits {
             max_scan_bytes: 4 * 1024 * 1024 * 1024,
             max_results: 1000,
             max_trace_spans: 50_000,
+            max_metric_names: 10_000,
         }
     }
 }

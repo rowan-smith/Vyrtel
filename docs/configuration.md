@@ -235,6 +235,7 @@ MB of ingest heap against the 76.8 MB budget
 | `max_scan_bytes`   | `4GB`   | –                             | Compressed segment bytes one request may read, across all its scans (422 `query_too_expensive`).  |
 | `max_results`      | `1000`  | –                             | Maximum page size (`limit`). Must be positive.                                                    |
 | `max_trace_spans`  | `50000` | –                             | Spans one trace may return from `GET /api/v1/traces/{id}` (422 `query_result_limit`). Must be positive. |
+| `max_metric_names` | `10000` | –                             | Names `GET /api/v1/metrics` returns: the first by name, with `truncated: true` beyond. Must be positive. |
 | `max_live_streams` | `64`    | –                             | Concurrent live-tail connections.                                                                 |
 
 How the limits are enforced, where execution checks them, and what happens
@@ -257,6 +258,11 @@ since the process started.
 * Queries are checked every 256 rows as well as at each block, including
   recent (unsealed) data, which had no checks before; a client
   disconnecting now stops its query (before, it ran to the end).
+* Metric discovery (`GET /api/v1/metrics`) and facet counting now check
+  the budget too: both stop on disconnect and at `timeout`. Discovery keeps
+  at most the new `query.max_metric_names` (default 10,000) names, the
+  first by name, and its response gains `truncated`. Before, it listed
+  every distinct name with no limit on time or memory.
 * A trace with more than `max_trace_spans` spans gets `422
   query_result_limit` instead of the first 50,000 spans presented as the
   whole trace. Trace search summaries gain `truncated`.
@@ -264,7 +270,8 @@ since the process started.
   query_result_limit` instead of series that silently stopped at the
   10,000th point.
 * `query.timeout = 0`, `query.max_results = 0` and
-  `query.max_trace_spans = 0` are refused at startup; before, they made
+  `query.max_trace_spans = 0` (and the new `max_metric_names = 0`) are
+  refused at startup; before, they made
   every query fail.
 * `504`, `422` and the new limit errors carry the limit (`limitMs`,
   `limitBytes`, `limit`). Codes and statuses of existing errors are

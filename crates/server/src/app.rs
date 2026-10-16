@@ -154,6 +154,7 @@ impl App {
                 max_scan_bytes: config.query.max_scan_bytes.0,
                 max_results: config.query.max_results,
                 max_trace_spans: config.query.max_trace_spans,
+                max_metric_names: config.query.max_metric_names,
             },
         ));
 

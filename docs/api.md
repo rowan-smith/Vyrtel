@@ -396,7 +396,7 @@ incomplete waterfall; narrow it with `from`/`to`.
 ## Metrics
 
 ```
-GET  /api/v1/metrics      → {"metrics": [{"name": "http.server.requests"}, ...]}
+GET  /api/v1/metrics      → {"metrics": [{"name": "http.server.requests"}, ...], "truncated": false}
 POST /api/v1/query/metrics
 {
   "name": "http.server.requests",
@@ -407,6 +407,11 @@ POST /api/v1/query/metrics
   "groupBy": "route"
 }
 ```
+
+`GET /api/v1/metrics` lists distinct names in name order, at most
+`query.max_metric_names` (default 10,000) of them: with more, it returns
+the first ones and `truncated: true`. It is a query like the others (a
+query slot, `query.timeout`, cancelled on disconnect).
 
 `agg`: `sum`, `count`, `min`, `max`, `avg` (default), `last`. For histogram
 points, `sum`/`count`/`avg` use the histogram's sum and count. Response:

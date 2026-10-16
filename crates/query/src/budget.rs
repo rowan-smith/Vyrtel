@@ -14,6 +14,8 @@
 //! | `block`    | before and after each block read                            |
 //! | `rows`     | every [`ROWS_PER_CHECK`] rows evaluated, sealed or unsealed |
 //! | `assemble` | between the phases of a multi-phase query                   |
+//! | `aggregate`| every [`ROWS_PER_CHECK`] items processed after the scan:    |
+//! |            | facet values counted, metric names collected                |
 //!
 //! A check fails with [`QueryError::Cancelled`] once the [`CancelToken`] is
 //! cancelled, [`QueryError::Timeout`] once `timeout` has passed and
@@ -59,6 +61,9 @@ pub enum Checkpoint {
     Block,
     Rows,
     Assemble,
+    /// In-memory work after (or instead of) a scan: facet counting, metric
+    /// name discovery.
+    Aggregate,
 }
 
 /// Test seam: called at every checkpoint before the budget is checked. See
@@ -72,6 +77,8 @@ pub struct Budget {
     max_scan_bytes: u64,
     /// Bytes read by every scan of this request.
     scanned: Cell<u64>,
+    /// Items counted by [`Budget::tick`] since its last check.
+    ticks: Cell<u32>,
     cancel: CancelToken,
     hook: Option<CheckpointHook>,
 }
@@ -87,6 +94,7 @@ impl Budget {
             timeout: limits.timeout,
             max_scan_bytes: limits.max_scan_bytes,
             scanned: Cell::new(0),
+            ticks: Cell::new(0),
             cancel,
             hook,
         }
@@ -103,6 +111,18 @@ impl Budget {
 
     pub(crate) fn add_scanned(&self, bytes: u64) {
         self.scanned.set(self.scanned.get().saturating_add(bytes));
+    }
+
+    /// Count one item of in-memory work at `at`; check the budget every
+    /// [`ROWS_PER_CHECK`] items.
+    pub fn tick(&self, at: Checkpoint) -> Result<(), QueryError> {
+        let n = self.ticks.get() + 1;
+        if n >= ROWS_PER_CHECK {
+            self.ticks.set(0);
+            return self.check(at);
+        }
+        self.ticks.set(n);
+        Ok(())
     }
 
     /// Fail if the request was cancelled or is over a limit. Reading exactly
@@ -155,6 +175,17 @@ mod tests {
         let b = Budget::new(&limits(Duration::ZERO, u64::MAX), CancelToken::new());
         std::thread::sleep(Duration::from_millis(2));
         assert!(matches!(b.check(Checkpoint::Start), Err(QueryError::Timeout(0))));
+    }
+
+    #[test]
+    fn tick_checks_every_rows_per_check_items() {
+        let t = CancelToken::new();
+        let b = Budget::new(&QueryLimits::default(), t.clone());
+        t.cancel();
+        for _ in 1..ROWS_PER_CHECK {
+            b.tick(Checkpoint::Aggregate).expect("no check yet");
+        }
+        assert!(matches!(b.tick(Checkpoint::Aggregate), Err(QueryError::Cancelled)));
     }
 
     #[test]

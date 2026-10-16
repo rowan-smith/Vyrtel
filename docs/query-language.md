@@ -143,6 +143,7 @@ gathered, so a partial answer is never presented as complete.
 | `query.max_results`           | `1000`  | `limit` (page size) of a search                                   | `400 invalid_request`, before execution |
 | `query.max_trace_spans`       | `50000` | spans of one trace (`GET /api/v1/traces/{id}`)                    | `422 query_result_limit` (`limit`) |
 | metric points (fixed)         | `10000` | points per series: time range ÷ `stepMs`                          | `422 query_result_limit` (`limit`), before execution |
+| `query.max_metric_names`      | `10000` | names `GET /api/v1/metrics` returns                               | the first names by name, `truncated: true` |
 | `query.max_concurrent`        | `4`     | requests executing at once                                        | waits, then `503 unavailable`     |
 | `query.queue_timeout`         | `10s`   | how long a request waits for a free slot                          | `503 unavailable` + `Retry-After` |
 
@@ -162,6 +163,12 @@ Notes:
   with more has `truncated: true`, and its `spanCount`, `services`,
   `errorCount` and `durationMs` cover the kept spans only (the UI shows the
   span count as `10000+`).
+* **Metric discovery** (`GET /api/v1/metrics`) is a request too: it takes a
+  query slot, runs within `timeout`, stops on disconnect, and keeps at most
+  `max_metric_names` names in memory, so its cost is bounded however many
+  distinct names are stored. Beyond the limit it lists the first names
+  alphabetically and sets `truncated: true` (the UI's metric picker then
+  ends with "… more names not listed").
 * **Live tail** is not a query in this sense: it filters new batches as they
   are written and has its own limits (see [API](api.md#live-tail)).
 
@@ -177,6 +184,7 @@ query stops after at most one block read or 256 evaluated rows:
 | block      | before and after each block read                              |
 | rows       | every 256 rows evaluated, sealed or unsealed                  |
 | assemble   | between the phases of a multi-phase query (trace search, facets) |
+| aggregate  | every 256 items of in-memory work: facet values counted (property leaves included) and the final ordering; metric names collected |
 
 ### Client disconnects
 

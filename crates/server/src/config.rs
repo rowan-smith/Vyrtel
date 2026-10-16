@@ -313,6 +313,9 @@ pub struct QuerySection {
     pub max_results: usize,
     /// Spans `GET /api/v1/traces/{id}` may return (422 beyond).
     pub max_trace_spans: usize,
+    /// Names `GET /api/v1/metrics` returns (the first by name; `truncated`
+    /// beyond).
+    pub max_metric_names: usize,
     pub max_live_streams: usize,
 }
 
@@ -325,6 +328,7 @@ impl Default for QuerySection {
             max_scan_bytes: ByteSize(4 << 30),
             max_results: 1000,
             max_trace_spans: 50_000,
+            max_metric_names: 10_000,
             max_live_streams: 64,
         }
     }
@@ -529,6 +533,9 @@ impl Config {
         }
         if self.query.max_trace_spans == 0 {
             return Err("query.max_trace_spans must be positive".into());
+        }
+        if self.query.max_metric_names == 0 {
+            return Err("query.max_metric_names must be positive".into());
         }
         if !(1..=22).contains(&self.storage.zstd_level) {
             return Err("storage.zstd_level must be between 1 and 22".into());
@@ -885,6 +892,7 @@ max_scan_bytes = \"1MB\"",
             ("timeout = 0", "query.timeout must be positive (e.g. 30s)"),
             ("max_results = 0", "query.max_results must be positive"),
             ("max_trace_spans = 0", "query.max_trace_spans must be positive"),
+            ("max_metric_names = 0", "query.max_metric_names must be positive"),
         ] {
             let c = Config::from_toml(&format!("[query]\n{toml}")).unwrap();
             assert_eq!(c.validate().unwrap_err(), err);
