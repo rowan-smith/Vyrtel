@@ -27,7 +27,8 @@
 //! while a WAL fault is present every acknowledgement waits for an fsync,
 //! in `normal` durability too. If sealing keeps failing and the writer has
 //! to wait for it, new batches fail fast with the seal's fault instead of
-//! queueing until they time out.
+//! queueing until they time out, and batches already queued are answered
+//! with it too.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -171,7 +172,7 @@ struct Shared {
     cache: Arc<IndexCache>,
     hook: Option<CommitHook>,
     state: RwLock<State>,
-    /// Signalled whenever the frozen buffer is sealed.
+    /// Signalled whenever the frozen buffer is sealed, or sealing it fails.
     sealed: (Mutex<()>, Condvar),
     next_file_id: AtomicU64,
     queued: AtomicUsize,
@@ -626,12 +627,20 @@ impl Writer {
             }
 
             let mut pending: Vec<Pending> = Vec::new();
-            for msg in msgs {
+            let mut msgs = msgs.into_iter();
+            while let Some(msg) = msgs.next() {
                 match msg {
                     WriterMsg::Append { events, reserved, ack } => self.append(events, reserved, ack, &mut pending),
                     WriterMsg::Rotate(done) => {
                         self.commit(&mut pending);
+                        // The rest of the group goes back on hold, so that a
+                        // rotation stalled by a failing seal can answer the
+                        // appends among it (see `Writer::fail_queued`).
+                        let mut rest: VecDeque<WriterMsg> = msgs.collect();
+                        rest.append(&mut self.held);
+                        self.held = rest;
                         self.rotate(Some(done), &rx);
+                        break;
                     }
                     WriterMsg::Shutdown(done) => {
                         self.commit(&mut pending);
@@ -769,10 +778,13 @@ impl Writer {
     /// queued with its fault, as [`Stream::submit`] does for new ones. A
     /// batch that was queued before rotation was marked stalled would
     /// otherwise wait for its acknowledgement timeout, which never ends
-    /// sooner while the seal keeps failing. Other messages are kept.
+    /// sooner while the seal keeps failing. That includes batches on hold
+    /// behind a `Rotate` taken in the same group. Other messages are kept,
+    /// in order.
     fn fail_queued(&mut self, rx: &Receiver<WriterMsg>) {
         let Some(fault) = self.shared.fault(FaultArea::Segment) else { return };
-        while let Ok(m) = rx.try_recv() {
+        let held = std::mem::take(&mut self.held);
+        for m in held.into_iter().chain(std::iter::from_fn(|| rx.try_recv().ok())) {
             match m {
                 WriterMsg::Append { reserved, ack, .. } => {
                     self.shared.queued.fetch_sub(reserved, Ordering::AcqRel);
@@ -918,6 +930,11 @@ fn maintenance_loop(shared: Arc<Shared>, rx: Receiver<MaintMsg>) {
                     // seal, new batches fail fast with this fault.
                     shared.set_fault(FaultOp::SegmentWrite, &e, &shared.dirs.segments);
                     retry_at = Some(Instant::now() + Duration::from_secs(5));
+                    // Wake a writer waiting for this seal, so it answers
+                    // what queued before the fault was recorded right away.
+                    let (lock, cv) = &shared.sealed;
+                    let _g = lock.lock().unwrap();
+                    cv.notify_all();
                 }
             }
         }

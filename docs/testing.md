@@ -165,6 +165,15 @@ compile to nothing. The tests check that:
   of 200 without pauses) are answered within 2 s, stored or `WriteFailed`
   with the seal's fault, instead of waiting for their acknowledgement
   timeout, and release their queue reservation;
+* the same, deterministically (REL-17), in both durability modes for
+  `segment.write` and `segment.sync` faults: a batch submitted from the
+  previous batch's acknowledgement callback, which runs on the writer
+  thread after the commit and before the writer checks rotation, passes the
+  check in `submit` and still gets `WriteFailed` within 2 s; so does a batch
+  the writer took in the same group as a rotation that has to wait for the
+  seal. Queued rotations are kept: once sealing works they finish and
+  ingest resumes with the faults cleared, and a shutdown during the stall
+  takes under 5 s and answers them `Unavailable`;
 * a failed WAL creation stalls rotation, and ingest resumes by itself once
   storage works;
 * faults name the operation, the reason and a data-directory-relative path,

@@ -388,6 +388,180 @@ fn batches_queued_as_a_failing_seal_blocks_rotation_fail_fast_too() {
     assert_eq!(messages(&s), accepted, "exactly the acknowledged batches are back");
 }
 
+/// Submit `msg` with an acknowledgement that reports on the returned
+/// receiver and then runs `then`. Acknowledgements run on the writer thread
+/// right after the commit, before the writer looks at rotation, so `then`
+/// acts at a fixed point instead of racing the writer.
+fn submit_then(
+    s: &Storage,
+    msg: &str,
+    then: impl FnOnce() + Send + 'static,
+) -> Result<mpsc::Receiver<Result<Committed>>> {
+    let (tx, rx) = mpsc::sync_channel(1);
+    s.submit(
+        Signal::Logs,
+        vec![log(0, msg)],
+        Box::new(move |r| {
+            let _ = tx.send(r);
+            then();
+        }),
+    )?;
+    Ok(rx)
+}
+
+/// Queue `msg` without waiting; the receiver gets the acknowledgement.
+fn submit_queued(s: &Storage, msg: &str) -> Result<mpsc::Receiver<Result<Committed>>> {
+    submit_then(s, msg, || {})
+}
+
+fn rotate_queued(s: &Storage) -> mpsc::Receiver<Result<()>> {
+    let (tx, rx) = mpsc::sync_channel(1);
+    s.stream(Signal::Logs).rotate(Box::new(move |r| {
+        let _ = tx.send(r);
+    }));
+    rx
+}
+
+/// Within a few seconds, far below any `ack_timeout`; the seal is retried
+/// only every 5 s, so an answer that waited for it would miss this.
+const PROMPTLY: Duration = Duration::from_secs(2);
+
+/// REL-17: a batch submitted right after the acknowledgement of the batch
+/// that needs a rotation, before the writer finds that the previous seal is
+/// still failing, passes the fail-fast check in `submit` and is queued. It
+/// must still fail fast with the seal's fault instead of waiting for it.
+#[test]
+fn batch_queued_just_before_rotation_stalls_fails_fast() {
+    for durability in [Durability::Normal, Durability::Strict] {
+        for (point, fault) in [("segment.write", Injected::NoSpace), ("segment.sync", Injected::ReadOnly)] {
+            let d = tempfile::tempdir().unwrap();
+            let mut c = config(d.path(), durability);
+            // Every committed batch asks for a rotation.
+            c.logs.segment_max_events = 1;
+            let s = std::sync::Arc::new(Storage::open(c, None).unwrap());
+            let guard = inject(d.path(), point, fault);
+            // Frozen for sealing; the seal fails and keeps failing.
+            submit_ok(&s, "first");
+            wait_for("seal fault", || faults(&s).iter().any(|f| f.op == FaultOp::SegmentWrite));
+
+            // "second" is stored, then needs a rotation, which has to wait
+            // for the failing seal. "third" is submitted in between.
+            let (third_tx, third_rx) = mpsc::sync_channel(1);
+            let storage = s.clone();
+            let second = submit_then(&s, "second", move || {
+                let _ = third_tx.send(submit_queued(&storage, "third"));
+            })
+            .unwrap();
+            assert!(second.recv_timeout(PROMPTLY).unwrap().is_ok(), "{durability:?} {point}: second is stored");
+            let third = third_rx
+                .recv_timeout(PROMPTLY)
+                .unwrap()
+                .expect("third passes the check in submit: rotation is not stalled yet");
+            let f = match third.recv_timeout(PROMPTLY) {
+                Ok(r) => write_failed(r),
+                Err(_) => panic!("{durability:?} {point}: third waited for the failing seal"),
+            };
+            assert_eq!((f.op, f.reason), (FaultOp::SegmentWrite, expected_reason(fault)), "{durability:?} {point}");
+            assert_eq!(s.stats().logs.queue_depth, 0, "the failed batch releases its queue reservation");
+            assert_eq!(messages(&s), ["first", "second"]);
+
+            drop(s);
+            drop(guard);
+            let s = restart_and_check(d.path(), durability, &["first", "second"]);
+            assert!(faults(&s).is_empty(), "{:?}", faults(&s));
+        }
+    }
+}
+
+/// REL-17: the writer takes everything queued as one group. Appends behind
+/// a `Rotate` in that group must not wait for the seal the rotation waits
+/// for. The rotation itself still waits, and finishes once sealing works.
+#[test]
+fn batches_behind_a_stalled_rotation_fail_fast_and_recover() {
+    for durability in [Durability::Normal, Durability::Strict] {
+        let d = tempfile::tempdir().unwrap();
+        let s = std::sync::Arc::new(Storage::open(config(d.path(), durability), None).unwrap());
+        let guard = inject(d.path(), "segment.write", Injected::NoSpace);
+        submit_ok(&s, "first");
+        let first_rotation = rotate_queued(&s);
+        wait_for("seal fault", || faults(&s).iter().any(|f| f.op == FaultOp::SegmentWrite));
+
+        // From "second"'s acknowledgement, queue a rotation and a batch:
+        // the writer next takes both as one group, rotation first.
+        let (queued_tx, queued_rx) = mpsc::sync_channel(1);
+        let storage = s.clone();
+        let second = submit_then(&s, "second", move || {
+            let rotation = rotate_queued(&storage);
+            let _ = queued_tx.send((rotation, submit_queued(&storage, "third")));
+        })
+        .unwrap();
+        assert!(second.recv_timeout(PROMPTLY).unwrap().is_ok(), "{durability:?}: second is stored");
+        let (second_rotation, third) = queued_rx.recv_timeout(PROMPTLY).unwrap();
+        let third = third.expect("third passes the check in submit: rotation is not stalled yet");
+        let f = match third.recv_timeout(PROMPTLY) {
+            Ok(r) => write_failed(r),
+            Err(_) => panic!("{durability:?}: third waited behind the stalled rotation"),
+        };
+        assert_eq!((f.op, f.reason), (FaultOp::SegmentWrite, FaultReason::NoSpace));
+        // While the seal fails, new batches fail fast and the rotations wait.
+        write_failed(try_submit(&s, "rejected"));
+        assert!(first_rotation.try_recv().is_err() && second_rotation.try_recv().is_err());
+        assert_eq!(s.stats().logs.queue_depth, 0);
+
+        // Sealing works again (retried every 5 s): both rotations finish,
+        // the faults clear and ingest resumes.
+        drop(guard);
+        let rotated = Duration::from_secs(15);
+        assert!(first_rotation.recv_timeout(rotated).unwrap().is_ok(), "{durability:?}");
+        assert!(second_rotation.recv_timeout(rotated).unwrap().is_ok(), "{durability:?}");
+        submit_ok(&s, "after");
+        assert!(faults(&s).is_empty(), "{:?}", faults(&s));
+        assert_eq!(messages(&s), ["first", "second", "after"]);
+        assert_eq!(s.snapshot(Signal::Logs).segments.len(), 2, "both rotations were sealed");
+
+        drop(s);
+        restart_and_check(d.path(), durability, &["first", "second", "after"]);
+    }
+}
+
+/// REL-17: rotations queued while the writer waits for a failing seal are
+/// kept and answered, and shutdown is not held up by the seal.
+#[test]
+fn shutdown_during_a_stalled_rotation_is_bounded_and_answers_rotations() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = config(d.path(), Durability::Strict);
+    c.logs.segment_max_events = 1;
+    let s = Storage::open(c, None).unwrap();
+    let guard = inject(d.path(), "segment.write", Injected::NoSpace);
+    submit_ok(&s, "first");
+    wait_for("seal fault", || faults(&s).iter().any(|f| f.op == FaultOp::SegmentWrite));
+    // The next batch needs a rotation, which waits for the failing seal.
+    let mut accepted = vec!["first".to_string()];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let msg = format!("accepted {}", accepted.len());
+        match try_submit(&s, &msg) {
+            Ok(_) => accepted.push(msg),
+            Err(StorageError::WriteFailed(_)) => break,
+            Err(e) => panic!("unexpected error: {e}"),
+        }
+        assert!(Instant::now() < deadline, "writer never stalled");
+    }
+    let rotation = rotate_queued(&s);
+
+    let started = Instant::now();
+    drop(s);
+    assert!(started.elapsed() < Duration::from_secs(5), "shutdown took {:?}", started.elapsed());
+    match rotation.recv_timeout(PROMPTLY) {
+        Ok(Err(StorageError::Unavailable(why))) => assert_eq!(why, "shutting down"),
+        other => panic!("expected the rotation to be refused by shutdown, got {other:?}"),
+    }
+
+    drop(guard);
+    let accepted: Vec<&str> = accepted.iter().map(String::as_str).collect();
+    restart_and_check(d.path(), Durability::Strict, &accepted);
+}
+
 #[test]
 fn failed_wal_creation_stalls_rotation_until_storage_recovers() {
     let d = tempfile::tempdir().unwrap();
