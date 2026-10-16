@@ -45,7 +45,7 @@ use crate::config::{CompactionConfig, Durability, StreamConfig};
 use crate::crash;
 use crate::error::{Result, StorageError};
 use crate::fault::{FaultArea, FaultOp, StorageFault};
-use crate::fsutil;
+use crate::fsutil::{self, DirUsage};
 use crate::recovery::{Recovered, RecoveryReport, StreamDirs};
 use crate::segment::{Segment, SegmentWriteOptions, write_segment};
 use crate::wal::{WalHeader, WalWriter, wal_file_name};
@@ -145,6 +145,10 @@ pub struct StreamStats {
     pub faults: Vec<StorageFault>,
     /// What startup recovery found, including anything quarantined.
     pub recovery: RecoveryReport,
+    /// Files in `quarantine/<signal>/` now, whichever start put them there.
+    /// Unlike [`StreamStats::recovery`] this includes evidence from earlier
+    /// starts, such as a recovery that was itself interrupted.
+    pub quarantine: DirUsage,
 }
 
 impl StreamStats {
@@ -465,6 +469,7 @@ impl Stream {
         s.oldest = oldest;
         s.newest = newest;
         s.wal_bytes = fsutil::dir_size(&self.shared.dirs.wal);
+        s.quarantine = fsutil::dir_usage(&self.shared.dirs.quarantine);
         s
     }
 

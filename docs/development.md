@@ -87,7 +87,9 @@ The OTLP fixtures contain `{{now-…}}` placeholders; see
   active segment sizes, memory budgets and storage totals.
 * Damaged files found at startup are moved to `data/quarantine/<signal>/`,
   logged at WARN/ERROR with the reason and listed under
-  `signals.<signal>.recovery` in `/api/v1/system/storage`.
+  `signals.<signal>.recovery` in `/api/v1/system/storage`; Settings → Storage
+  warns while any are in quarantine (see
+  [Recovery health](configuration.md#recovery-health)).
 * `cargo test -p storage --features crash-points --test crash` kills real
   processes at named points in the write path. To reproduce one by hand,
   run `VYRTEL_CRASH_AT=wal.after_ack cargo run --features

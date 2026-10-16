@@ -226,6 +226,42 @@ export interface SignalStorage {
   oldest: string | null;
   newest: string | null;
   healthy: boolean;
+  recovery: SignalRecovery;
+}
+
+/** `damaged`: this start quarantined files or discarded WAL bytes. `quarantineRetained`: files from an earlier start are still in quarantine. */
+export type RecoveryStatus = 'clean' | 'damaged' | 'quarantineRetained';
+
+export interface RecoverySummary {
+  status: RecoveryStatus;
+  signals: string[];
+}
+
+export interface QuarantinedItem {
+  signal: string;
+  kind: 'segment' | 'wal' | 'walTail';
+  source: string;
+  file: string | null;
+  bytes: number;
+  reason: string;
+}
+
+export interface SignalRecovery {
+  status: RecoveryStatus;
+  segmentsLoaded: number;
+  walFilesReplayed: number;
+  walRecordsReplayed: number;
+  walEventsReplayed: number;
+  segmentsSealed: number;
+  staleWalsRemoved: number;
+  replacedSegmentsRemoved: number;
+  walBytesDiscarded: number;
+  segmentsQuarantined: number;
+  walFilesQuarantined: number;
+  walTailsQuarantined: number;
+  quarantinedBytes: number;
+  quarantineDir: { files: number; bytes: number };
+  quarantined: QuarantinedItem[];
 }
 
 export interface StorageStats {
@@ -240,6 +276,8 @@ export interface StorageStats {
   compressionRatio: number | null;
   indexOverhead: number | null;
   receivedBytes: number;
+  quarantineBytes: number;
+  recovery: RecoverySummary;
   signals: { logs: SignalStorage; traces: SignalStorage; metrics: SignalStorage };
   indexCache: { budgetBytes: number; usedBytes: number; entries: number; hits: number; misses: number };
 }
@@ -261,6 +299,7 @@ export interface SystemInfo {
   };
   queue: { [signal: string]: { depth: number; capacity: number } };
   liveSubscribers: number;
+  recovery: RecoverySummary;
 }
 
 export interface QueryFieldStats {

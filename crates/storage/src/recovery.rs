@@ -117,6 +117,25 @@ pub struct RecoveryReport {
     pub quarantined: Vec<QuarantinedFile>,
 }
 
+impl RecoveryReport {
+    /// Whether this recovery found damage: it moved something to quarantine
+    /// or dropped bytes from a WAL. Replaying a WAL is not damage; every
+    /// start does it.
+    pub fn found_damage(&self) -> bool {
+        !self.quarantined.is_empty() || self.wal_bytes_discarded > 0
+    }
+
+    /// How many items of `kind` this recovery moved to quarantine.
+    pub fn quarantined_count(&self, kind: QuarantineKind) -> usize {
+        self.quarantined.iter().filter(|q| q.kind == kind).count()
+    }
+
+    /// Total size of everything this recovery moved to quarantine.
+    pub fn quarantined_bytes(&self) -> u64 {
+        self.quarantined.iter().map(|q| q.bytes).sum()
+    }
+}
+
 pub struct Recovered {
     pub segments: Vec<Arc<Segment>>,
     pub wal: WalWriter,

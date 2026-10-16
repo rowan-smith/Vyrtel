@@ -24,6 +24,25 @@ test('readiness and storage diagnostics report a healthy write path', async ({ r
   }
 });
 
+test('a clean start reports clean recovery and shows no quarantine warning', async ({ page, request }) => {
+  // REL-11: WAL replay on a fresh data directory is not damage.
+  const storage = await (await request.get('/api/v1/system/storage')).json();
+  expect(storage.recovery).toEqual({ status: 'clean', signals: [] });
+  for (const signal of ['logs', 'traces', 'metrics']) {
+    expect(storage.signals[signal].recovery).toMatchObject({
+      status: 'clean',
+      walBytesDiscarded: 0,
+      quarantined: [],
+      quarantineDir: { files: 0, bytes: 0 },
+    });
+  }
+  expect((await (await request.get('/api/v1/system/info')).json()).recovery).toEqual({ status: 'clean', signals: [] });
+
+  await page.goto('/settings?tab=storage');
+  await expect(page.getByTestId('storage-stats')).toBeVisible();
+  await expect(page.getByTestId('recovery-health')).toHaveCount(0);
+});
+
 test('a read-only data directory makes readiness degraded until it is writable again', async ({ request }) => {
   // Windows has no mode bits, and root ignores them.
   test.skip(process.platform === 'win32', 'needs POSIX permissions');

@@ -625,6 +625,80 @@ delete them; the directory's size is reported as `quarantineBytes`.
 
 **Backups.** See [Backup and restore](#backup-and-restore).
 
+### Recovery health
+
+Every start reports, per signal, what recovery found and what is in
+quarantine. Signed-in users see it in three places:
+
+* **Settings → Storage** shows a warning above the storage totals when any
+  signal is not `clean`: which signals may be incomplete, how many bytes of
+  WAL were discarded, how many items were quarantined this start and how
+  many files are in `quarantine/<signal>/` now, with each item's kind,
+  reason and quarantine file name. After a clean start nothing is shown.
+* `GET /api/v1/system/storage` → top-level `recovery` (overall status and
+  the affected signals) and `signals.<signal>.recovery` (counts, discarded
+  and quarantined bytes, the quarantine directory and each item). See
+  [System](api.md#system).
+* `GET /api/v1/system/info` → `recovery`, the same overall status.
+
+| Status               | Meaning                                                                                                   | What to do                                                                 |
+|----------------------|-----------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------|
+| `clean`              | Nothing was discarded or quarantined, and `quarantine/<signal>/` is empty. Replaying the WAL is normal and does not change this. | Nothing.                                                      |
+| `damaged`            | This start quarantined a segment, a WAL file or a WAL tail, or discarded WAL bytes.                       | Read the reasons; see [Quarantine](storage-format.md#quarantine) for what each kind lost. |
+| `quarantineRetained` | This start found nothing new, but `quarantine/<signal>/` still holds files from an earlier start, including one whose recovery was itself interrupted after setting a file aside. | Copy the files off if you need them, then delete them.                     |
+
+The overall status is the worst of the three signals (`damaged`, then
+`quarantineRetained`, then `clean`).
+
+**Limitations.** Vyrtel does not repair quarantined data or guess what it
+held. Events in a quarantined segment come back only if the WAL it was
+sealed from still existed; events in a quarantined WAL file or tail are not
+queryable. A `damaged` signal stays `damaged` until the next start, even
+after you delete the files, because it describes what this start found.
+The per-item list covers only this start; earlier items show up as the file
+count and size in `quarantineDir`.
+
+**What is never shown.** Quarantine file names are relative to the data
+directory, reasons name the damage (`incomplete record at offset 48213 (torn
+write)`) and never file contents, and credentials never appear. `/health`
+and unauthenticated `/ready` say nothing about recovery: quarantine does not
+make an instance unready, since every readable event is served.
+
+**Example.** This is what `tests/integration/recovery_health.rs` does: tear
+the last WAL record of a stopped server as a crash mid-write would, then
+start it again.
+
+```bash
+vyrtel --data-dir /tmp/vyrtel-rel11 &
+for m in committed torn; do
+  curl -s -H 'content-type: application/json' -d "{\"message\":\"$m\"}" localhost:8080/api/v1/events
+done                                                             # {"accepted":1} twice
+kill -9 %1
+wal=$(ls /tmp/vyrtel-rel11/wal/logs/*.wal | tail -1)
+truncate -s -5 "$wal"                                            # tear the final record
+vyrtel --data-dir /tmp/vyrtel-rel11 &
+curl -s localhost:8080/api/v1/system/storage | jq -c '.recovery, .signals.logs.recovery.status'
+# {"status":"damaged","signals":["logs"]}
+# "damaged"
+```
+
+Only `committed` is queryable afterwards. Restart once more and the status
+is `quarantineRetained`; stop, delete `/tmp/vyrtel-rel11/quarantine`, start
+again, and it is `clean`. With authentication enabled, sign in first as in
+[Verification queries](#verification-queries).
+
+#### Recovery health changes in 0.1.2
+
+* `signals.<signal>.recovery` in `/api/v1/system/storage` gains `status`,
+  `walFilesReplayed`, `segmentsQuarantined`, `walFilesQuarantined`,
+  `walTailsQuarantined`, `quarantinedBytes` and `quarantineDir`; the
+  response and `/api/v1/system/info` gain a top-level `recovery` summary.
+  Existing fields are unchanged.
+* Settings → Storage warns when a signal is `damaged` or
+  `quarantineRetained`.
+* Files left in quarantine by an earlier or interrupted recovery are now
+  reported. Before, only items quarantined by the current start were listed.
+
 ## Backup and restore
 
 A backup is a copy of the whole data directory taken while Vyrtel is

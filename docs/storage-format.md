@@ -512,6 +512,10 @@ for whole files, `WARN` for tails) with `signal`, `kind`, `file`,
 `quarantined_to`, `bytes` and `reason`, and is listed under
 `signals.<signal>.recovery.quarantined` in
 [`GET /api/v1/system/storage`](api.md#system) until the next restart.
+After that, and after a recovery interrupted once it had set a file aside,
+the files are still counted in `signals.<signal>.recovery.quarantineDir` and
+the signal's status is `quarantineRetained` until they are deleted (see
+[Recovery health](configuration.md#recovery-health)).
 
 What was lost:
 

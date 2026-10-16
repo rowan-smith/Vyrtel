@@ -482,8 +482,8 @@ change is recorded and POSTed to the webhook (3 attempts, 10 s timeout):
 ```
 GET /health                      → 200 {"status": "ok"} while the process runs
 GET /ready                       → 200 {"status": "ready", "storageWritable": true}, 503 {"status": "degraded", ...} or, while shutting down, 503 {"status": "draining"}
-GET /api/v1/system/info          version, uptime, event counts, queue depths, ingest admission, active segments, memory budgets
-GET /api/v1/system/storage       raw/stored bytes, compression ratio, index overhead, per-signal detail
+GET /api/v1/system/info          version, uptime, event counts, queue depths, ingest admission, active segments, memory budgets, recovery status
+GET /api/v1/system/storage       raw/stored bytes, compression ratio, index overhead, recovery status, per-signal detail
 GET /api/v1/system/query-stats   per-field query statistics (input for future adaptive indexing)
 GET /api/v1/system/config        effective configuration (secrets omitted)
 ```
@@ -514,13 +514,18 @@ requests reuse its result:
 sealed segments.
 
 Each `signals.<signal>` object includes `recovery`: what startup crash
-recovery did for that signal in this process's lifetime.
+recovery did for that signal in this process's lifetime, and what is in its
+quarantine directory now.
 
 ```json
 "recovery": {
-  "segmentsLoaded": 12, "walRecordsReplayed": 340, "walEventsReplayed": 5100,
+  "status": "damaged",
+  "segmentsLoaded": 12, "walFilesReplayed": 1, "walRecordsReplayed": 340, "walEventsReplayed": 5100,
   "segmentsSealed": 0, "staleWalsRemoved": 1, "replacedSegmentsRemoved": 0,
   "walBytesDiscarded": 61,
+  "segmentsQuarantined": 0, "walFilesQuarantined": 0, "walTailsQuarantined": 1,
+  "quarantinedBytes": 61,
+  "quarantineDir": { "files": 1, "bytes": 61 },
   "quarantined": [
     { "signal": "logs", "kind": "walTail", "source": "000000000014.wal",
       "file": "quarantine/logs/000000000014.wal.tail-48213.1791622413000",
@@ -532,7 +537,25 @@ recovery did for that signal in this process's lifetime.
 `kind` is `segment`, `wal` or `walTail`; `file` is relative to the data
 directory and `reason` never contains host paths. See
 [Quarantine](storage-format.md#quarantine) for what each kind means and what
-was lost. An empty `quarantined` list means recovery found no damage.
+was lost. An empty `quarantined` list means this start found no damage.
+
+`status` is `damaged` when this start quarantined something or discarded
+WAL bytes, `quarantineRetained` when it did not but `quarantine/<signal>/`
+still holds files (from an earlier start, or a recovery that was
+interrupted after setting a file aside), and otherwise `clean`. Replaying
+the WAL is normal and leaves it `clean`. The `*Quarantined` counts and
+`quarantinedBytes` cover this start; `quarantineDir` counts the files on
+disk now, whichever start put them there.
+
+The response, and `/api/v1/system/info`, also carry a summary: the worst
+status of the three signals and the signals that are not `clean`.
+
+```json
+"recovery": { "status": "damaged", "signals": ["logs"] }
+```
+
+None of this is in `/health` or `/ready`; quarantine does not make an
+instance unready. See [Recovery health](configuration.md#recovery-health).
 
 Storage write failures are reported per signal under `faults` (at most one
 each for `wal`, `segment` and `maintenance`), along with `healthy` (no

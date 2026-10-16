@@ -82,18 +82,34 @@ pub fn remove_file_if_exists(path: &Path) -> Result<bool> {
 
 /// Total size of regular files below `dir` (non-recursive into symlinks).
 pub fn dir_size(dir: &Path) -> u64 {
+    dir_usage(dir).bytes
+}
+
+/// How many regular files are below a directory and their total size.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DirUsage {
+    pub files: u64,
+    pub bytes: u64,
+}
+
+/// Count and size the regular files below `dir` (non-recursive into
+/// symlinks). A missing or unreadable directory counts as empty.
+pub fn dir_usage(dir: &Path) -> DirUsage {
     let Ok(rd) = std::fs::read_dir(dir) else {
-        return 0;
+        return DirUsage::default();
     };
-    rd.flatten()
-        .map(|e| match e.file_type() {
-            Ok(t) if t.is_dir() => dir_size(&e.path()),
+    rd.flatten().fold(DirUsage::default(), |acc, e| {
+        let u = match e.file_type() {
+            Ok(t) if t.is_dir() => dir_usage(&e.path()),
             // Stat the path rather than using the directory entry: on
             // Windows the entry's size lags for files still open for write.
-            Ok(t) if t.is_file() => std::fs::metadata(e.path()).map(|m| m.len()).unwrap_or(0),
-            _ => 0,
-        })
-        .sum()
+            Ok(t) if t.is_file() => {
+                DirUsage { files: 1, bytes: std::fs::metadata(e.path()).map(|m| m.len()).unwrap_or(0) }
+            }
+            _ => DirUsage::default(),
+        };
+        DirUsage { files: acc.files + u.files, bytes: acc.bytes + u.bytes }
+    })
 }
 
 #[cfg(test)]
@@ -114,5 +130,17 @@ mod tests {
         let blocked = d.path().join("evidence-file");
         std::fs::write(&blocked, b"x").unwrap();
         assert!(create_dir_all_durable(&blocked.join("sub")).is_err());
+    }
+
+    #[test]
+    fn dir_usage_counts_files_recursively_and_treats_missing_as_empty() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(dir_usage(&d.path().join("missing")), DirUsage::default());
+        let sub = d.path().join("logs");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(d.path().join("a"), [0u8; 3]).unwrap();
+        std::fs::write(sub.join("b"), [0u8; 5]).unwrap();
+        assert_eq!(dir_usage(d.path()), DirUsage { files: 2, bytes: 8 });
+        assert_eq!(dir_size(d.path()), 8);
     }
 }
