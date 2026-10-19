@@ -28,7 +28,8 @@ Next to the code (`#[cfg(test)]` modules). Highlights:
 | Bloom filters, bitmaps, HyperLogLog, canonical index keys            | `crates/storage/src/index/`          |
 | Configuration parsing, env overrides, memory budgets                 | `crates/server/src/config.rs`        |
 | OTLP mapping (protobuf + JSON), native/CLEF parsing, templates       | `crates/ingest/src/`                 |
-| Decoding limits (REL-16): events, decoded bytes and depth at limit − 1 / limit / limit + 1 for every format; shared OTLP resources; the protobuf pre-scan covers what `prost` allocates and accepts what it accepts | `crates/ingest/tests/limits.rs`, `crates/ingest/src/{limits,jsontree}.rs` |
+| Decoding limits (REL-16): events, decoded bytes and depth at limit − 1 / limit / limit + 1 for every format; shared OTLP resources; the protobuf pre-scan covers what `prost` allocates and accepts what it accepts | `crates/ingest/tests/limits.rs`, `crates/ingest/src/{limits,jsontree,native}.rs` |
+| Real heap of native decoding (a per-thread counting allocator): an escaped-key envelope over the event limit is refused without building its tree; `[]` allocates nothing and arrays of exactly 4, 8 or 16 elements no growth step beyond them | `crates/ingest/tests/alloc.rs` |
 | Metadata store (migrations, CRUD, alert transitions, read-only schema inspection, newer schema refused) | `crates/metadata/tests/store.rs`     |
 | Data-directory check: new, pre-manifest and interrupted directories accepted; missing parts, inventory files missing or truncated, an empty metadata database, bad or newer manifests, newer and unreadable metadata refused; `accept_incomplete` returns the problems instead (never format problems); the inventory is dropped on start | `crates/server/src/datadir.rs` |
 

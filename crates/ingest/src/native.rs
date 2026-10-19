@@ -9,7 +9,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use serde::de::{Deserializer, SeqAccess, Visitor};
+use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value as Json};
 use telemetry::*;
 
@@ -45,35 +45,46 @@ impl Format {
 /// Events are converted one at a time as they are parsed, so the working
 /// set is the batch built so far plus one event's JSON. The number of
 /// events is counted before parsing (lines, or a structural scan of a JSON
-/// array), so a batch with too many is refused at once and the batch is
-/// allocated exactly once.
+/// array or of `{"events": [...]}` spelt plainly), so a batch with too many
+/// is refused at once and the batch is allocated exactly once. Any other
+/// envelope (an escaped or repeated key) is streamed too, and counted as
+/// its events are read.
 pub fn parse(body: &[u8], format: Format, now: Timestamp, limits: Limits) -> Result<Vec<TelemetryEvent>, IngestError> {
-    let mut budget = Budget::new(limits);
+    parse_in(body, format, now, &mut Budget::new(limits))
+}
+
+fn parse_in(
+    body: &[u8],
+    format: Format,
+    now: Timestamp,
+    budget: &mut Budget,
+) -> Result<Vec<TelemetryEvent>, IngestError> {
+    let limits = budget.limits();
     let mut b = Batch { out: Vec::new(), now, empty: Fields::shared_empty() };
     match format {
         Format::Json => {
             // `{"events": [...]}` is streamed like a bare array.
             let array = jsontree::envelope(body).unwrap_or(body);
             match jsontree::count_array_elements(array) {
-                Some(n) => b.array(array, n, &mut budget)?,
-                None => b.object(body, &mut budget)?,
+                Some(n) => b.array(array, n, &mut *budget)?,
+                None => b.object(body, &mut *budget)?,
             }
         }
         Format::NdJson => {
             let text =
                 std::str::from_utf8(body).map_err(|_| IngestError::Malformed("body is not valid UTF-8".into()))?;
             let lines = || text.lines().map(str::trim).enumerate().filter(|(_, l)| !l.is_empty());
-            b.reserve(lines().count(), &mut budget)?;
+            b.reserve(lines().count(), &mut *budget)?;
             for (i, line) in lines() {
                 let before = budget.used();
-                let mut ctx = Ctx::new(&mut budget, limits.max_depth);
+                let mut ctx = Ctx::new(&mut *budget, limits.max_depth);
                 let v = jsontree::from_slice(line.as_bytes(), &mut ctx).map_err(|e| match e {
                     IngestError::Malformed(m) => IngestError::Malformed(format!("line {}: {m}", i + 1)),
                     other => other,
                 })?;
                 let containers = ctx.containers;
                 let index = b.out.len();
-                b.convert(v, index, before, containers, &mut budget)?;
+                b.convert(v, index, before, containers, &mut *budget)?;
             }
         }
     }
@@ -133,9 +144,34 @@ impl Batch {
         parsed.map_err(|e| budget.take_failure().unwrap_or_else(|| jsontree::syntax_error(&e, budget)))
     }
 
-    /// A single event, or an envelope [`jsontree::envelope`] does not
-    /// recognise (such as one with an escaped key), which is held whole.
+    /// A top-level object that is not a plainly spelt envelope. It is
+    /// first streamed as `{"events": [...]}` (see [`Envelope`]), so that a
+    /// batch with too many events is refused as soon as the count passes
+    /// the limit and the whole tree is never built. A limit reached that
+    /// way is final. Anything else, which includes an object that is not an
+    /// envelope after all, an invalid event or invalid JSON, is read again
+    /// whole, which decides what it is.
     fn object(&mut self, body: &[u8], budget: &mut Budget) -> Result<(), IngestError> {
+        let mut de = serde_json::Deserializer::from_slice(body);
+        let streamed = de.deserialize_map(Envelope { batch: self, budget: &mut *budget }).and_then(|()| de.end());
+        match (streamed, budget.take_failure()) {
+            (Ok(()), _) => return Ok(()),
+            (
+                Err(_),
+                Some(
+                    e
+                    @ (IngestError::TooManyEvents { .. } | IngestError::TooLarge { .. } | IngestError::TooDeep { .. }),
+                ),
+            ) => return Err(e),
+            (Err(_), _) => {}
+        }
+        self.out = Vec::new();
+        *budget = Budget::new(budget.limits());
+        self.whole(body, budget)
+    }
+
+    /// A single event, or an envelope with an invalid event, held whole.
+    fn whole(&mut self, body: &[u8], budget: &mut Budget) -> Result<(), IngestError> {
         let max_depth = budget.limits().max_depth;
         let before = budget.used();
         // The envelope puts its events two levels down.
@@ -165,6 +201,52 @@ impl Batch {
             }
             _ => Err(IngestError::Malformed("expected a JSON object or array of objects".into())),
         }
+    }
+}
+
+/// The entries of a top-level object, read as `{"events": [...]}`: every
+/// key must decode to `events` (escapes included; a repeated key replaces
+/// the earlier array, as in any JSON object) and its value is streamed by
+/// [`Elements`]. Anything else stops it with an error but no limit
+/// recorded, and the object is read whole instead.
+struct Envelope<'a> {
+    batch: &'a mut Batch,
+    budget: &'a mut Budget,
+}
+
+impl<'de> Visitor<'de> for Envelope<'_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("an object of events")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        let mut found = false;
+        while let Some(key) = map.next_key::<String>()? {
+            if key != "events" {
+                return Err(serde::de::Error::custom("not an envelope"));
+            }
+            self.batch.out = Vec::new();
+            *self.budget = Budget::new(self.budget.limits());
+            map.next_value_seed(Array { batch: &mut *self.batch, budget: &mut *self.budget })?;
+            found = true;
+        }
+        if found { Ok(()) } else { Err(serde::de::Error::custom("not an envelope")) }
+    }
+}
+
+/// An envelope's array, streamed by [`Elements`].
+struct Array<'a> {
+    batch: &'a mut Batch,
+    budget: &'a mut Budget,
+}
+
+impl<'de> DeserializeSeed<'de> for Array<'_> {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<(), D::Error> {
+        de.deserialize_seq(Elements { batch: self.batch, budget: self.budget })
     }
 }
 
@@ -442,6 +524,57 @@ mod tests {
         assert!(matches!(v[2].attributes.get("x"), Some(Value::Array(_))));
     }
 
+    /// `key` as a JSON string with the characters at `at` written as
+    /// `\u` escapes.
+    fn escaped(key: &str, at: &[usize]) -> String {
+        let chars: String = key
+            .chars()
+            .enumerate()
+            .map(|(i, c)| if at.contains(&i) { format!("{}u{:04x}", '\\', c as u32) } else { c.to_string() })
+            .collect();
+        format!("\"{chars}\"")
+    }
+
+    /// `n` empty events in an envelope whose key is `key` (raw JSON).
+    fn envelope_of(key: &str, n: usize) -> Vec<u8> {
+        format!(r#"{{{key}:[{}]}}"#, vec!["{}"; n].join(",")).into_bytes()
+    }
+
+    fn peak_of(body: &[u8], limits: Limits) -> (Result<usize, IngestError>, usize) {
+        let mut budget = Budget::new(limits);
+        let r = parse_in(body, Format::Json, NOW, &mut budget).map(|v| v.len());
+        (r, budget.peak())
+    }
+
+    // AC2: an envelope is refused as soon as its count passes the limit,
+    // however its key is spelt, and its whole tree is never built.
+    #[test]
+    fn every_envelope_spelling_is_counted_while_it_streams() {
+        const N: usize = 40_000;
+        let limits = Limits { max_events: 1000, ..U };
+        let plain = peak_of(&envelope_of(r#""events""#, N), limits);
+        assert_eq!(plain.0, Err(IngestError::TooManyEvents { limit: 1000 }));
+        assert_eq!(plain.1, 0, "a plainly spelt envelope is counted before parsing");
+        assert_eq!(escaped("events", &[2]), format!("\"ev{}u0065nts\"", '\\'));
+        for key in [escaped("events", &[2]), escaped("events", &[0, 1, 2, 3, 4, 5])] {
+            let key = key.as_str();
+            let (r, peak) = peak_of(&envelope_of(key, N), limits);
+            assert_eq!(r, Err(IngestError::TooManyEvents { limit: 1000 }), "{key}");
+            // About 1,000 events; the tree alone would be 40,000 values.
+            assert!(peak < N * jsontree::NODE / 4, "{key}: peak {peak}");
+            assert!(peak > 0);
+        }
+        // Repeated keys: the last array counts, as in any JSON object.
+        let repeated =
+            format!(r#"{{"events":[{{"message":"a"}}],{}:[{}]}}"#, escaped("events", &[2]), vec!["{}"; N].join(","));
+        assert_eq!(peak_of(repeated.as_bytes(), limits).0, Err(IngestError::TooManyEvents { limit: 1000 }));
+        let repeated = br#"{"events":[{"message":"a"},{"message":"b"}],"events":[{"message":"c"}]}"#;
+        let v = parse(repeated, Format::Json, NOW, U).unwrap();
+        assert_eq!(v.iter().map(|e| e.message()).collect::<Vec<_>>(), ["c"]);
+        // Within the limit, escaped envelopes are stored like plain ones.
+        assert_eq!(peak_of(&envelope_of(&escaped("events", &[2]), 1000), limits).0, Ok(1000));
+    }
+
     #[test]
     fn envelopes_and_lookalikes() {
         // Streamed like an array, whatever the whitespace.
@@ -458,8 +591,9 @@ mod tests {
         let v = parse(br#"{"events":[1],"message":"m"}"#, Format::Json, NOW, U).unwrap();
         assert_eq!((v.len(), v[0].message()), (1, "m"));
         assert!(matches!(v[0].attributes.get("events"), Some(Value::Array(_))));
-        // An escaped key is still the envelope, decoded the general way.
-        let v = parse(br#"{"events":[{"message":"a"}]}"#, Format::Json, NOW, U).unwrap();
+        // An escaped key is still the envelope.
+        let body = format!(r#"{{{}:[{{"message":"a"}}]}}"#, escaped("events", &[0]));
+        let v = parse(body.as_bytes(), Format::Json, NOW, U).unwrap();
         assert_eq!(v[0].message(), "a");
         assert_eq!(
             parse(br#"{"events":[{"message":"a"}, 5]}"#, Format::Json, NOW, U),

@@ -166,9 +166,10 @@ memory at stake when a limit is reached.
 * **Events** are native events, OTLP log records, spans or metric data
   points. The count is taken before anything is built: native bodies are
   counted by a scan of their lines or array elements, OTLP/protobuf bodies
-  by a scan of the wire format, and OTLP/JSON records as they are reached.
-  A batch the queue could never hold is refused at once instead of after
-  it has been parsed.
+  by a scan of the wire format, and OTLP/JSON records and the events of a
+  `{"events": [...]}` envelope whose key is escaped or repeated as they are
+  reached. A batch the queue could never hold is refused as soon as its
+  count is known, never after it has been parsed.
 * **Decoded data** is the decoders' own estimate of the heap they hold:
   the parsed JSON tree or OTLP structures, and the events built from them,
   each charged before or as it is allocated and credited back once freed.

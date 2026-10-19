@@ -177,16 +177,15 @@ impl<'de> Visitor<'de> for Seed<'_, '_> {
     fn visit_seq<A: SeqAccess<'de>>(mut self, mut seq: A) -> Result<Json, A::Error> {
         self.enter()?;
         let mut items: Vec<Json> = Vec::new();
-        loop {
+        // Grown only once another element is known to exist, so `[]`
+        // allocates nothing and a full array does not grow past its end.
+        while let Some(v) = seq.next_element_seed(Seed { ctx: &mut *self.ctx, depth: self.depth + 1 })? {
             if items.len() == items.capacity() {
                 let cap = limits::grown(items.capacity());
                 self.ctx.charge_container((cap - items.capacity()) * NODE)?;
                 items.reserve_exact(cap - items.len());
             }
-            match seq.next_element_seed(Seed { ctx: &mut *self.ctx, depth: self.depth + 1 })? {
-                Some(v) => items.push(v),
-                None => break,
-            }
+            items.push(v);
         }
         Ok(Json::Array(items))
     }
@@ -318,6 +317,20 @@ mod tests {
         // The outermost container is at depth 0.
         assert!(parse(&nested(33), Limits::UNBOUNDED, 32).0.is_ok());
         assert_eq!(parse(&nested(34), Limits::UNBOUNDED, 32).0, Err(IngestError::TooDeep { limit: 32 }));
+    }
+
+    // Arrays are grown only for elements that exist: nothing for `[]`, and
+    // exactly 4, 8 or 16 slots for arrays of that length.
+    #[test]
+    fn arrays_are_charged_for_the_slots_they_use() {
+        for (n, slots) in [(0, 0), (1, 4), (4, 4), (5, 8), (8, 8), (9, 16), (16, 16), (17, 32)] {
+            let body = format!("[{}]", vec!["0"; n].join(","));
+            let (r, peak) = parse(&body, Limits::UNBOUNDED, 64);
+            assert_eq!(r.unwrap().as_array().unwrap().len(), n);
+            assert_eq!(peak, slots * NODE, "[{n} elements]");
+        }
+        let (_, peak) = parse("[[],[],[],[]]", Limits::UNBOUNDED, 64);
+        assert_eq!(peak, 4 * NODE, "empty inner arrays allocate nothing");
     }
 
     #[test]
