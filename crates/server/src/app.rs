@@ -3,7 +3,8 @@
 //!
 //! Shutdown (REL-05): the first stop request flips `AppState::shutdown`,
 //! which closes the listener, refuses new ingest, queries and live streams
-//! with 503, and ends live-tail streams. Requests already admitted run to
+//! with 503, and ends live-tail streams; idle connections close and waiting
+//! ones are refused (see [`crate::transport`]). Requests already admitted run to
 //! their acknowledgement, then every storage stream writes out its queue and
 //! flushes its WAL. All of it shares one deadline,
 //! `server.shutdown_timeout`; a second stop request ends the wait at once.
@@ -169,6 +170,16 @@ impl App {
             );
         }
         let ingest_slots = admission.limit;
+        let transport = crate::transport::Transport::new(config.transport_limits());
+        if config.query.max_live_streams >= config.server.max_connections {
+            tracing::warn!(
+                max_live_streams = config.query.max_live_streams,
+                max_connections = config.server.max_connections,
+                "query.max_live_streams is not below server.max_connections: open live-tail streams can take every \
+                 connection slot and leave none for ingest or queries; raise server.max_connections or lower \
+                 query.max_live_streams (see docs/configuration.md#connections-and-transport-limits)"
+            );
+        }
         let http = reqwest::Client::builder()
             .user_agent(concat!("vyrtel/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -190,6 +201,7 @@ impl App {
             ingest_rejected: AtomicU64::new(0),
             discard_permits: Arc::new(Semaphore::new(crate::routes::ingest::MAX_DISCARDING)),
             discard_pending: Arc::new(Semaphore::new(crate::routes::ingest::MAX_DISCARD_PENDING)),
+            transport,
             started_at: Instant::now(),
             started_ts: Timestamp::now(),
             received_bytes: AtomicU64::new(0),
@@ -231,6 +243,7 @@ impl App {
              Storage             {}\n\
              Memory limit        {}\n\
              Durability          {}\n\
+             Connections         {} max (buffers up to {})\n\
              Authentication      {}\n",
             env!("CARGO_PKG_VERSION"),
             c.storage.path.display(),
@@ -240,6 +253,8 @@ impl App {
                 Durability::Normal => "normal",
                 Durability::Strict => "strict",
             },
+            c.server.max_connections,
+            human_bytes(c.transport_limits().estimated_peak()),
             if c.auth.enabled { "enabled" } else { "disabled (open access; see docs/configuration.md)" },
         );
         if let Some(pw) = &self.generated_password {
@@ -279,7 +294,8 @@ impl App {
         let (began_tx, mut began_rx) = oneshot::channel();
         let notify = self.shutdown.clone();
         let draining = self.state.clone();
-        let serving = axum::serve(listener, self.router.clone()).with_graceful_shutdown(async move {
+        let transport = self.state.transport.clone();
+        let serving = crate::transport::serve(listener, self.router.clone(), transport, async move {
             stop.await;
             let _ = began_tx.send(tokio::time::Instant::now());
             // Refuse new work and end live-tail streams so draining
@@ -294,7 +310,7 @@ impl App {
                 "shutdown started; draining accepted work"
             );
         });
-        let mut serving = pin!(serving.into_future());
+        let mut serving = pin!(serving);
         let mut force = pin!(force);
 
         // Until the stop request. Serving ends first only on an error, or

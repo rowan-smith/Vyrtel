@@ -290,16 +290,23 @@ async fn live_streams_end_cleanly_and_reconnect_after_restart() {
     assert!(took < Duration::from_secs(2), "open streams held shutdown for {took:?}");
 
     // The slow consumer still receives what was matched before shutdown,
-    // then `shutdown`, then a clean end of the response.
+    // then `shutdown`, then a clean end of the response. What was matched
+    // is what its connection could buffer (REL-18 caps the write buffer at
+    // `server.connection_buffer`), so it is an in-order prefix of the 300;
+    // the rest stays queryable.
     let mut delivered = 0;
     let last = loop {
         match slow.next_or_end().await {
-            Some((k, _)) if k == "event" => delivered += 1,
+            Some((k, d)) if k == "event" => {
+                let message = serde_json::from_str::<Value>(&d).unwrap()["message"].clone();
+                assert_eq!(message, format!("live-{delivered}"), "events arrive in order with none skipped");
+                delivered += 1;
+            }
             Some((k, d)) => break (k, d),
             None => panic!("stream ended without a shutdown event"),
         }
     };
-    assert_eq!(delivered, 300);
+    assert!((1..=300).contains(&delivered), "{delivered} events delivered");
     assert_eq!(last, ("shutdown".to_string(), "{}".to_string()));
     assert_eq!(slow.retry, Some(2000), "clients are told when to reconnect");
     assert_eq!(slow.next_or_end().await, None);

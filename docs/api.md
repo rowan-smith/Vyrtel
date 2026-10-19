@@ -19,6 +19,7 @@ Every error has the same shape:
 |    401 | `unauthorized`                                                                                             | missing/invalid API key or session                                                                                                                                                                                                                 |
 |    403 | `forbidden`                                                                                                | an ingest-only key used on a read/admin endpoint                                                                                                                                                                                                   |
 |    404 | `not_found`                                                                                                | unknown resource or endpoint                                                                                                                                                                                                                       |
+|    408 | `request_timeout`                                                                                          | the request body did not arrive in full within `server.body_timeout` of its head; the connection closes ([details](#connections))                                                                                                                |
 |    413 | `payload_too_large`                                                                                        | ingest body over `ingest.max_request_size` after gzip decoding (`limitBytes` gives the limit), or a batch larger than the queue ([details](#request-size-and-encoding))                                                                            |
 |    415 | `unsupported_media_type`                                                                                   | content type or `Content-Encoding` not accepted                                                                                                                                                                                                    |
 |    422 | `query_too_expensive`                                                                                      | the query would read more than `query.max_scan_bytes` (`limitBytes` gives the limit)                                                                                                                                                               |
@@ -32,6 +33,39 @@ Every error has the same shape:
 Query limit errors never come with partial results. A query whose client
 disconnects is cancelled at its next checkpoint and nothing is sent. See
 [Execution limits and cancellation](query-language.md#execution-limits-and-cancellation).
+
+### Connections
+
+Vyrtel serves HTTP/1.1 only, one request at a time per connection
+(pipelined requests are answered in order). HTTP/2, `h2c` upgrades and
+WebSockets are not served. The limits below apply to every endpoint before
+routing, authentication or ingest admission; they are configured under
+[`[server]`](configuration.md#connections-and-transport-limits).
+
+| What happens                                                                      | The client sees                                                                                                                                                                                                                   |
+|-----------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| All `server.max_connections` slots are taken                                      | The connection is accepted and waits up to 2 s for a slot (at most 64 wait). If none frees, or 64 already wait, Vyrtel writes `503 server_busy` with `Retry-After: 1` and `Connection: close` if the socket takes it at once, then closes. Clients may see only a closed or reset connection: treat it like the 503. |
+| No complete request head within `server.header_timeout` (also: idle keep-alive) | The connection closes without a response.                                                                                                                                                                                         |
+| Request head larger than `server.connection_buffer`, or more than 100 headers    | `431 Request Header Fields Too Large`, then the connection closes.                                                                                                                                                              |
+| Body not complete within `server.body_timeout` of its head                        | `408 request_timeout`, then the connection closes. Endpoints that take no body are unaffected.                                                                                                                              |
+| A write stays blocked for `server.write_timeout` (the client stopped reading)    | The connection closes; the rest of the response is not sent.                                                                                                                                                                      |
+| Malformed request line or headers, or an HTTP/2 preface                          | `400 Bad Request` or a close.                                                                                                                                                                                                     |
+
+The refusal is written before any of the request is read:
+
+```
+HTTP/1.1 503 Service Unavailable
+content-type: application/json
+retry-after: 1
+connection: close
+
+{"error":{"code":"server_busy","message":"too many open connections; retry shortly"}}
+```
+
+Clients that keep connections alive (the OpenTelemetry SDKs and Collector,
+browsers, `reqwest`, `HttpClient`) reuse a few connections and are not
+affected unless many of them share one server. Retry a `server_busy` 503, a
+refused or reset connection, and a 408 with backoff; nothing was stored.
 
 ### Time inputs
 
@@ -500,14 +534,33 @@ change is recorded and POSTed to the webhook (3 attempts, 10 s timeout):
 ```
 GET /health                      → 200 {"status": "ok"} while the process runs
 GET /ready                       → 200 {"status": "ready", "storageWritable": true}, 503 {"status": "degraded", ...} or, while shutting down, 503 {"status": "draining"}
-GET /api/v1/system/info          version, uptime, event counts, queue depths, ingest and query admission, active segments, memory budgets, recovery status
+GET /api/v1/system/info          version, uptime, event counts, queue depths, connection, ingest and query admission, active segments, memory budgets, recovery status
 GET /api/v1/system/storage       raw/stored bytes, compression ratio, index overhead, recovery status, per-signal detail
 GET /api/v1/system/query-stats   per-field query statistics (input for future adaptive indexing)
 GET /api/v1/system/config        effective configuration (secrets omitted)
 ```
 
-`/api/v1/system/info` includes query admission and how queries that did
-not complete ended, counted since the process started:
+`/api/v1/system/info` includes the connection limits and what happened to
+connections since the process started:
+
+```json
+"connections": { "maxConnections": 256, "active": 3, "pending": 0, "maxPending": 64,
+                 "connectionBufferBytes": 65536, "estimatedPeakBytes": 53608448,
+                 "admitted": 1250, "queued": 4, "refused": 0, "headerTimeouts": 1190,
+                 "bodyTimeouts": 0, "writeTimeouts": 0, "protocolErrors": 2, "acceptErrors": 0 }
+```
+
+`active` connections hold a slot (this request's own included); `pending`
+ones wait for one. `refused` counts connections closed for lack of a slot,
+at once or after waiting. `headerTimeouts` includes idle keep-alive
+connections closed normally, so it grows on a healthy server.
+`estimatedPeakBytes` is the
+[transport estimate](configuration.md#connections-and-transport-limits) at
+these limits. `acceptErrors` above zero usually means the process ran out of
+file descriptors.
+
+It also includes query admission and how queries that did not complete
+ended, counted since the process started:
 
 ```json
 "query": { "maxConcurrent": 4, "inFlight": 1, "rejected": 0, "cancelled": 2,

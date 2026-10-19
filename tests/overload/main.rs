@@ -10,6 +10,7 @@ mod amplification;
 mod common;
 mod derived;
 mod fixtures;
+mod transport;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
@@ -226,6 +227,8 @@ async fn flood_of_rejected_slow_uploads_is_bounded() {
         c.ingest.max_request_size = ByteSize(2 << 20);
         c.ingest.max_concurrent = 1;
         c.alerts.enabled = false;
+        // Every connection of the flood reaches ingest admission.
+        c.server.max_connections = FLOOD + 16;
     })
     .await;
     let budget = s.config.storage.max_memory.0 as usize;

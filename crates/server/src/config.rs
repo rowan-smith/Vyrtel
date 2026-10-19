@@ -92,21 +92,24 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
         if num_len == 0 {
             return Err(format!("invalid duration '{s}'"));
         }
-        let n: u64 = rest[..num_len].parse().map_err(|_| format!("invalid duration '{s}'"))?;
+        // Only digits, so a parse failure means too many of them.
+        let too_large = || format!("duration '{s}' is too large");
+        let n: u64 = rest[..num_len].parse().map_err(|_| too_large())?;
         rest = &rest[num_len..];
         let unit_len = rest.find(|c: char| c.is_ascii_digit()).unwrap_or(rest.len());
         let unit = &rest[..unit_len];
         rest = &rest[unit_len..];
+        let secs = |per: u64| n.checked_mul(per).map(Duration::from_secs).ok_or_else(too_large);
         let d = match unit {
             "ms" => Duration::from_millis(n),
             "s" => Duration::from_secs(n),
-            "m" => Duration::from_secs(n * 60),
-            "h" => Duration::from_secs(n * 3600),
-            "d" => Duration::from_secs(n * 86_400),
-            "w" => Duration::from_secs(n * 7 * 86_400),
+            "m" => secs(60)?,
+            "h" => secs(3600)?,
+            "d" => secs(86_400)?,
+            "w" => secs(7 * 86_400)?,
             _ => return Err(format!("invalid duration unit '{unit}' in '{s}' (use ms, s, m, h, d, w)")),
         };
-        total += d;
+        total = total.checked_add(d).ok_or_else(too_large)?;
     }
     Ok(total)
 }
@@ -203,15 +206,46 @@ pub struct ServerConfig {
     /// process gives up, reports what is unfinished and exits with status 1.
     #[serde(with = "duration_serde")]
     pub shutdown_timeout: Duration,
+    /// Connections admitted at once, across every listener. More wait
+    /// briefly for a slot, then are refused (see `crate::transport`).
+    pub max_connections: usize,
+    /// How long a connection may take to send a request head, from when it
+    /// is accepted or becomes idle after a response. Also ends idle
+    /// keep-alive connections.
+    #[serde(with = "duration_serde")]
+    pub header_timeout: Duration,
+    /// How long a request body may take to arrive in full, from its head.
+    #[serde(with = "duration_serde")]
+    pub body_timeout: Duration,
+    /// How long one write may stay blocked because the client is not
+    /// reading before the connection is closed.
+    #[serde(with = "duration_serde")]
+    pub write_timeout: Duration,
+    /// Cap on each connection's read buffer (which holds the request head)
+    /// and on its write buffer.
+    pub connection_buffer: ByteSize,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        // Inside Docker's default 10 s stop grace period, so the diagnostic
-        // is printed before the container is killed.
-        Self { bind: "0.0.0.0:8080".into(), shutdown_timeout: Duration::from_secs(8) }
+        Self {
+            bind: "0.0.0.0:8080".into(),
+            // Inside Docker's default 10 s stop grace period, so the
+            // diagnostic is printed before the container is killed.
+            shutdown_timeout: Duration::from_secs(8),
+            // See docs/configuration.md#connections-and-transport-limits for
+            // how these were chosen.
+            max_connections: 256,
+            header_timeout: Duration::from_secs(10),
+            body_timeout: Duration::from_secs(60),
+            write_timeout: Duration::from_secs(30),
+            connection_buffer: ByteSize(64 << 10),
+        }
     }
 }
+
+/// Longest `server.header_timeout`, `body_timeout` and `write_timeout`.
+pub const MAX_TRANSPORT_TIMEOUT: Duration = Duration::from_secs(3600);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -404,6 +438,11 @@ pub struct Config {
 pub const ENV_VARS: &[&str] = &[
     "VYRTEL_SERVER_BIND",
     "VYRTEL_SERVER_SHUTDOWN_TIMEOUT",
+    "VYRTEL_SERVER_MAX_CONNECTIONS",
+    "VYRTEL_SERVER_HEADER_TIMEOUT",
+    "VYRTEL_SERVER_BODY_TIMEOUT",
+    "VYRTEL_SERVER_WRITE_TIMEOUT",
+    "VYRTEL_SERVER_CONNECTION_BUFFER",
     "VYRTEL_STORAGE_PATH",
     "VYRTEL_STORAGE_MAX_MEMORY",
     "VYRTEL_STORAGE_SEGMENT_TARGET_SIZE",
@@ -454,6 +493,13 @@ impl Config {
                 match *key {
                     "VYRTEL_SERVER_BIND" => self.server.bind = v.clone(),
                     "VYRTEL_SERVER_SHUTDOWN_TIMEOUT" => self.server.shutdown_timeout = parse_duration(&v)?,
+                    "VYRTEL_SERVER_MAX_CONNECTIONS" => {
+                        self.server.max_connections = v.trim().parse().map_err(|_| "must be a number".to_string())?
+                    }
+                    "VYRTEL_SERVER_HEADER_TIMEOUT" => self.server.header_timeout = parse_duration(&v)?,
+                    "VYRTEL_SERVER_BODY_TIMEOUT" => self.server.body_timeout = parse_duration(&v)?,
+                    "VYRTEL_SERVER_WRITE_TIMEOUT" => self.server.write_timeout = parse_duration(&v)?,
+                    "VYRTEL_SERVER_CONNECTION_BUFFER" => self.server.connection_buffer = ByteSize::parse(&v)?,
                     "VYRTEL_STORAGE_PATH" => self.storage.path = PathBuf::from(&v),
                     "VYRTEL_STORAGE_MAX_MEMORY" => self.storage.max_memory = ByteSize::parse(&v)?,
                     "VYRTEL_STORAGE_SEGMENT_TARGET_SIZE" => self.storage.segment_target_size = ByteSize::parse(&v)?,
@@ -546,6 +592,7 @@ impl Config {
         if self.server.shutdown_timeout.is_zero() {
             return Err("server.shutdown_timeout must be positive (e.g. 8s)".into());
         }
+        self.validate_transport()?;
         if self.auth.admin_username.trim().is_empty() {
             return Err("auth.admin_username must not be empty".into());
         }
@@ -554,6 +601,46 @@ impl Config {
             .parse::<std::net::SocketAddr>()
             .map_err(|_| format!("server.bind '{}' is not a valid address (e.g. 0.0.0.0:8080)", self.server.bind))?;
         Ok(())
+    }
+
+    /// `[server]` connection limits: each finite and positive, so no value
+    /// (zero, out of range or overflowed) can turn a limit off.
+    fn validate_transport(&self) -> Result<(), String> {
+        const MAX_CONNECTIONS_LIMIT: usize = crate::transport::MAX_CONNECTIONS_LIMIT;
+        const MIN_CONNECTION_BUFFER: u64 = crate::transport::MIN_CONNECTION_BUFFER;
+        const MAX_CONNECTION_BUFFER: u64 = crate::transport::MAX_CONNECTION_BUFFER;
+        let s = &self.server;
+        if !(1..=MAX_CONNECTIONS_LIMIT).contains(&s.max_connections) {
+            return Err(format!("server.max_connections must be between 1 and {MAX_CONNECTIONS_LIMIT}"));
+        }
+        let defaults = ServerConfig::default();
+        for (key, d, example) in [
+            ("header_timeout", s.header_timeout, defaults.header_timeout),
+            ("body_timeout", s.body_timeout, defaults.body_timeout),
+            ("write_timeout", s.write_timeout, defaults.write_timeout),
+        ] {
+            if d.is_zero() || d > MAX_TRANSPORT_TIMEOUT {
+                return Err(format!(
+                    "server.{key} must be positive and at most {} (e.g. {})",
+                    format_duration(MAX_TRANSPORT_TIMEOUT),
+                    format_duration(example)
+                ));
+            }
+        }
+        if !(MIN_CONNECTION_BUFFER..=MAX_CONNECTION_BUFFER).contains(&s.connection_buffer.0) {
+            return Err(format!(
+                "server.connection_buffer must be between {} and {} ({MIN_CONNECTION_BUFFER} to \
+                 {MAX_CONNECTION_BUFFER} bytes)",
+                human_bytes(MIN_CONNECTION_BUFFER),
+                human_bytes(MAX_CONNECTION_BUFFER),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The `[server]` connection limits as the transport applies them.
+    pub fn transport_limits(&self) -> crate::transport::TransportLimits {
+        crate::transport::TransportLimits::from_config(&self.server)
     }
 
     pub fn budgets(&self) -> MemoryBudgets {
@@ -597,16 +684,17 @@ impl Config {
 /// refused; see docs/configuration.md#ingest-memory.
 pub const INGEST_BYTES_PER_REQUEST_BYTE: u64 = 20;
 
-/// hyper's default HTTP/1 read buffer limit (`max_buf_size`).
-const HTTP1_MAX_READ_BUFFER: u64 = 8192 + 4096 * 100;
-
 /// Ingest memory not tied to admitted requests: rejected bodies being
 /// drained. At most `MAX_DISCARDING` are read at once, each through its
-/// connection's read buffer, so this is an upper bound by construction
-/// (12.75 MB); the `rejected_body_drain_overhead_is_within_the_fixed_allowance`
-/// test in `tests/overload` measures it. Read buffers of connections that
-/// are not draining a rejected body are not included.
-pub const INGEST_FIXED_OVERHEAD: u64 = crate::routes::ingest::MAX_DISCARDING as u64 * HTTP1_MAX_READ_BUFFER;
+/// connection's read buffer, which is at most the largest
+/// `server.connection_buffer`, so this is an upper bound by construction
+/// (12.75 MB) whatever the setting; the
+/// `rejected_body_drain_overhead_is_within_the_fixed_allowance` test in
+/// `tests/overload` measures it. Read buffers of connections that are not
+/// draining a rejected body are counted by the transport estimate instead
+/// (`TransportLimits::estimated_peak`).
+pub const INGEST_FIXED_OVERHEAD: u64 =
+    crate::routes::ingest::MAX_DISCARDING as u64 * crate::transport::MAX_CONNECTION_BUFFER;
 
 /// Upper bound on a derived admission limit.
 pub const INGEST_MAX_DERIVED_CONCURRENCY: usize = 1024;
@@ -864,6 +952,110 @@ shutdown_timeout = 0",
         let mut c = Config::default();
         let err = c.apply_env(|k| (k == "VYRTEL_SERVER_SHUTDOWN_TIMEOUT").then(|| "soon".to_string())).unwrap_err();
         assert!(err.contains("VYRTEL_SERVER_SHUTDOWN_TIMEOUT"), "{err}");
+    }
+
+    // REL-18 TC5: every transport limit has a finite default, is validated
+    // at both ends of its range, and no zero, out-of-range or overflowing
+    // value from a file or the environment turns a limit off.
+    #[test]
+    fn transport_limits() {
+        // One item each: an import list here is ordered differently by
+        // rustfmt and by some editors' import optimisers.
+        const MAX_CONNECTIONS_LIMIT: usize = crate::transport::MAX_CONNECTIONS_LIMIT;
+        const MIN_CONNECTION_BUFFER: u64 = crate::transport::MIN_CONNECTION_BUFFER;
+        const MAX_CONNECTION_BUFFER: u64 = crate::transport::MAX_CONNECTION_BUFFER;
+        let d = Config::default();
+        assert_eq!(
+            (d.server.max_connections, d.server.header_timeout, d.server.body_timeout, d.server.write_timeout),
+            (256, Duration::from_secs(10), Duration::from_secs(60), Duration::from_secs(30))
+        );
+        assert_eq!(d.server.connection_buffer, ByteSize(64 << 10));
+        d.validate().unwrap();
+        let l = d.transport_limits();
+        assert_eq!((l.max_connections, l.connection_buffer), (256, 64 << 10));
+        assert_eq!(l.estimated_peak(), 256 * (3 * (64 << 10) + (16 << 10)) + 64 * (2 << 10));
+
+        let c = Config::from_toml(
+            "[server]
+max_connections = 1
+header_timeout = \"250ms\"
+body_timeout = \"1h\"
+write_timeout = \"1s\"
+connection_buffer = \"8KB\"",
+        )
+        .unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.server.header_timeout, Duration::from_millis(250));
+        let at_most =
+            format!("[server]\nmax_connections = {MAX_CONNECTIONS_LIMIT}\nconnection_buffer = {MAX_CONNECTION_BUFFER}");
+        Config::from_toml(&at_most).unwrap().validate().unwrap();
+
+        for (toml, err) in [
+            ("max_connections = 0", "server.max_connections must be between 1 and 65536"),
+            ("max_connections = 65537", "server.max_connections must be between 1 and 65536"),
+            ("header_timeout = 0", "server.header_timeout must be positive and at most 1h (e.g. 10s)"),
+            ("body_timeout = \"0s\"", "server.body_timeout must be positive and at most 1h (e.g. 1m)"),
+            ("write_timeout = \"1h1s\"", "server.write_timeout must be positive and at most 1h (e.g. 30s)"),
+            ("connection_buffer = \"8191B\"", "server.connection_buffer must be between 8 KB and 408 KB"),
+            ("connection_buffer = \"409KB\"", "server.connection_buffer must be between 8 KB and 408 KB"),
+            ("connection_buffer = 0", "server.connection_buffer must be between 8 KB and 408 KB"),
+        ] {
+            let c = Config::from_toml(&format!("[server]\n{toml}")).unwrap();
+            let e = c.validate().unwrap_err();
+            assert!(e.starts_with(err), "{toml}: {e}");
+        }
+        const { assert!(MIN_CONNECTION_BUFFER == 8192 && MAX_CONNECTION_BUFFER == 417_792) };
+        // Negative and fractional counts are not numbers here.
+        assert!(Config::from_toml("[server]\nmax_connections = -1").is_err());
+        assert!(Config::from_toml("[server]\nmax_connections = 2.5").is_err());
+
+        // The environment, including values that overflow.
+        let mut c = Config::default();
+        let env = |k: &str| match k {
+            "VYRTEL_SERVER_MAX_CONNECTIONS" => Some("64".to_string()),
+            "VYRTEL_SERVER_HEADER_TIMEOUT" => Some("5s".to_string()),
+            "VYRTEL_SERVER_BODY_TIMEOUT" => Some("2m".to_string()),
+            "VYRTEL_SERVER_WRITE_TIMEOUT" => Some("15s".to_string()),
+            "VYRTEL_SERVER_CONNECTION_BUFFER" => Some("16KB".to_string()),
+            _ => None,
+        };
+        c.apply_env(env).unwrap();
+        c.validate().unwrap();
+        assert_eq!(
+            (c.server.max_connections, c.server.header_timeout, c.server.body_timeout, c.server.write_timeout),
+            (64, Duration::from_secs(5), Duration::from_secs(120), Duration::from_secs(15))
+        );
+        assert_eq!(c.server.connection_buffer, ByteSize(16 << 10));
+        for (key, value) in [
+            ("VYRTEL_SERVER_MAX_CONNECTIONS", "99999999999999999999999"),
+            ("VYRTEL_SERVER_MAX_CONNECTIONS", "-1"),
+            ("VYRTEL_SERVER_MAX_CONNECTIONS", "unlimited"),
+            ("VYRTEL_SERVER_HEADER_TIMEOUT", "99999999999999999999999s"),
+            ("VYRTEL_SERVER_BODY_TIMEOUT", "18446744073709551615w"),
+            ("VYRTEL_SERVER_WRITE_TIMEOUT", "never"),
+            ("VYRTEL_SERVER_CONNECTION_BUFFER", "lots"),
+        ] {
+            let mut c = Config::default();
+            let e = c.apply_env(|k| (k == key).then(|| value.to_string())).unwrap_err();
+            assert!(e.starts_with(key), "{value}: {e}");
+        }
+        // A size too large to represent saturates, then fails validation.
+        let mut c = Config::default();
+        c.apply_env(|k| (k == "VYRTEL_SERVER_CONNECTION_BUFFER").then(|| "99999999999999999999TB".to_string()))
+            .unwrap();
+        assert_eq!(c.server.connection_buffer, ByteSize(u64::MAX));
+        assert!(c.validate().unwrap_err().starts_with("server.connection_buffer must be between"));
+    }
+
+    #[test]
+    fn durations_that_overflow_are_errors() {
+        assert_eq!(
+            parse_duration("18446744073709551615w").unwrap_err(),
+            "duration '18446744073709551615w' is too large"
+        );
+        assert!(parse_duration("99999999999999999999999s").is_err());
+        assert!(parse_duration("18446744073709551615s1s").is_err(), "the sum overflows");
+        assert_eq!(parse_duration("1h1s").unwrap(), Duration::from_secs(3601));
     }
 
     // REL-12: query budgets are configurable; zero values that would make

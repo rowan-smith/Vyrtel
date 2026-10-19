@@ -1,0 +1,18 @@
+{
+  "samples": 119,
+  "rssKb": {"idleBefore": 14396, "peak": 86912, "idleAfter": 86912},
+  "peakThreads": 13,
+  "peakFds": 159,
+  "peakSockets": 132,
+  "socketsAfter": 4,
+  "fdsAfter": 31,
+  "peakListenBacklog": 0,
+  "peakEstablishedToPort": 128,
+  "cpuSeconds": 11.69,
+  "peakCgroupKb": 92456,
+  "peakSocketBuffersKb": 204,
+  "loadEndedAtMs": 193131,
+  "connloadExit": 0,
+  "shutdownMs": 507,
+  "serverExit": 0
+}

@@ -47,6 +47,17 @@ impl ApiError {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable", message)
     }
 
+    /// The request body did not arrive within `server.body_timeout`. The
+    /// rest of it is never read, so the connection closes.
+    pub fn request_timeout(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::REQUEST_TIMEOUT,
+            "request_timeout",
+            format!("{}; send the whole request faster or raise server.body_timeout", message.into()),
+        )
+        .closing_connection()
+    }
+
     /// New work arriving after shutdown started. The connection closes so
     /// the client retries against the next instance.
     pub fn shutting_down() -> Self {
@@ -216,6 +227,9 @@ pub struct ApiQuery<T>(pub T);
 
 impl From<axum::extract::rejection::JsonRejection> for ApiError {
     fn from(r: axum::extract::rejection::JsonRejection) -> Self {
+        if crate::transport::is_body_timeout(&r) {
+            return ApiError::request_timeout(r.body_text());
+        }
         let code =
             if r.status() == StatusCode::UNSUPPORTED_MEDIA_TYPE { "unsupported_media_type" } else { "invalid_json" };
         ApiError::new(r.status(), code, r.body_text())

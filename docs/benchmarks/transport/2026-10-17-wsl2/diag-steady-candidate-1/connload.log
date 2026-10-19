@@ -1,0 +1,105 @@
+{
+  "label": "diag-steady-candidate-1",
+  "startedAtMs": 1792225556158,
+  "durationS": 63.117485722,
+  "args": {
+    "attempts": 1000,
+    "waveIntervalS": 30.0,
+    "noWaves": true,
+    "ingestClients": 4,
+    "batch": 200,
+    "ingestIntervalMs": 50,
+    "queryClients": 2,
+    "queryIntervalMs": 1000
+  },
+  "server": {
+    "version": "0.1.1",
+    "config": {
+      "bind": "0.0.0.0:8080",
+      "shutdown_timeout": "8s",
+      "max_connections": 256,
+      "header_timeout": "10s",
+      "body_timeout": "1m",
+      "write_timeout": "30s",
+      "connection_buffer": 65536
+    },
+    "before": {
+      "maxConnections": 256,
+      "active": 1,
+      "pending": 0,
+      "maxPending": 64,
+      "connectionBufferBytes": 65536,
+      "estimatedPeakBytes": 54657024,
+      "admitted": 1,
+      "queued": 0,
+      "refused": 0,
+      "headerTimeouts": 0,
+      "bodyTimeouts": 0,
+      "writeTimeouts": 0,
+      "protocolErrors": 0,
+      "acceptErrors": 0
+    },
+    "after": {
+      "maxConnections": 256,
+      "active": 1,
+      "pending": 0,
+      "maxPending": 64,
+      "connectionBufferBytes": 65536,
+      "estimatedPeakBytes": 54657024,
+      "admitted": 7,
+      "queued": 0,
+      "refused": 0,
+      "headerTimeouts": 0,
+      "bodyTimeouts": 0,
+      "writeTimeouts": 0,
+      "protocolErrors": 0,
+      "acceptErrors": 0
+    }
+  },
+  "ingest": {
+    "requestsOk": 4361,
+    "rejected429": 61,
+    "unavailable503": 0,
+    "otherStatus": 0,
+    "transportErrors": 0,
+    "acknowledgedEvents": 872200,
+    "persistedEvents": 872200,
+    "eventsPerSecond": 13818.674651293804,
+    "ackLatency": {
+      "samples": 4361,
+      "p50Ms": 2.682,
+      "p95Ms": 4.065,
+      "p99Ms": 12.038,
+      "maxMs": 34.729
+    }
+  },
+  "query": {
+    "ok": 117,
+    "unavailable503": 0,
+    "otherStatus": 0,
+    "transportErrors": 0,
+    "latency": {
+      "samples": 117,
+      "p50Ms": 31.784,
+      "p95Ms": 63.9,
+      "p99Ms": 75.789,
+      "maxMs": 76.356
+    }
+  },
+  "waves": [],
+  "peaks": {
+    "acceptErrors": 0,
+    "active": 7,
+    "admitted": 7,
+    "bodyTimeouts": 0,
+    "headerTimeouts": 0,
+    "ingestInFlight": 2,
+    "ingestRejected": 61,
+    "pending": 0,
+    "protocolErrors": 0,
+    "queued": 0,
+    "refused": 0,
+    "writeTimeouts": 0
+  },
+  "reconciled": true
+}

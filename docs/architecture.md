@@ -12,7 +12,7 @@ flowchart LR
     end
 
     subgraph vyrtel[vyrtel process]
-        HTTP[server: axum HTTP\nauth · routing · SSE]
+        HTTP[server: bounded HTTP/1.1 transport\naxum · auth · routing · SSE]
         ING[ingest: parse & map\nnative JSON · OTLP]
         Q[query: parser · planner · executor]
         ST[storage: WAL · segments · indexes\nper-signal streams]
@@ -214,6 +214,14 @@ older version. `vyrtel check-data-dir` runs the same check and prints the
 migrations a start would make (`datadir::plan`) without changing anything.
 See [backup and restore](configuration.md#backup-and-restore) and
 [upgrades and data migrations](configuration.md#upgrades-and-data-migrations).
+
+Connections pass through a bounded transport (`crates/server/src/transport.rs`,
+REL-18) before axum sees a request: a fixed number of connection slots,
+each taken before the connection's task is spawned; a small capped queue of
+connections waiting for one; capped read and write buffers; and deadlines
+for request heads, bodies and blocked writes. Ingest, query and live-tail
+admission apply on top. See
+[connections and transport limits](configuration.md#connections-and-transport-limits).
 
 On a stop signal (SIGINT/SIGTERM; on
 Windows Ctrl+C, Ctrl+Break, console close or system shutdown) the server

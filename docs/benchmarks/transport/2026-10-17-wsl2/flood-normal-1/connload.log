@@ -1,0 +1,176 @@
+connload: wave at 5s took 91.2s: {"idle.closed": 134, "idle.other": 83, "idle.refused": 33, "idle.rejected": 0, "idle.reset": 0, "idle.served": 0, "idle.timeout": 0, "normal.closed": 7, "normal.other": 0, "normal.refused": 0, "normal.rejected": 0, "normal.reset": 165, "normal.served": 78, "normal.timeout": 0, "slow-body.closed": 3, "slow-body.other": 0, "slow-body.refused": 0, "slow-body.rejected": 76, "slow-body.reset": 168, "slow-body.served": 0, "slow-body.timeout": 3, "slow-head.closed": 86, "slow-head.other": 0, "slow-head.refused": 0, "slow-head.rejected": 0, "slow-head.reset": 164, "slow-head.served": 0, "slow-head.timeout": 0}
+connload: wave at 125s took 60.8s: {"idle.closed": 228, "idle.other": 0, "idle.refused": 22, "idle.rejected": 0, "idle.reset": 0, "idle.served": 0, "idle.timeout": 0, "normal.closed": 124, "normal.other": 0, "normal.refused": 2, "normal.rejected": 0, "normal.reset": 41, "normal.served": 83, "normal.timeout": 0, "slow-body.closed": 126, "slow-body.other": 0, "slow-body.refused": 1, "slow-body.rejected": 84, "slow-body.reset": 36, "slow-body.served": 0, "slow-body.timeout": 3, "slow-head.closed": 203, "slow-head.other": 0, "slow-head.refused": 0, "slow-head.rejected": 0, "slow-head.reset": 47, "slow-head.served": 0, "slow-head.timeout": 0}
+{
+  "label": "flood-normal-1",
+  "startedAtMs": 1792221704403,
+  "durationS": 187.868248824,
+  "args": {
+    "attempts": 1000,
+    "waveIntervalS": 30.0,
+    "noWaves": false,
+    "ingestClients": 4,
+    "batch": 200,
+    "ingestIntervalMs": 50,
+    "queryClients": 2,
+    "queryIntervalMs": 1000
+  },
+  "server": {
+    "version": "0.1.1",
+    "config": {
+      "bind": "0.0.0.0:8080",
+      "shutdown_timeout": "8s",
+      "max_connections": 256,
+      "header_timeout": "10s",
+      "body_timeout": "1m",
+      "write_timeout": "30s",
+      "connection_buffer": 65536
+    },
+    "before": {
+      "maxConnections": 256,
+      "active": 1,
+      "pending": 0,
+      "maxPending": 64,
+      "connectionBufferBytes": 65536,
+      "estimatedPeakBytes": 54657024,
+      "admitted": 1,
+      "queued": 0,
+      "refused": 0,
+      "headerTimeouts": 0,
+      "bodyTimeouts": 0,
+      "writeTimeouts": 0,
+      "protocolErrors": 0,
+      "acceptErrors": 0
+    },
+    "after": {
+      "maxConnections": 256,
+      "active": 1,
+      "pending": 0,
+      "maxPending": 64,
+      "connectionBufferBytes": 65536,
+      "estimatedPeakBytes": 54657024,
+      "admitted": 781,
+      "queued": 270,
+      "refused": 1295,
+      "headerTimeouts": 356,
+      "bodyTimeouts": 6,
+      "writeTimeouts": 0,
+      "protocolErrors": 0,
+      "acceptErrors": 0
+    }
+  },
+  "ingest": {
+    "requestsOk": 4615,
+    "rejected429": 8162,
+    "unavailable503": 1,
+    "otherStatus": 0,
+    "transportErrors": 38,
+    "acknowledgedEvents": 923000,
+    "persistedEvents": 923000,
+    "eventsPerSecond": 4913.01753105013,
+    "ackLatency": {
+      "samples": 4615,
+      "p50Ms": 2.759,
+      "p95Ms": 6.273,
+      "p99Ms": 57.769,
+      "maxMs": 803.351
+    }
+  },
+  "query": {
+    "ok": 340,
+    "unavailable503": 0,
+    "otherStatus": 0,
+    "transportErrors": 0,
+    "latency": {
+      "samples": 340,
+      "p50Ms": 34.473,
+      "p95Ms": 197.073,
+      "p99Ms": 428.37,
+      "maxMs": 948.611
+    }
+  },
+  "waves": [
+    {
+      "startedAtS": 5.001007627,
+      "tookS": 91.173519501,
+      "outcomes": {
+        "idle.closed": 134,
+        "idle.other": 83,
+        "idle.refused": 33,
+        "idle.rejected": 0,
+        "idle.reset": 0,
+        "idle.served": 0,
+        "idle.timeout": 0,
+        "normal.closed": 7,
+        "normal.other": 0,
+        "normal.refused": 0,
+        "normal.rejected": 0,
+        "normal.reset": 165,
+        "normal.served": 78,
+        "normal.timeout": 0,
+        "slow-body.closed": 3,
+        "slow-body.other": 0,
+        "slow-body.refused": 0,
+        "slow-body.rejected": 76,
+        "slow-body.reset": 168,
+        "slow-body.served": 0,
+        "slow-body.timeout": 3,
+        "slow-head.closed": 86,
+        "slow-head.other": 0,
+        "slow-head.refused": 0,
+        "slow-head.rejected": 0,
+        "slow-head.reset": 164,
+        "slow-head.served": 0,
+        "slow-head.timeout": 0
+      }
+    },
+    {
+      "startedAtS": 125.000604358,
+      "tookS": 60.817848033,
+      "outcomes": {
+        "idle.closed": 228,
+        "idle.other": 0,
+        "idle.refused": 22,
+        "idle.rejected": 0,
+        "idle.reset": 0,
+        "idle.served": 0,
+        "idle.timeout": 0,
+        "normal.closed": 124,
+        "normal.other": 0,
+        "normal.refused": 2,
+        "normal.rejected": 0,
+        "normal.reset": 41,
+        "normal.served": 83,
+        "normal.timeout": 0,
+        "slow-body.closed": 126,
+        "slow-body.other": 0,
+        "slow-body.refused": 1,
+        "slow-body.rejected": 84,
+        "slow-body.reset": 36,
+        "slow-body.served": 0,
+        "slow-body.timeout": 3,
+        "slow-head.closed": 203,
+        "slow-head.other": 0,
+        "slow-head.refused": 0,
+        "slow-head.rejected": 0,
+        "slow-head.reset": 47,
+        "slow-head.served": 0,
+        "slow-head.timeout": 0
+      }
+    }
+  ],
+  "peaks": {
+    "acceptErrors": 0,
+    "active": 256,
+    "admitted": 781,
+    "bodyTimeouts": 3,
+    "headerTimeouts": 356,
+    "ingestInFlight": 3,
+    "ingestRejected": 8322,
+    "pending": 64,
+    "protocolErrors": 0,
+    "queued": 270,
+    "refused": 1295,
+    "writeTimeouts": 0
+  },
+  "reconciled": true
+}
