@@ -428,7 +428,7 @@ mod tests {
             environment: Some("production".into()),
             trace_id: TraceId::new("ABC123"),
             span_id: None,
-            resource: res.as_object().unwrap().clone(),
+            resource: res.as_object().unwrap().clone().into(),
             attributes: attrs.as_object().unwrap().clone(),
             payload: TelemetryPayload::Log(LogEvent {
                 level: Level::Error,

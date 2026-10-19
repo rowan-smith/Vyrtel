@@ -171,9 +171,13 @@ async fn deadline_bounds_a_stuck_storage_flush() {
     let s = TestServer::start_with(|c| c.server.shutdown_timeout = Duration::from_millis(500)).await;
     let release = stall_writer(&s, Signal::Traces);
     // Queued without an HTTP request, so the request phase drains at once.
-    let events =
-        ingest::native::parse(br#"{"message":"queued"}"#, ingest::native::Format::Json, telemetry::Timestamp::now())
-            .unwrap();
+    let events = ingest::native::parse(
+        br#"{"message":"queued"}"#,
+        ingest::native::Format::Json,
+        telemetry::Timestamp::now(),
+        ingest::Limits::UNBOUNDED,
+    )
+    .unwrap();
     s.state().storage.submit(Signal::Traces, events, Box::new(|_| {})).unwrap();
 
     let began = Instant::now();
@@ -205,9 +209,13 @@ fn park_maintenance(s: &TestServer, signal: Signal) -> std::sync::mpsc::Sender<(
 async fn wait_for_flush_to_start(s: &TestServer) {
     let storage = s.state().storage.clone();
     wait_until("storage refuses writes", || {
-        let events =
-            ingest::native::parse(br#"{"message":"probe"}"#, ingest::native::Format::Json, telemetry::Timestamp::now())
-                .unwrap();
+        let events = ingest::native::parse(
+            br#"{"message":"probe"}"#,
+            ingest::native::Format::Json,
+            telemetry::Timestamp::now(),
+            ingest::Limits::UNBOUNDED,
+        )
+        .unwrap();
         storage.submit(Signal::Metrics, events, Box::new(|_| {})).is_err()
     })
     .await;

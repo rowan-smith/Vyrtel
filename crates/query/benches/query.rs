@@ -21,7 +21,7 @@ fn event(i: usize) -> TelemetryEvent {
         environment: Some("production".into()),
         trace_id: TraceId::new(&format!("{:032x}", i + 1)),
         span_id: None,
-        resource: Fields::new(),
+        resource: Fields::new().into(),
         attributes: attrs,
         payload: TelemetryPayload::Log(LogEvent {
             level: if i.is_multiple_of(100) { Level::Error } else { Level::Information },

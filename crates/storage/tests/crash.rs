@@ -71,7 +71,7 @@ fn event(tag: &str, k: usize) -> TelemetryEvent {
         environment: None,
         trace_id: None,
         span_id: None,
-        resource: Fields::new(),
+        resource: Fields::new().into(),
         attributes: Fields::new(),
         payload: TelemetryPayload::Log(LogEvent {
             level: Level::Information,

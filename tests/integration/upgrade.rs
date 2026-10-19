@@ -199,9 +199,10 @@ async fn data_from_every_supported_release_is_readable_after_the_upgrade() {
         assert!(stdout.contains("  metadata/metadata.db: schema version 1\n"), "{release}: {stdout}");
         assert!(
             stdout.ends_with(
-                "Starting it will:\n  - record data-directory format 1 in vyrtel.json (it has none: written \
-                 before 0.1.2)\nAfterwards every release that reads it now (Vyrtel 0.1.1 and later) can still read \
-                 it.\n"
+                "Starting it will:\n  - record data-directory format 2 in vyrtel.json (it has none: written \
+                 before 0.1.2)\nAfterwards no released Vyrtel version can read it, only this build and later ones. \
+                 To go back, restore the backup taken before the upgrade.\nBack up the stopped data directory first \
+                 (see docs/configuration.md#upgrades-and-data-migrations).\n"
             ),
             "{release}: {stdout}"
         );
@@ -220,7 +221,7 @@ async fn data_from_every_supported_release_is_readable_after_the_upgrade() {
             .await
             .unwrap();
         assert_eq!(r.status(), 200, "{release}: its ingest key still works");
-        assert_eq!(manifest(&dir), json!({"format": 1, "writtenBy": this}), "{release}");
+        assert_eq!(manifest(&dir), json!({"format": 2, "writtenBy": this}), "{release}");
 
         // 3. Later starts migrate nothing and still read everything.
         let s = s.restart().await;
@@ -262,9 +263,9 @@ async fn future_formats_are_refused_read_only_naming_the_supported_versions() {
     };
 
     let original = std::fs::read(dir.join("vyrtel.json")).unwrap();
-    std::fs::write(dir.join("vyrtel.json"), r#"{"format": 2, "writtenBy": "0.3.0"}"#).unwrap();
-    refused("has format 2 (written by Vyrtel 0.3.0), but Vyrtel");
-    refused("reads only format 1");
+    std::fs::write(dir.join("vyrtel.json"), r#"{"format": 3, "writtenBy": "0.3.0"}"#).unwrap();
+    refused("has format 3 (written by Vyrtel 0.3.0), but Vyrtel");
+    refused("reads only format 2");
     std::fs::write(dir.join("vyrtel.json"), &original).unwrap();
 
     let db = dir.join("metadata").join("metadata.db");
@@ -304,7 +305,7 @@ async fn future_formats_are_refused_read_only_naming_the_supported_versions() {
         out.extend_from_slice(&Footer { summary, index: footer.index }.encode());
         std::fs::write(&seg, out).unwrap();
     }
-    refused(&format!("{} uses segment format version 2, and this version reads only 1", rel(dir, &seg)));
+    refused(&format!("{} uses segment format version 2, and this version reads versions up to 1", rel(dir, &seg)));
     std::fs::write(&seg, &seg_bytes).unwrap();
 
     // A checksummed WAL record in a newer format, in the last signal
@@ -329,7 +330,10 @@ async fn future_formats_are_refused_read_only_naming_the_supported_versions() {
     record.extend_from_slice(&crc.to_le_bytes());
     std::fs::write(&metrics, [metrics_bytes.as_slice(), &record].concat()).unwrap();
     std::fs::write(&logs, [logs_bytes.as_slice(), &[1, 9, 9]].concat()).unwrap();
-    refused(&format!("{} uses WAL record format version 2, and this version reads only 1", rel(dir, &metrics)));
+    refused(&format!(
+        "{} uses WAL record format version 2, and this version reads versions up to 1",
+        rel(dir, &metrics)
+    ));
     std::fs::write(&metrics, &metrics_bytes).unwrap();
     std::fs::write(&logs, &logs_bytes).unwrap();
 
@@ -413,7 +417,7 @@ async fn an_upgrade_interrupted_at_any_step_resumes_on_the_next_start() {
                             assert_eq!(telemetry_after, telemetry_before, "{release}: telemetry untouched");
                             let (code, stdout, _) = check_data_dir(dir);
                             assert_eq!(code, Some(0), "{release}");
-                            assert!(stdout.contains("  - record data-directory format 1"), "{stdout}");
+                            assert!(stdout.contains("  - record data-directory format 2"), "{stdout}");
                         }
                     }
                     // A write a background task made after the start.
@@ -424,7 +428,7 @@ async fn an_upgrade_interrupted_at_any_step_resumes_on_the_next_start() {
             }
             let s = TestServer::launch(config(dir), Some(host)).await;
             assert_reads_like_its_release(&s, &f, &format!("{release} after {point} failed")).await;
-            assert_eq!(manifest(&s.data_dir())["format"], 1);
+            assert_eq!(manifest(&s.data_dir())["format"], 2);
             assert_eq!(manifest(&s.data_dir())["writtenBy"], this);
             s.stop().await;
         }

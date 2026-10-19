@@ -82,7 +82,7 @@ impl Serialize for TelemetryEvent {
         }
 
         m.serialize_entry("properties", &self.attributes)?;
-        m.serialize_entry("resource", &self.resource)?;
+        m.serialize_entry("resource", &*self.resource)?;
         m.end()
     }
 }
@@ -181,7 +181,7 @@ mod tests {
             environment: None,
             trace_id: TraceId::new("abc123"),
             span_id: None,
-            resource: Fields::new(),
+            resource: Fields::new().into(),
             attributes: attrs,
             payload: TelemetryPayload::Log(LogEvent {
                 level: Level::Error,

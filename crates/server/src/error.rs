@@ -198,6 +198,29 @@ impl From<ingest::IngestError> for ApiError {
             I::Malformed(_) => ApiError::new(StatusCode::BAD_REQUEST, "invalid_payload", e.to_string()),
             I::InvalidEvent { index, .. } => ApiError::new(StatusCode::BAD_REQUEST, "invalid_event", e.to_string())
                 .with_details(json!({ "index": index })),
+            // REL-16: the decoding limits. Retrying the same request cannot
+            // succeed; splitting it can.
+            I::TooManyEvents { limit } => ApiError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload_too_large",
+                format!(
+                    "batch has more than {limit} events (ingest.queue_capacity); split it into requests of at most \
+                     {limit} events"
+                ),
+            )
+            .with_details(json!({ "limit": "maxEvents", "maxEvents": limit })),
+            I::TooLarge { limit_bytes } => ApiError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload_too_large",
+                format!(
+                    "batch would take more than {} of memory to decode: it has too many events or values for its \
+                     size. Split it into smaller requests, or send fewer, larger events",
+                    crate::config::human_bytes(*limit_bytes as u64)
+                ),
+            )
+            .with_details(json!({ "limit": "maxDecodedBytes", "limitBytes": limit_bytes })),
+            I::TooDeep { limit } => ApiError::new(StatusCode::BAD_REQUEST, "invalid_payload", e.to_string())
+                .with_details(json!({ "limit": "maxDepth", "maxDepth": limit })),
         }
     }
 }

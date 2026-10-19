@@ -90,7 +90,7 @@ by up to one segment's time span.
 | Key                | Default | Env                                | Description                                                                                                      |
 |--------------------|---------|------------------------------------|------------------------------------------------------------------------------------------------------------------|
 | `max_request_size` | `1MB`   | `VYRTEL_INGEST_MAX_REQUEST_SIZE` | Maximum ingest body size, both after gzip decoding and on the wire (inclusive). Larger requests get 413; see [request size and encoding](api.md#request-size-and-encoding). Was `16MB` before 0.1.2. |
-| `queue_capacity`   | `10000` | `VYRTEL_INGEST_QUEUE_CAPACITY`   | Events waiting to be written, per signal. When full, requests get 429. A single batch larger than this gets 413. |
+| `queue_capacity`   | `10000` | `VYRTEL_INGEST_QUEUE_CAPACITY`   | Events waiting to be written, per signal. When full, requests get 429. Also the most events (OTLP: log records, spans or metric data points) one request may carry: a larger batch gets 413 as soon as the count is known, before it is decoded ([decoding limits](#decoding-limits)). |
 | `ack_timeout`      | `30s`   | –                                  | Give up waiting for a write acknowledgement (503).                                                               |
 | `max_concurrent`   | `0`     | `VYRTEL_INGEST_MAX_CONCURRENT`   | Ingest requests in progress at once, from reading the body until the write is acknowledged. More get 429 without their body being read. `0` derives it from the memory budget ([ingest memory](#ingest-memory)); an explicit value is always honoured. |
 
@@ -137,32 +137,71 @@ Those are bounded separately, by `server.max_connections` and
 `server.connection_buffer`
 ([connections and transport limits](#connections-and-transport-limits)).
 
-**Where 20× comes from.** The `amplification` test measures each format's
-peak heap per byte of decoded body
+**Why 20× holds.** Decoding is limited so that no request goes past it,
+whatever its shape ([decoding limits](#decoding-limits)): the decoders
+may hold at most 17 × `max_request_size` of decoded data, and the rest
+covers the body itself (held twice while a body read in parts is joined)
+and what their accounting does not see. The `amplification` test measures
+every fixture's peak heap per byte of decoded body and asserts it is
+within 20×, with no exemptions
 ([details and full table](testing.md#ingest-amplification-and-derived-admission)).
-Representative batches of native JSON, NDJSON and CLEF peak at 7.0–9.4×;
-OTLP/JSON and OTLP/protobuf logs, traces and metrics at 12.5–16.0×; gzip
-makes no measurable difference. The highest supported fixture, OTLP/JSON
-logs of ~20-byte records, peaks at 17.0×.
+Representative batches of native JSON, NDJSON and CLEF peak at 3.8–4.4×,
+OTLP/JSON and OTLP/protobuf logs, traces and metrics at 8.4–11.9×, and the
+highest accepted fixture (native events of ~24 bytes) at 15.6×; gzip makes
+no measurable difference. Shapes that would decode past the limit are
+refused part-way, at no more than 18.1×.
 
-**Limitations.** This is an estimate from finite fixtures, not a hard
-memory bound. Event shapes that amplify more than 20× are outside it:
-very small native events (~32× for `{"message":"…"}` lines), deeply
-nested properties (~30×), very small OTLP/protobuf records (~92×), OTLP
-batches that share a large resource across many tiny records (the resource
-is copied into every event; over 100×), and empty objects (`{}`, ~210×).
-Rerun with 1 MB fixtures, the new default request size, every figure is
-within 3% of these.
+#### Decoding limits
 
-Such payloads are valid and **are accepted**: nothing limits a request's
-event count or nesting before it is parsed, and the queue's batch limit
-(`queue_capacity`) is checked only after parsing. One 1 MB request of
-empty objects was measured at a 213 MB peak, more than ten times its
-20 MB share, so a few at once can exceed `max_memory`. Until decoding
-enforces such limits, do not expose ingestion to untrusted producers
-without a limit in front of it. If your own producers send such batches,
-keep `max_request_size` well below what you would otherwise use, or set
-`max_concurrent` explicitly from your own measurements.
+Every ingest request is decoded within three limits, enforced while it is
+parsed and never after: what the request has decoded so far is the only
+memory at stake when a limit is reached.
+
+| Limit                   | Value                                   | Over it                                                       |
+|-------------------------|-----------------------------------------|---------------------------------------------------------------|
+| Events per request      | `queue_capacity` (default 10,000)       | `413 payload_too_large`, `"limit": "maxEvents"`               |
+| Decoded data per request | 17 × `max_request_size` (default 17 MB) | `413 payload_too_large`, `"limit": "maxDecodedBytes"`         |
+| Nesting of values       | 32 levels                               | `400 invalid_payload`, `"limit": "maxDepth"`                  |
+
+* **Events** are native events, OTLP log records, spans or metric data
+  points. The count is taken before anything is built: native bodies are
+  counted by a scan of their lines or array elements, OTLP/protobuf bodies
+  by a scan of the wire format, and OTLP/JSON records and the events of a
+  `{"events": [...]}` envelope whose key is escaped or repeated as they are
+  reached. A batch the queue could never hold is refused as soon as its
+  count is known, never after it has been parsed. An object is a batch
+  only if `events` is its only key (repeated, the last one counts); an
+  ordinary event with an `events` property is one event whatever the
+  order of its keys, and is held to the decoded-data limit like any other.
+* **Decoded data** is the decoders' own estimate of the heap they hold:
+  the parsed JSON tree or OTLP structures, and the events built from them,
+  each charged before or as it is allocated and credited back once freed.
+  OTLP/protobuf bodies are measured by the same wire scan before `prost`
+  decodes anything. It is what tells shapes apart that cost far more than
+  their size: a 1 MB body of empty objects (`{}`), of tiny OTLP/protobuf
+  log records, of properties nested several levels deep or of arrays of
+  small numbers is refused, while ordinary batches use a fraction of it.
+* **Nesting** counts objects and arrays inside one native event (the event
+  is level 0), or levels of OTLP `arrayValue` / `kvlistValue` inside one
+  attribute or body. OTLP key/value lists cost several levels each of the
+  JSON parser's (128) or protobuf decoder's (100) own nesting limits, which
+  are reached at about 30 levels and reported the same way.
+
+OTLP resources are shared by all of their records, so a large resource
+costs memory once per request rather than once per record.
+
+A refused request stores nothing: native batches are all-or-nothing as
+always, and an OTLP request over a limit is refused as a whole; it never
+gets a partial success response, which stays for records that cannot be
+represented. Its admission slot is released at once. The response names
+the limit and how to split the batch
+([API reference](api.md#ingest-limits-and-retries)); retrying the same
+request cannot succeed.
+
+Both 413 limits scale with your settings: raising `queue_capacity` admits
+larger batches by count, and raising `max_request_size` raises the decoded
+data allowance with it (and the per-request estimate, so fewer requests
+are admitted at once from the same budget).
 
 **Too little memory for one request.** If not even one maximum-size request
 fits, Vyrtel refuses to start rather than admit more than the budget. For
@@ -230,6 +269,17 @@ MB of ingest heap against the 76.8 MB budget
   setting `max_concurrent` explicitly (which also restores the old
   behaviour exactly, with a startup warning if it is over budget).
 * Explicit `max_concurrent` values behave exactly as before.
+* Requests are now decoded within [decoding limits](#decoding-limits).
+  Batches with more events than `queue_capacity` were already refused with
+  413; they are now refused before they are parsed, and the error names
+  the limit (`"limit": "maxEvents"`). Bodies that would decode into more
+  than 17 × `max_request_size` (for example tens of thousands of empty or
+  near-empty events, or deeply nested values) get `413` with
+  `"limit": "maxDecodedBytes"`, and values nested more than 32 levels deep
+  get `400` with `"limit": "maxDepth"`; both used to be accepted. Ordinary
+  application, Serilog/CLEF and OpenTelemetry SDK and Collector batches are
+  unaffected. The earlier advice to keep producers that might send such
+  batches behind a limit in front of ingestion no longer applies.
 
 ### `[query]`
 
@@ -1137,7 +1187,7 @@ fix the restore and start again:
 | `metadata/metadata.db` is empty (no schema) next to `vyrtel.json` or telemetry  | `is incomplete: metadata/metadata.db is empty (it has no schema)`       | Restore it from the same backup |
 | `metadata/metadata.db` but a signal's `wal/` or `segments/` directory is missing (no `vyrtel.json`) | `is incomplete: wal/logs is missing; …`                  | Restore the whole directory again |
 | `vyrtel.json` is not valid JSON, has no usable `format`, or its inventory lists something other than WAL and segment files | `has an unusable vyrtel.json: …` | Restore `vyrtel.json` from the same backup |
-| `vyrtel.json` has a newer `format`                                               | `has format 2 (written by Vyrtel 0.3.0), but Vyrtel 0.1.2 reads only format 1` | Start it with that version or newer |
+| `vyrtel.json` has a newer `format`                                               | `has format 3 (written by Vyrtel 0.3.0), but Vyrtel 0.1.2 reads only format 2` | Start it with that version or newer |
 | A WAL or segment file written by Observer 0.1.0 (Vyrtel's first release, under its earlier name) | `was written by Observer 0.1.0, … (segments/logs/000000000001.seg is in Observer's file format), and Vyrtel 0.1.2 cannot read its telemetry` | See [Data from Observer 0.1.0](#data-from-observer-010) |
 | A segment or WAL file in a newer format (its header or footer, or any checksummed WAL record or event batch in it) | `cannot be read by Vyrtel 0.1.2: segments/logs/000000000004.seg uses segment format version 2, …` | Start it with the version that wrote it, or newer |
 | `metadata/metadata.db` migrated by a newer version                              | `cannot be read by Vyrtel 0.1.2: metadata/metadata.db has schema version 2, …` | Start it with the version that wrote it, or newer |
@@ -1283,35 +1333,39 @@ $ vyrtel check-data-dir --data-dir /var/lib/vyrtel/data
 data directory /var/lib/vyrtel/data
   vyrtel.json: none (written before 0.1.2, or a first start that stopped early)
   metadata/metadata.db: schema version 1
-Vyrtel 0.1.2 (format 1, metadata schema up to 1) can start it.
+Vyrtel 0.1.2 (format 2, metadata schema up to 1) can start it.
 Starting it will:
-  - record data-directory format 1 in vyrtel.json (it has none: written before 0.1.2)
-Afterwards every release that reads it now (Vyrtel 0.1.1 and later) can still read it.
+  - record data-directory format 2 in vyrtel.json (it has none: written before 0.1.2)
+Afterwards only Vyrtel 0.1.2 and later can read it. To go back to an older version, restore the backup taken before the upgrade.
+Back up the stopped data directory first (see docs/configuration.md#upgrades-and-data-migrations).
 ```
 
 The same directory once 0.1.2 has stopped cleanly:
 
 ```text
 data directory /var/lib/vyrtel/data
-  vyrtel.json: format 1, last written by Vyrtel 0.1.2
+  vyrtel.json: format 2, last written by Vyrtel 0.1.2
   clean-shutdown inventory: every WAL and segment file is present with its size
   metadata/metadata.db: schema version 1
-Vyrtel 0.1.2 (format 1, metadata schema up to 1) can start it.
+Vyrtel 0.1.2 (format 2, metadata schema up to 1) can start it.
 Starting it migrates nothing.
-Afterwards every release that reads it now (Vyrtel 0.1.1 and later) can still read it.
+Afterwards every release that reads it now (Vyrtel 0.1.2 and later) can still read it.
 ```
 
 ### What a start migrates
 
 | Step (as `check-data-dir` and the startup log name it) | When | Interrupted? | Afterwards readable by |
 |---|---|---|---|
-| `record data-directory format 1 in vyrtel.json` | the directory has no `vyrtel.json` (0.1.1) | atomic: `vyrtel.json` is there or not; the next start writes it | every Vyrtel release (0.1.1 ignores the file) |
+| `record data-directory format 2 in vyrtel.json (it has none: …)` | the directory has no `vyrtel.json` (0.1.1) | atomic: `vyrtel.json` is there or not; the next start writes it | 0.1.2 and later (new WAL batches use event codec 2) |
+| `record data-directory format 2 in vyrtel.json (it has 1); …` | `vyrtel.json` says format 1 (a pre-release build of 0.1.2) | atomic, as above | 0.1.2 and later |
 | `migrate metadata/metadata.db from schema version N to M` | a release with a newer metadata schema (none yet: every release so far uses schema 1) | each version is one SQLite transaction: the database stays at the last version committed, and the next start continues from there | only releases that know schema M |
 
-Telemetry files are never rewritten by an upgrade: every release so far
-reads and writes WAL format 1, record version 1, event codec 1 and segment
-format 1, and a future release that changes one keeps the old decoder
-([Versioning](storage-format.md#versioning)). The order of a start is
+Telemetry files are never rewritten by an upgrade. Format 2 (0.1.2) differs
+from format 1 (0.1.1) only in the event codec of WAL batches: 0.1.2 still
+reads codec 1 batches, so a 0.1.1 directory's WALs replay as they are, and
+records appended to them from then on are in codec 2. WAL format 1, record
+version 1 and segment format 1 are unchanged, and a future release that
+changes one keeps the old decoder ([Versioning](storage-format.md#versioning)). The order of a start is
 fixed: check (reading only), lock, metadata migrations, `vyrtel.json` with
 the new format, then storage recovery. So an upgrade interrupted at any
 point has already recorded the new format before any telemetry file
@@ -1343,7 +1397,7 @@ needs no backup to be undone; it is still a good moment to take one.
 |---------|-----------------------|-----------------|------------------------------|
 | 0.1.0 (Observer) | Observer's own (see below) | 1 | no               |
 | 0.1.1   | 1                     | 1               | no                           |
-| 0.1.2   | 1                     | 1               | yes                          |
+| 0.1.2   | 2                     | 1               | yes                          |
 
 * A release can read a directory whose format and schema are at most its
   own. `check-data-dir` prints the oldest release that can read the
@@ -1355,11 +1409,11 @@ needs no backup to be undone; it is still a good moment to take one.
 * 0.1.1 does not check: it would open a newer metadata schema or set
   aside newer files as damaged. Never start it on a directory a newer
   release has migrated.
-* Going back after 0.1.2: 0.1.1 still reads the directory, as nothing but
-  `vyrtel.json` was added. Starting it leaves a clean-shutdown inventory
-  that no longer matches, so the next 0.1.2 start is refused as incomplete;
-  start that once with `--accept-incomplete-restore` after checking that
-  nothing is missing ([Limitations](#what-startup-checks)).
+* Going back after 0.1.2 is not possible in place: from its first start,
+  0.1.2 writes WAL batches in event codec 2 (each batch stores its OTLP
+  resources once, in a table), which 0.1.1 cannot decode and would set
+  aside as damaged. Take a backup of the stopped 0.1.1 directory before
+  the upgrade; to go back, restore it (see the next point).
 * Going back after a migration that `check-data-dir` reported as readable
   only by newer releases: stop the new version, restore the backup taken
   before the upgrade, and start the old version on it. Telemetry and
@@ -1446,6 +1500,11 @@ with the answers that release gave.
   by the check before anything changes, in every signal, instead of while
   recovering its signal.
 * A failed metadata migration names the version it stopped at.
+* The data-directory format is 2: WAL batches are written in event codec 2,
+  which stores each distinct OTLP resource once per batch instead of with
+  every record. Representative OTLP batches take about half the WAL space,
+  and batches sharing a large resource up to 99% less. 0.1.1 cannot read
+  the directory afterwards; see [Downgrades](#downgrades).
 * A data directory written by Observer 0.1.0 is refused with exit status 1
   and left unchanged. Before, every WAL and segment file in it was moved
   to `quarantine/` as damaged.

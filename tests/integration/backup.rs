@@ -319,8 +319,8 @@ async fn backups_from_a_newer_version_are_refused_without_changes() {
     let manifest = std::fs::read(dir.join("vyrtel.json")).unwrap();
 
     // A newer data-directory format.
-    std::fs::write(dir.join("vyrtel.json"), r#"{"format": 2, "writtenBy": "9.0.0"}"#).unwrap();
-    assert_refused_unchanged(dir, "has format 2 (written by Vyrtel 9.0.0)");
+    std::fs::write(dir.join("vyrtel.json"), r#"{"format": 3, "writtenBy": "9.0.0"}"#).unwrap();
+    assert_refused_unchanged(dir, "has format 3 (written by Vyrtel 9.0.0)");
     std::fs::write(dir.join("vyrtel.json"), b"{ not json").unwrap();
     assert_refused_unchanged(dir, "has an unusable vyrtel.json");
     std::fs::write(dir.join("vyrtel.json"), &manifest).unwrap();
@@ -367,7 +367,7 @@ async fn a_directory_from_before_manifests_is_started_and_recorded() {
     let a = Admin::login(&s, PASSWORD).await;
     assert_eq!(a.get("/api/v1/dashboards").await["dashboards"][0]["name"], "Checkout");
     let m: Value = serde_json::from_slice(&std::fs::read(dir.join("vyrtel.json")).unwrap()).unwrap();
-    assert_eq!(m, json!({"format": 1, "writtenBy": env!("CARGO_PKG_VERSION")}));
+    assert_eq!(m, json!({"format": 2, "writtenBy": env!("CARGO_PKG_VERSION")}));
     s.stop().await;
 }
 

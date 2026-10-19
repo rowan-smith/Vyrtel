@@ -1,10 +1,14 @@
-//! Derived ingest admission under sustained overload (REL-14, TC-04).
+//! Derived ingest admission under sustained overload (REL-14 TC-04,
+//! REL-16 TC-03).
 //!
 //! Each configuration runs [`RUNS`] times in a row. A run starts a server
 //! with `ingest.max_concurrent = 0` and sends maximum-size bodies of every
-//! supported fixture (native JSON, NDJSON, CLEF, OTLP JSON and protobuf
-//! logs, traces and metrics; plain and gzip) from more clients than there
-//! are slots, retrying 429s after 5 ms, in two phases:
+//! fixture (native JSON, NDJSON, CLEF, OTLP JSON and protobuf logs, traces
+//! and metrics; plain and gzip), the high-amplification shapes among them,
+//! from more clients than there are slots, retrying 429s after 5 ms, in two
+//! phases. Bodies over the decoding limits get 413 (by event count or
+//! decoded size, whichever the configuration reaches first); every other
+//! status but 200 and 429 fails the run:
 //!
 //! 1. **Acknowledgement stalled.** Every signal's writer is parked, so
 //!    admitted requests hold their slots with their parsed batches queued
@@ -68,15 +72,19 @@ struct Body {
     kind: Kind,
     gzip: bool,
     wire: Bytes,
+    /// Over the decoding limits of the configuration it is sent to: 413.
+    refused: bool,
 }
 
-/// Every supported fixture at the request-size limit, plain and gzip.
-fn bodies(limit: usize) -> Vec<Body> {
+/// Every fixture at the request-size limit of `config`, plain and gzip.
+fn bodies(config: &Config) -> Vec<Body> {
+    let limit = config.ingest.max_request_size.0 as usize;
     let mut out = Vec::new();
-    for f in fixtures::all(limit).into_iter().filter(|f| f.supported) {
+    for f in fixtures::all(limit) {
         assert!(f.body.len() <= limit && f.body.len() > limit * 9 / 10, "{} is near the limit", f.name);
-        out.push(Body { kind: f.kind, gzip: true, wire: Bytes::from(common::gzip(&f.body)) });
-        out.push(Body { kind: f.kind, gzip: false, wire: Bytes::from(f.body) });
+        let refused = f.kind.parse(&f.body, config.ingest_limits()).is_err();
+        out.push(Body { kind: f.kind, gzip: true, wire: Bytes::from(common::gzip(&f.body)), refused });
+        out.push(Body { kind: f.kind, gzip: false, wire: Bytes::from(f.body), refused });
     }
     out
 }
@@ -85,6 +93,8 @@ fn bodies(limit: usize) -> Vec<Body> {
 struct Counts {
     accepted: AtomicU64,
     rejected: AtomicU64,
+    /// 413 for a body over the decoding limits.
+    refused: AtomicU64,
     other: AtomicU64,
     errors: AtomicU64,
 }
@@ -133,13 +143,14 @@ async fn run(name: &str, configure: fn(&mut Config), bodies: &Arc<Vec<Body>>, ru
                     req = req.header("content-encoding", "gzip");
                 }
                 match req.body(b.wire.clone()).send().await {
-                    Ok(r) if r.status() == 200 => counts.accepted.fetch_add(1, Ordering::Relaxed),
+                    Ok(r) if r.status() == 200 && !b.refused => counts.accepted.fetch_add(1, Ordering::Relaxed),
+                    Ok(r) if r.status() == 413 && b.refused => counts.refused.fetch_add(1, Ordering::Relaxed),
                     Ok(r) if r.status() == 429 => {
                         tokio::time::sleep(Duration::from_millis(5)).await;
                         counts.rejected.fetch_add(1, Ordering::Relaxed)
                     }
                     Ok(r) => {
-                        eprintln!("unexpected {} from {}", r.status(), b.kind.path());
+                        eprintln!("unexpected {} from {} (refused: {})", r.status(), b.kind.path(), b.refused);
                         counts.other.fetch_add(1, Ordering::Relaxed)
                     }
                     Err(e) => {
@@ -184,10 +195,11 @@ async fn run(name: &str, configure: fn(&mut Config), bodies: &Arc<Vec<Body>>, ru
     let (accepted, rejected) =
         (counts.accepted.load(Ordering::Relaxed), counts.rejected.load(Ordering::Relaxed) - rejected_warm);
     let (other, errors) = (counts.other.load(Ordering::Relaxed), counts.errors.load(Ordering::Relaxed));
+    let refused = counts.refused.load(Ordering::Relaxed);
     let info = s.get_ok("/api/v1/system/info").await;
 
     eprintln!(
-        "| {name} | {run} | {limit} | {clients} | {:.1} | {:.1} | {:.1} | {max_in_flight} | {rejected_stalled} | {accepted} | {rejected} | {:.1} | {} | {} | {} |",
+        "| {name} | {run} | {limit} | {clients} | {:.1} | {:.1} | {:.1} | {max_in_flight} | {rejected_stalled} | {accepted} | {rejected} | {refused} | {:.1} | {} | {} | {} |",
         budget as f64 / MB,
         connections as f64 / MB,
         attributed as f64 / MB,
@@ -198,7 +210,7 @@ async fn run(name: &str, configure: fn(&mut Config), bodies: &Arc<Vec<Body>>, ru
     );
     assert_eq!(info["ingest"]["maxConcurrent"], limit, "system info reports the effective limit");
     assert_eq!(info["ingest"]["concurrencySource"], if admission.derived { "derived" } else { "explicit" });
-    assert_eq!((other, errors), (0, 0), "only 200 and 429, and no reset connections");
+    assert_eq!((other, errors), (0, 0), "only 200, 429 and 413 for bodies over the limits, and no reset connections");
     wait_until("slots freed", || ingest_in_flight(&s) == 0).await;
     assert_eq!(s.post("/api/v1/events", serde_json::json!({ "message": "after" })).await.status(), 200);
     s.stop().await;
@@ -208,6 +220,7 @@ async fn run(name: &str, configure: fn(&mut Config), bodies: &Arc<Vec<Body>>, ru
     assert!(admission.derived);
     assert_eq!(max_in_flight, limit, "admission saturated at the derived limit and never above it");
     assert!(rejected_stalled > 0 && accepted > 0, "excess clients were turned away and the server made progress");
+    assert!(refused > 0, "bodies over the decoding limits were refused");
     assert!(
         attributed <= budget,
         "{name} run {run}: ingest heap growth {:.1} MB exceeds the {:.1} MB ingest budget",
@@ -233,9 +246,9 @@ fn print_header() {
         std::env::consts::ARCH,
     );
     eprintln!(
-        "| Config | Run | Limit | Clients | Ingest budget MB | Connection buffers MB | Ingest heap peak MB (writers parked) | Max in flight | 429s (parked) | 200s | 429s | Process heap peak MB | RSS before | RSS parked | RSS after |"
+        "| Config | Run | Limit | Clients | Ingest budget MB | Connection buffers MB | Ingest heap peak MB (writers parked) | Max in flight | 429s (parked) | 200s | 429s | 413s | Process heap peak MB | RSS before | RSS parked | RSS after |"
     );
-    eprintln!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    eprintln!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -248,7 +261,7 @@ async fn derived_admission_holds_the_ingest_budget_under_overload() {
     ] {
         let mut c = Config::default();
         configure(&mut c);
-        let bodies = Arc::new(bodies(c.ingest.max_request_size.0 as usize));
+        let bodies = Arc::new(bodies(&c));
         for i in 1..=RUNS {
             run(name, configure, &bodies, i, true).await;
         }
@@ -269,7 +282,9 @@ async fn pre_rel14_defaults_under_the_same_overload() {
         // queue's batch limit so they are parsed and queued, not refused.
         c.ingest.queue_capacity = 200_000;
     };
-    let bodies = Arc::new(bodies(16 << 20));
+    let mut c = Config::default();
+    configure(&mut c);
+    let bodies = Arc::new(bodies(&c));
     for i in 1..=RUNS {
         run("pre-REL-14 (512MB, 16MB, 4 slots)", configure, &bodies, i, false).await;
     }

@@ -9,17 +9,27 @@
 //! * Every data point of a metric is one event.
 //! * Unknown attributes are preserved as-is.
 //!
+//! * Records of one resource share its attributes (`Arc`), so a large
+//!   resource is held once per request, not once per record.
+//!
 //! Records that cannot be represented (e.g. spans without a trace id) are
-//! counted as rejected and reported through OTLP partial success.
+//! counted as rejected and reported through OTLP partial success. A request
+//! over any [`Limits`] is refused as a whole and nothing in it is stored:
+//! partial success is never used for limits.
 
 pub mod json;
 pub mod proto;
+pub mod scan;
+pub mod size;
+
+use std::sync::Arc;
 
 use base64::Engine as _;
 use prost::Message;
 use telemetry::*;
 
 use crate::IngestError;
+use crate::limits::{self, Budget, Limits};
 use proto::any_value::Value as AV;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +97,18 @@ fn malformed(e: impl std::fmt::Display) -> IngestError {
     IngestError::Malformed(format!("invalid OTLP payload: {e}"))
 }
 
+/// A protobuf decoding error. `prost` refuses messages nested more than 100
+/// deep on its own (about 30 levels of key/value lists, three messages
+/// each); that is reported as the depth limit.
+fn undecodable(e: prost::DecodeError, limits: Limits) -> IngestError {
+    let message = e.to_string();
+    if message.ends_with("recursion limit reached") {
+        IngestError::TooDeep { limit: limits.max_depth }
+    } else {
+        malformed(message)
+    }
+}
+
 pub fn any_value(v: Option<&proto::AnyValue>) -> Value {
     match v.and_then(|v| v.value.as_ref()) {
         None => Value::Null,
@@ -109,19 +131,83 @@ pub fn fields(kvs: &[proto::KeyValue]) -> Fields {
 }
 
 struct ResourceInfo {
-    resource: Fields,
+    resource: Arc<Fields>,
     service: Option<String>,
     environment: Option<String>,
 }
 
-fn resource_info(r: Option<&proto::Resource>) -> ResourceInfo {
-    let resource = r.map(|r| fields(&r.attributes)).unwrap_or_default();
-    let s = |k: &str| resource.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from);
-    ResourceInfo {
-        service: s("service.name"),
-        environment: s("deployment.environment.name").or_else(|| s("deployment.environment")),
-        resource,
+impl ResourceInfo {
+    /// Heap every event of this resource takes beyond its record's own
+    /// size: its copies of the service and environment names.
+    fn per_event(&self) -> usize {
+        let len = |s: &Option<String>| s.as_ref().map_or(0, String::len);
+        len(&self.service) + len(&self.environment)
     }
+}
+
+/// Decoding state for one request: the budget and the events so far.
+struct Out<'b> {
+    mapped: Mapped,
+    budget: &'b mut Budget,
+}
+
+impl<'b> Out<'b> {
+    /// Room for `records` events, reserved exactly.
+    fn new(budget: &'b mut Budget, records: usize) -> Result<Self, IngestError> {
+        budget.check_events(records)?;
+        let mut events = Vec::new();
+        limits::reserve(&mut events, records, budget)?;
+        Ok(Self { mapped: Mapped { events, ..Mapped::default() }, budget })
+    }
+
+    /// The resource, built once and shared by all of its events.
+    fn resource(&mut self, r: Option<&proto::Resource>) -> Result<ResourceInfo, IngestError> {
+        let resource = match r {
+            Some(r) if !r.attributes.is_empty() => {
+                let f = fields(&r.attributes);
+                self.budget.charge(limits::shared_fields(&f))?;
+                Arc::new(f)
+            }
+            _ => Fields::shared_empty(),
+        };
+        let s = |k: &str| resource.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from);
+        Ok(ResourceInfo {
+            service: s("service.name"),
+            environment: s("deployment.environment.name").or_else(|| s("deployment.environment")),
+            resource,
+        })
+    }
+
+    /// Add the event `build` makes from a record whose decoded size is
+    /// `record`. The event copies the record's strings and values (ids and
+    /// bytes grow in their text forms, attribute lists may double once to
+    /// take the scope name), so up to twice that, plus `extra`, is charged
+    /// before it is built and trued up to its real size after.
+    fn push(&mut self, record: usize, extra: usize, build: impl FnOnce() -> TelemetryEvent) -> Result<(), IngestError> {
+        let estimate = 2 * record + extra + 128;
+        self.budget.charge(estimate)?;
+        let e = build();
+        self.budget.release(estimate);
+        self.budget.charge(e.heap_size())?;
+        limits::push(&mut self.mapped.events, e, self.budget)
+    }
+}
+
+/// Decode a protobuf request after its pre-scan has fit within the limits,
+/// charging the scan's estimate first and the real size once decoded.
+fn decode_protobuf<T: Message + Default>(
+    body: &[u8],
+    budget: &mut Budget,
+    scan: fn(&[u8], Limits) -> Result<scan::Estimate, IngestError>,
+    size: fn(&T) -> usize,
+) -> Result<(T, usize), IngestError> {
+    let est = scan(body, budget.limits())?;
+    budget.check_events(est.records)?;
+    budget.charge(est.bytes)?;
+    let req = T::decode(body).map_err(|e| undecodable(e, budget.limits()))?;
+    budget.release(est.bytes);
+    budget.charge(size(&req))?;
+    Ok((req, est.records))
 }
 
 fn add_scope(attrs: &mut Fields, scope: Option<&proto::InstrumentationScope>) {
@@ -145,184 +231,213 @@ fn take_str(f: &mut Fields, key: &str) -> Option<String> {
     }
 }
 
-pub fn decode_logs(body: &[u8], enc: Encoding, now: Timestamp) -> Result<Mapped, IngestError> {
-    let req = match enc {
-        Encoding::Protobuf => proto::ExportLogsServiceRequest::decode(body).map_err(malformed)?,
-        Encoding::Json => json::logs(body).map_err(malformed)?,
+/// The scope name each event copies into its attributes.
+fn scope_len(scope: Option<&proto::InstrumentationScope>) -> usize {
+    scope.map_or(0, |s| s.name.len())
+}
+
+pub fn decode_logs(body: &[u8], enc: Encoding, now: Timestamp, limits: Limits) -> Result<Mapped, IngestError> {
+    let mut budget = Budget::new(limits);
+    let (req, records) = match enc {
+        Encoding::Protobuf => decode_protobuf(body, &mut budget, scan::logs, size::logs)?,
+        Encoding::Json => {
+            let req = json::logs(body, &mut budget)?;
+            (req, budget.events())
+        }
     };
-    let mut out = Mapped::default();
+    let mut out = Out::new(&mut budget, records)?;
     for rl in &req.resource_logs {
-        let res = resource_info(rl.resource.as_ref());
+        let res = out.resource(rl.resource.as_ref())?;
         for sl in &rl.scope_logs {
+            let extra = res.per_event() + scope_len(sl.scope.as_ref());
             for lr in &sl.log_records {
-                let mut attributes = fields(&lr.attributes);
-                add_scope(&mut attributes, sl.scope.as_ref());
-                if !lr.event_name.is_empty() {
-                    attributes.insert("event.name", Value::String(lr.event_name.clone()));
-                }
-                let level = Level::from_otlp_severity(lr.severity_number)
-                    .or_else(|| Level::parse(&lr.severity_text))
-                    .unwrap_or(Level::Information);
-                if !lr.severity_text.is_empty() && Level::parse(&lr.severity_text) != Some(level) {
-                    attributes.insert("severityText", Value::String(lr.severity_text.clone()));
-                }
-                let exception = Exception {
-                    kind: take_str(&mut attributes, "exception.type"),
-                    message: take_str(&mut attributes, "exception.message"),
-                    stack_trace: take_str(&mut attributes, "exception.stacktrace"),
-                };
-                let template = take_str(&mut attributes, "{OriginalFormat}")
-                    .or_else(|| take_str(&mut attributes, "message_template.text"));
-                let message = match any_value(lr.body.as_ref()) {
-                    Value::String(s) => s,
-                    Value::Null => exception.message.clone().unwrap_or_default(),
-                    Value::Object(o) => {
-                        let m = o.get("message").map(Value::to_display_string);
-                        let text = serde_json::to_string(&o).unwrap_or_default();
-                        attributes.insert("body", Value::Object(o));
-                        m.unwrap_or(text)
+                out.push(size::log_record(lr), extra, || {
+                    let mut attributes = fields(&lr.attributes);
+                    add_scope(&mut attributes, sl.scope.as_ref());
+                    if !lr.event_name.is_empty() {
+                        attributes.insert("event.name", Value::String(lr.event_name.clone()));
                     }
-                    other => other.to_display_string(),
-                };
-                let timestamp = ts(lr.time_unix_nano).or_else(|| ts(lr.observed_time_unix_nano)).unwrap_or(now);
-                out.events.push(TelemetryEvent {
-                    id: EventId(0),
-                    timestamp,
-                    observed_timestamp: ts(lr.observed_time_unix_nano).unwrap_or(now),
-                    service: res.service.clone(),
-                    environment: res.environment.clone(),
-                    trace_id: TraceId::from_bytes(&lr.trace_id),
-                    span_id: SpanId::from_bytes(&lr.span_id),
-                    resource: res.resource.clone(),
-                    attributes,
-                    payload: TelemetryPayload::Log(LogEvent {
-                        level,
-                        message,
-                        message_template: template,
-                        exception: (!exception.is_empty()).then_some(exception),
-                    }),
-                });
+                    let level = Level::from_otlp_severity(lr.severity_number)
+                        .or_else(|| Level::parse(&lr.severity_text))
+                        .unwrap_or(Level::Information);
+                    if !lr.severity_text.is_empty() && Level::parse(&lr.severity_text) != Some(level) {
+                        attributes.insert("severityText", Value::String(lr.severity_text.clone()));
+                    }
+                    let exception = Exception {
+                        kind: take_str(&mut attributes, "exception.type"),
+                        message: take_str(&mut attributes, "exception.message"),
+                        stack_trace: take_str(&mut attributes, "exception.stacktrace"),
+                    };
+                    let template = take_str(&mut attributes, "{OriginalFormat}")
+                        .or_else(|| take_str(&mut attributes, "message_template.text"));
+                    let message = match any_value(lr.body.as_ref()) {
+                        Value::String(s) => s,
+                        Value::Null => exception.message.clone().unwrap_or_default(),
+                        Value::Object(o) => {
+                            let m = o.get("message").map(Value::to_display_string);
+                            let text = serde_json::to_string(&o).unwrap_or_default();
+                            attributes.insert("body", Value::Object(o));
+                            m.unwrap_or(text)
+                        }
+                        other => other.to_display_string(),
+                    };
+                    let timestamp = ts(lr.time_unix_nano).or_else(|| ts(lr.observed_time_unix_nano)).unwrap_or(now);
+                    TelemetryEvent {
+                        id: EventId(0),
+                        timestamp,
+                        observed_timestamp: ts(lr.observed_time_unix_nano).unwrap_or(now),
+                        service: res.service.clone(),
+                        environment: res.environment.clone(),
+                        trace_id: TraceId::from_bytes(&lr.trace_id),
+                        span_id: SpanId::from_bytes(&lr.span_id),
+                        resource: res.resource.clone(),
+                        attributes,
+                        payload: TelemetryPayload::Log(LogEvent {
+                            level,
+                            message,
+                            message_template: template,
+                            exception: (!exception.is_empty()).then_some(exception),
+                        }),
+                    }
+                })?;
             }
         }
     }
-    Ok(out)
+    Ok(out.mapped)
 }
 
-pub fn decode_traces(body: &[u8], enc: Encoding, now: Timestamp) -> Result<Mapped, IngestError> {
-    let req = match enc {
-        Encoding::Protobuf => proto::ExportTraceServiceRequest::decode(body).map_err(malformed)?,
-        Encoding::Json => json::traces(body).map_err(malformed)?,
+pub fn decode_traces(body: &[u8], enc: Encoding, now: Timestamp, limits: Limits) -> Result<Mapped, IngestError> {
+    let mut budget = Budget::new(limits);
+    let (req, records) = match enc {
+        Encoding::Protobuf => decode_protobuf(body, &mut budget, scan::traces, size::traces)?,
+        Encoding::Json => {
+            let req = json::traces(body, &mut budget)?;
+            (req, budget.events())
+        }
     };
-    let mut out = Mapped::default();
+    let mut out = Out::new(&mut budget, records)?;
     for rs in &req.resource_spans {
-        let res = resource_info(rs.resource.as_ref());
+        let res = out.resource(rs.resource.as_ref())?;
         for ss in &rs.scope_spans {
+            let extra = res.per_event() + scope_len(ss.scope.as_ref());
             for sp in &ss.spans {
                 let (Some(trace_id), Some(span_id)) =
                     (TraceId::from_bytes(&sp.trace_id), SpanId::from_bytes(&sp.span_id))
                 else {
-                    out.reject("span without trace id or span id");
+                    out.mapped.reject("span without trace id or span id");
                     continue;
                 };
-                let mut attributes = fields(&sp.attributes);
-                add_scope(&mut attributes, ss.scope.as_ref());
-                let start = ts(sp.start_time_unix_nano).unwrap_or(now);
-                let duration_nanos = sp.end_time_unix_nano.saturating_sub(sp.start_time_unix_nano);
-                let status = sp.status.as_ref().map_or_else(SpanStatus::default, |s| SpanStatus {
-                    code: StatusCode::from_code(s.code.clamp(0, 2) as u8),
-                    message: (!s.message.is_empty()).then(|| s.message.clone()),
-                });
-                out.events.push(TelemetryEvent {
-                    id: EventId(0),
-                    timestamp: start,
-                    observed_timestamp: now,
-                    service: res.service.clone(),
-                    environment: res.environment.clone(),
-                    trace_id: Some(trace_id),
-                    span_id: Some(span_id),
-                    resource: res.resource.clone(),
-                    attributes,
-                    payload: TelemetryPayload::Span(SpanEvent {
-                        parent_span_id: SpanId::from_bytes(&sp.parent_span_id),
-                        name: sp.name.clone(),
-                        kind: SpanKind::from_code(sp.kind.clamp(0, 5) as u8),
-                        duration_nanos,
-                        status,
-                        events: sp
-                            .events
-                            .iter()
-                            .map(|e| SpanEventItem {
-                                timestamp: ts(e.time_unix_nano).unwrap_or(start),
-                                name: e.name.clone(),
-                                attributes: fields(&e.attributes),
-                            })
-                            .collect(),
-                        links: sp
-                            .links
-                            .iter()
-                            .filter_map(|l| {
-                                Some(SpanLink {
-                                    trace_id: TraceId::from_bytes(&l.trace_id)?,
-                                    span_id: SpanId::from_bytes(&l.span_id)?,
-                                    attributes: fields(&l.attributes),
+                out.push(size::span(sp), extra, || {
+                    let mut attributes = fields(&sp.attributes);
+                    add_scope(&mut attributes, ss.scope.as_ref());
+                    let start = ts(sp.start_time_unix_nano).unwrap_or(now);
+                    let duration_nanos = sp.end_time_unix_nano.saturating_sub(sp.start_time_unix_nano);
+                    let status = sp.status.as_ref().map_or_else(SpanStatus::default, |s| SpanStatus {
+                        code: StatusCode::from_code(s.code.clamp(0, 2) as u8),
+                        message: (!s.message.is_empty()).then(|| s.message.clone()),
+                    });
+                    TelemetryEvent {
+                        id: EventId(0),
+                        timestamp: start,
+                        observed_timestamp: now,
+                        service: res.service.clone(),
+                        environment: res.environment.clone(),
+                        trace_id: Some(trace_id),
+                        span_id: Some(span_id),
+                        resource: res.resource.clone(),
+                        attributes,
+                        payload: TelemetryPayload::Span(SpanEvent {
+                            parent_span_id: SpanId::from_bytes(&sp.parent_span_id),
+                            name: sp.name.clone(),
+                            kind: SpanKind::from_code(sp.kind.clamp(0, 5) as u8),
+                            duration_nanos,
+                            status,
+                            events: sp
+                                .events
+                                .iter()
+                                .map(|e| SpanEventItem {
+                                    timestamp: ts(e.time_unix_nano).unwrap_or(start),
+                                    name: e.name.clone(),
+                                    attributes: fields(&e.attributes),
                                 })
-                            })
-                            .collect(),
-                    }),
-                });
+                                .collect(),
+                            links: sp
+                                .links
+                                .iter()
+                                .filter_map(|l| {
+                                    Some(SpanLink {
+                                        trace_id: TraceId::from_bytes(&l.trace_id)?,
+                                        span_id: SpanId::from_bytes(&l.span_id)?,
+                                        attributes: fields(&l.attributes),
+                                    })
+                                })
+                                .collect(),
+                        }),
+                    }
+                })?;
             }
         }
     }
-    Ok(out)
+    Ok(out.mapped)
 }
 
 fn temporality(t: i32) -> Temporality {
     Temporality::from_code(t.clamp(0, 2) as u8)
 }
 
-pub fn decode_metrics(body: &[u8], enc: Encoding, now: Timestamp) -> Result<Mapped, IngestError> {
+pub fn decode_metrics(body: &[u8], enc: Encoding, now: Timestamp, limits: Limits) -> Result<Mapped, IngestError> {
     use proto::metric::Data;
-    let req = match enc {
-        Encoding::Protobuf => proto::ExportMetricsServiceRequest::decode(body).map_err(malformed)?,
-        Encoding::Json => json::metrics(body).map_err(malformed)?,
+    let mut budget = Budget::new(limits);
+    let (req, records) = match enc {
+        Encoding::Protobuf => decode_protobuf(body, &mut budget, scan::metrics, size::metrics)?,
+        Encoding::Json => {
+            let req = json::metrics(body, &mut budget)?;
+            (req, budget.events())
+        }
     };
-    let mut out = Mapped::default();
+    let mut out = Out::new(&mut budget, records)?;
     for rm in &req.resource_metrics {
-        let res = resource_info(rm.resource.as_ref());
+        let res = out.resource(rm.resource.as_ref())?;
         for sm in &rm.scope_metrics {
             for m in &sm.metrics {
                 if m.data.is_none() {
-                    out.reject("metric without data");
+                    out.mapped.reject("metric without data");
                     continue;
                 }
-                let mut push = |time: u64,
+                // Every data point copies the metric's name, description
+                // and unit.
+                let extra = res.per_event() + scope_len(sm.scope.as_ref()) + size::metric_head(m);
+                let mut push = |point: usize,
+                                time: u64,
                                 attrs: &[proto::KeyValue],
                                 kind: MetricKind,
                                 temporality: Temporality,
                                 monotonic: bool,
                                 value: MetricValue| {
-                    let mut attributes = fields(attrs);
-                    add_scope(&mut attributes, sm.scope.as_ref());
-                    out.events.push(TelemetryEvent {
-                        id: EventId(0),
-                        timestamp: ts(time).unwrap_or(now),
-                        observed_timestamp: now,
-                        service: res.service.clone(),
-                        environment: res.environment.clone(),
-                        trace_id: None,
-                        span_id: None,
-                        resource: res.resource.clone(),
-                        attributes,
-                        payload: TelemetryPayload::Metric(MetricEvent {
-                            name: m.name.clone(),
-                            description: (!m.description.is_empty()).then(|| m.description.clone()),
-                            unit: (!m.unit.is_empty()).then(|| m.unit.clone()),
-                            kind,
-                            temporality,
-                            monotonic,
-                            value,
-                        }),
-                    });
+                    out.push(point, extra, || {
+                        let mut attributes = fields(attrs);
+                        add_scope(&mut attributes, sm.scope.as_ref());
+                        TelemetryEvent {
+                            id: EventId(0),
+                            timestamp: ts(time).unwrap_or(now),
+                            observed_timestamp: now,
+                            service: res.service.clone(),
+                            environment: res.environment.clone(),
+                            trace_id: None,
+                            span_id: None,
+                            resource: res.resource.clone(),
+                            attributes,
+                            payload: TelemetryPayload::Metric(MetricEvent {
+                                name: m.name.clone(),
+                                description: (!m.description.is_empty()).then(|| m.description.clone()),
+                                unit: (!m.unit.is_empty()).then(|| m.unit.clone()),
+                                kind,
+                                temporality,
+                                monotonic,
+                                value,
+                            }),
+                        }
+                    })
                 };
                 let number = |p: &proto::NumberDataPoint| match p.value {
                     Some(proto::number_data_point::Value::AsDouble(d)) => d,
@@ -333,30 +448,33 @@ pub fn decode_metrics(body: &[u8], enc: Encoding, now: Timestamp) -> Result<Mapp
                     Some(Data::Gauge(g)) => {
                         for p in &g.data_points {
                             push(
+                                size::number_point(p),
                                 p.time_unix_nano,
                                 &p.attributes,
                                 MetricKind::Gauge,
                                 Temporality::Unspecified,
                                 false,
                                 MetricValue::Number(number(p)),
-                            );
+                            )?;
                         }
                     }
                     Some(Data::Sum(s)) => {
                         for p in &s.data_points {
                             push(
+                                size::number_point(p),
                                 p.time_unix_nano,
                                 &p.attributes,
                                 MetricKind::Sum,
                                 temporality(s.aggregation_temporality),
                                 s.is_monotonic,
                                 MetricValue::Number(number(p)),
-                            );
+                            )?;
                         }
                     }
                     Some(Data::Histogram(h)) => {
                         for p in &h.data_points {
                             push(
+                                size::histogram_point(p),
                                 p.time_unix_nano,
                                 &p.attributes,
                                 MetricKind::Histogram,
@@ -370,7 +488,7 @@ pub fn decode_metrics(body: &[u8], enc: Encoding, now: Timestamp) -> Result<Mapp
                                     bucket_counts: p.bucket_counts.clone(),
                                     explicit_bounds: p.explicit_bounds.clone(),
                                 }),
-                            );
+                            )?;
                         }
                     }
                     // Exponential histograms and summaries keep count/sum
@@ -378,6 +496,7 @@ pub fn decode_metrics(body: &[u8], enc: Encoding, now: Timestamp) -> Result<Mapp
                     Some(Data::ExponentialHistogram(h)) => {
                         for p in &h.data_points {
                             push(
+                                size::exponential_point(p),
                                 p.time_unix_nano,
                                 &p.attributes,
                                 MetricKind::Histogram,
@@ -390,12 +509,13 @@ pub fn decode_metrics(body: &[u8], enc: Encoding, now: Timestamp) -> Result<Mapp
                                     max: p.max,
                                     ..Default::default()
                                 }),
-                            );
+                            )?;
                         }
                     }
                     Some(Data::Summary(s)) => {
                         for p in &s.data_points {
                             push(
+                                size::summary_point(p),
                                 p.time_unix_nano,
                                 &p.attributes,
                                 MetricKind::Histogram,
@@ -406,7 +526,7 @@ pub fn decode_metrics(body: &[u8], enc: Encoding, now: Timestamp) -> Result<Mapp
                                     sum: Some(p.sum),
                                     ..Default::default()
                                 }),
-                            );
+                            )?;
                         }
                     }
                     None => {}
@@ -414,7 +534,7 @@ pub fn decode_metrics(body: &[u8], enc: Encoding, now: Timestamp) -> Result<Mapp
             }
         }
     }
-    Ok(out)
+    Ok(out.mapped)
 }
 
 #[cfg(test)]

@@ -670,19 +670,38 @@ impl Config {
     pub fn ingest_max_concurrent(&self) -> usize {
         self.ingest_admission().limit
     }
+
+    /// What one ingest request may decode into (REL-16): at most
+    /// `ingest.queue_capacity` events (a larger batch could never be queued)
+    /// and [`INGEST_DECODE_BYTES_PER_REQUEST_BYTE`] × `max_request_size`
+    /// bytes of decoded data, which keeps every admitted request within the
+    /// admission estimate whatever its shape.
+    pub fn ingest_limits(&self) -> ingest::Limits {
+        let decoded = self.ingest.max_request_size.0.saturating_mul(INGEST_DECODE_BYTES_PER_REQUEST_BYTE);
+        ingest::Limits {
+            max_events: self.ingest.queue_capacity,
+            max_decoded_bytes: usize::try_from(decoded).unwrap_or(usize::MAX),
+            max_depth: ingest::MAX_DEPTH,
+        }
+    }
 }
 
 /// Estimated heap held by one admitted request, per byte of
 /// `ingest.max_request_size`: the read (and gzip-decoded) body, the parse
 /// working set and the parsed batch, which stays admitted until its write
-/// is acknowledged. Measured per format by the `amplification` test in
-/// `tests/overload`: representative fixtures of every format and signal
-/// peak at 7.0–16.0×, and the worst supported one (OTLP/JSON logs of
-/// ~20-byte records) at 17.0× (17.3× with 1 MB fixtures). Event shapes
-/// that amplify more, such as tiny native events, deeply nested properties
-/// or tiny OTLP/protobuf records, are outside this estimate and are not
-/// refused; see docs/configuration.md#ingest-memory.
+/// is acknowledged. It holds for every body shape because decoding is
+/// limited to [`INGEST_DECODE_BYTES_PER_REQUEST_BYTE`] of it (REL-16); the
+/// `amplification` test in `tests/overload` measures every fixture against
+/// it. See docs/configuration.md#ingest-memory.
 pub const INGEST_BYTES_PER_REQUEST_BYTE: u64 = 20;
+
+/// The part of [`INGEST_BYTES_PER_REQUEST_BYTE`] the decoders may hold, per
+/// byte of `ingest.max_request_size`: the parse working set and the parsed
+/// batch, by the decoders' own accounting ([`ingest::Limits`]). The rest
+/// covers the body itself (held twice while a body read in parts is
+/// joined) and what the accounting does not see, such as allocator
+/// rounding. A request that would decode into more is refused with 413.
+pub const INGEST_DECODE_BYTES_PER_REQUEST_BYTE: u64 = 17;
 
 /// Ingest memory not tied to admitted requests: rejected bodies being
 /// drained. At most `MAX_DISCARDING` are read at once, each through its

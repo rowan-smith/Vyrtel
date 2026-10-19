@@ -38,7 +38,7 @@ fn log(i: usize) -> TelemetryEvent {
         environment: None,
         trace_id: None,
         span_id: None,
-        resource: Fields::new(),
+        resource: Fields::new().into(),
         attributes: Fields::new(),
         payload: TelemetryPayload::Log(LogEvent {
             level: if i.is_multiple_of(7) { Level::Error } else { Level::Information },
@@ -62,7 +62,7 @@ fn span(t: usize, s: usize) -> TelemetryEvent {
         environment: None,
         trace_id: TraceId::new(&trace_id(t)),
         span_id: SpanId::new(&format!("{:016x}", t * 100 + s + 1)),
-        resource: Fields::new(),
+        resource: Fields::new().into(),
         attributes: Fields::new(),
         payload: TelemetryPayload::Span(SpanEvent {
             parent_span_id: (s > 0).then(|| SpanId::new(&format!("{:016x}", t * 100 + 1)).unwrap()),
@@ -85,7 +85,7 @@ fn point(i: usize) -> TelemetryEvent {
         environment: None,
         trace_id: None,
         span_id: None,
-        resource: Fields::new(),
+        resource: Fields::new().into(),
         attributes: Fields::new(),
         payload: TelemetryPayload::Metric(MetricEvent {
             name: metric_name(i % METRIC_NAMES),

@@ -15,12 +15,12 @@ Every error has the same shape:
 
 | Status | `code`                                                                                                     | When                                                                                                                                                                                                                                               |
 |-------:|------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|    400 | `invalid_request`, `invalid_json`, `invalid_payload`, `invalid_event`, `invalid_encoding`, `invalid_query` | malformed input (`position` for queries, `index` for batch events); `invalid_encoding` for a gzip body that cannot be decoded                                                                                                                      |
+|    400 | `invalid_request`, `invalid_json`, `invalid_payload`, `invalid_event`, `invalid_encoding`, `invalid_query` | malformed input (`position` for queries, `index` for batch events); `invalid_encoding` for a gzip body that cannot be decoded; `invalid_payload` with `"limit": "maxDepth"` for ingested values nested too deeply ([details](#decoding-limits))                                                                                                                      |
 |    401 | `unauthorized`                                                                                             | missing/invalid API key or session                                                                                                                                                                                                                 |
 |    403 | `forbidden`                                                                                                | an ingest-only key used on a read/admin endpoint                                                                                                                                                                                                   |
 |    404 | `not_found`                                                                                                | unknown resource or endpoint                                                                                                                                                                                                                       |
 |    408 | `request_timeout`                                                                                          | the request body did not arrive in full within `server.body_timeout` of its head; the connection closes ([details](#connections))                                                                                                                |
-|    413 | `payload_too_large`                                                                                        | ingest body over `ingest.max_request_size` after gzip decoding (`limitBytes` gives the limit), or a batch larger than the queue ([details](#request-size-and-encoding))                                                                            |
+|    413 | `payload_too_large`                                                                                        | ingest body over `ingest.max_request_size` after gzip decoding, a batch with more events than `ingest.queue_capacity`, or one that would decode into too much memory; `limit` names which (`maxRequestSize`, `maxEvents`, `maxDecodedBytes`) ([details](#request-size-and-encoding), [decoding limits](#decoding-limits))                                                                            |
 |    415 | `unsupported_media_type`                                                                                   | content type or `Content-Encoding` not accepted                                                                                                                                                                                                    |
 |    422 | `query_too_expensive`                                                                                      | the query would read more than `query.max_scan_bytes` (`limitBytes` gives the limit)                                                                                                                                                               |
 |    422 | `query_result_limit`                                                                                       | the result would exceed a result budget: more spans in one trace than `query.max_trace_spans`, or more than 10,000 points per metric series (`limit` gives the limit) ([details](query-language.md#execution-limits-and-cancellation))           |
@@ -143,11 +143,12 @@ NDJSON (one object per line). Response: `{"accepted": <n>}`.
 | `exception` | `@x`, `error` | object or a stack-trace string |
 | *anything else* | | becomes a property (Serilog CLEF style) |
 
-Property values may be any JSON. The same property can change type between
-events; nothing is rejected for that. Batches are all-or-nothing: if one
-event is invalid the request fails with `invalid_event` and its `index`,
-and a request rejected for any other reason (size, encoding, malformed
-JSON) stores nothing either. Size and encoding rules are under
+Property values may be any JSON, nested up to 32 levels deep. The same
+property can change type between events; nothing is rejected for that.
+Batches are all-or-nothing: if one event is invalid the request fails with
+`invalid_event` and its `index`, and a request rejected for any other
+reason (size, encoding, malformed JSON, a [decoding limit](#decoding-limits))
+stores nothing either. Size and encoding rules are under
 [request size and encoding](#request-size-and-encoding).
 The response is sent only after the batch is in the write-ahead log (and
 fsynced with `durability = "strict"`) and visible to queries.
@@ -166,8 +167,10 @@ Point any OpenTelemetry SDK or Collector `otlphttp` exporter at
 `http://<host>:8080`. Responses use the request's encoding; records that
 cannot be stored (e.g. spans without ids) are dropped and reported via
 `partialSuccess`, and the rest of the request is stored. That is the only
-partial outcome: a request rejected with a 4xx stores nothing. Error
-responses (4xx/5xx) are the JSON error object above for both encodings.
+partial outcome: a request rejected with a 4xx stores nothing, including
+one over a [decoding limit](#decoding-limits), which is refused as a whole
+rather than partly accepted. Error responses (4xx/5xx) are the JSON error
+object above for both encodings.
 
 Mapping:
 
@@ -254,7 +257,7 @@ the limit is accepted; one byte more is rejected.
 HTTP/1.1 413 Payload Too Large
 Content-Type: application/json
 
-{"error":{"code":"payload_too_large","message":"request body exceeds the 16 MB limit (measured after gzip decoding); split the batch into smaller requests","limitBytes":16777216}}
+{"error":{"code":"payload_too_large","message":"request body exceeds the 1 MB limit (measured after gzip decoding); split the batch into smaller requests","limit":"maxRequestSize","limitBytes":1048576}}
 ```
 
 ```
@@ -276,6 +279,59 @@ for f in part-*; do
 done
 ```
 
+### Decoding limits
+
+A body within `max_request_size` is then decoded within three limits,
+checked while it is parsed, before the batch is built
+([why and how](configuration.md#decoding-limits)):
+
+| Limit (`limit`)   | Value                                      | Response                                       |
+|-------------------|--------------------------------------------|------------------------------------------------|
+| `maxEvents`       | `ingest.queue_capacity` (default 10,000)   | `413 payload_too_large`, with `maxEvents`      |
+| `maxDecodedBytes` | 17 × `max_request_size` (default 17 MB)    | `413 payload_too_large`, with `limitBytes`     |
+| `maxDepth`        | 32 levels of nesting                       | `400 invalid_payload`, with `maxDepth`         |
+
+Events are native events, or OTLP log records, spans and metric data
+points. Decoded bytes are the server's estimate of the memory the parsed
+batch takes, which ordinary batches keep far below the limit: it is
+reached by bodies of very many tiny or empty events, OTLP records of a few
+bytes each, or many small nested values. Nesting counts objects and arrays
+within one native event, or OTLP `arrayValue` / `kvlistValue` levels
+within one attribute or body (key/value lists may stop at about 30, where
+the JSON and protobuf parsers' own limits are, with the same error).
+
+```
+HTTP/1.1 413 Payload Too Large
+Content-Type: application/json
+
+{"error":{"code":"payload_too_large","message":"batch has more than 10000 events (ingest.queue_capacity); split it into requests of at most 10000 events","limit":"maxEvents","maxEvents":10000}}
+```
+
+```
+HTTP/1.1 413 Payload Too Large
+Content-Type: application/json
+
+{"error":{"code":"payload_too_large","message":"batch would take more than 17 MB of memory to decode: it has too many events or values for its size. Split it into smaller requests, or send fewer, larger events","limit":"maxDecodedBytes","limitBytes":17825792}}
+```
+
+```
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+
+{"error":{"code":"invalid_payload","message":"values are nested more than 32 levels deep; flatten them","limit":"maxDepth","maxDepth":32}}
+```
+
+Nothing of a refused request is stored, native or OTLP: limits never cause
+an OTLP `partialSuccess`. None of these is retryable as is. For
+`maxEvents`, send at most `maxEvents` events per request; for
+`maxDecodedBytes`, split the batch into smaller requests (half the events
+per request halves the decoded size; the split NDJSON example above works
+for both); for `maxDepth`, flatten the values. OpenTelemetry exporters do
+not retry a 413 and drop the batch, so keep their batch size below the
+limits: for the Collector, `send_batch_max_size` at most `queue_capacity`
+and batches within `max_request_size`. The SDKs' default batches (512
+records) and the Collector's (8,192) are within the default limits.
+
 ### Status codes and retries
 
 | Status | `code`                                                  | Stage                                                                                                          | Retry?                                                                                                                                                                                                              |
@@ -285,7 +341,8 @@ done
 |    413 | `payload_too_large`                                     | body over `max_request_size`, decoded or on the wire                                                           | no — split the batch                                                                                                                                                                                                |
 |    400 | `invalid_encoding`                                      | gzip body truncated, corrupt or followed by other data                                                         | no — resend a complete gzip body                                                                                                                                                                                    |
 |    400 | `invalid_request` / `invalid_payload` / `invalid_event` | body unreadable (client went away) or malformed                                                                | no — fix the payload                                                                                                                                                                                                |
-|    413 | `payload_too_large`                                     | batch has more events than `queue_capacity`                                                                    | no — split the batch                                                                                                                                                                                                |
+|    413 | `payload_too_large`                                     | decoding: more events than `queue_capacity` (`maxEvents`) or too much decoded data (`maxDecodedBytes`)         | no — split the batch                                                                                                                                                                                                |
+|    400 | `invalid_payload`                                       | decoding: values nested more than 32 levels (`maxDepth`)                                                       | no — flatten the values                                                                                                                                                                                             |
 |    429 | `rate_limited`                                          | submission: the signal's queue is full                                                                         | yes, after `Retry-After`                                                                                                                                                                                            |
 |    503 | `unavailable`                                           | no acknowledgement within `ack_timeout`, or storage stopping                                                   | yes, after `Retry-After`; the batch may already be stored                                                                                                                                                           |
 |    503 | `shutting_down`                                         | the server is stopping; checked before admission, the body is not read and the connection closes             | yes, after `Retry-After`, against the restarted or another instance; nothing was stored                                                                                                                             |

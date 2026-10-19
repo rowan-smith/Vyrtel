@@ -22,12 +22,14 @@ Next to the code (`#[cfg(test)]` modules). Highlights:
 | Field resolution                                                     | `crates/query/src/fields.rs`         |
 | Timestamp parsing (RFC 3339, Unix units, precision)                  | `crates/telemetry/src/time.rs`       |
 | Varints, zigzag, bounds checks                                       | `crates/storage/src/encoding.rs`     |
-| Event codec, versioning, garbage/truncation handling                 | `crates/storage/src/codec.rs`        |
-| WAL encoding/decoding, CRC validation, torn records                  | `crates/storage/src/wal.rs`          |
+| Event codec, versioning, garbage/truncation handling; codec 2 resource tables (one entry per distinct resource, shared on decode, codec 1 still read) | `crates/storage/src/codec.rs`        |
+| WAL encoding/decoding, CRC validation, torn records; streamed appends write the same bytes as whole ones | `crates/storage/src/wal.rs`          |
 | Segment write/read, metadata, corruption detection                   | `crates/storage/src/segment/mod.rs`  |
 | Bloom filters, bitmaps, HyperLogLog, canonical index keys            | `crates/storage/src/index/`          |
 | Configuration parsing, env overrides, memory budgets                 | `crates/server/src/config.rs`        |
 | OTLP mapping (protobuf + JSON), native/CLEF parsing, templates       | `crates/ingest/src/`                 |
+| Decoding limits (REL-16): events, decoded bytes and depth at limit − 1 / limit / limit + 1 for every format; shared OTLP resources; the protobuf pre-scan covers what `prost` allocates and accepts what it accepts | `crates/ingest/tests/limits.rs`, `crates/ingest/src/{limits,jsontree,native}.rs` |
+| Real heap of native decoding (a per-thread counting allocator): an escaped-key envelope over the event limit is refused without building its tree; `[]` allocates nothing and arrays of exactly 4, 8 or 16 elements no growth step beyond them | `crates/ingest/tests/alloc.rs` |
 | Metadata store (migrations, CRUD, alert transitions, read-only schema inspection, newer schema refused) | `crates/metadata/tests/store.rs`     |
 | Data-directory check: new, pre-manifest and interrupted directories accepted; missing parts, inventory files missing or truncated, an empty metadata database, bad or newer manifests, newer and unreadable metadata refused; `accept_incomplete` returns the problems instead (never format problems); the inventory is dropped on start | `crates/server/src/datadir.rs` |
 
@@ -242,6 +244,16 @@ talks HTTP to it:
   `max_concurrent = 0` the derived limit (3 at the defaults) is what is
   enforced and what `system/info` reports, and an explicit limit over the
   estimated budget is honoured (REL-14);
+* decoding limits (`decode_limits.rs`, REL-16): for native JSON, the
+  `{"events":[...]}` envelope, NDJSON, CLEF and OTLP logs, traces and
+  metrics in protobuf and JSON, each plain and gzip: `queue_capacity − 1`
+  and `queue_capacity` events stored, one more a 413 `maxEvents` before
+  parsing; a 64 KB body that would decode past 17× (tiny native events, OTLP
+  records of empty values) a 413 `maxDecodedBytes` while an ordinary one of
+  the same size is stored; values nested 32 levels stored, 33 a 400
+  `maxDepth`. Refused requests store nothing, free their slot and the next
+  request succeeds; OpenTelemetry SDK (512) and Collector (8,192) default
+  batches are accepted at the default limits;
 * storage write failures (`storage_faults.rs`, needs `--features
   fault-injection`): native, NDJSON and OTLP logs, traces and metrics get
   `503 storage_write_failed` with a reason and store nothing while the WAL cannot write; `/ready` is 503, names the
@@ -315,11 +327,15 @@ talks HTTP to it:
   byte for byte from the sizes and SHA-256 sums in each `fixture.json`).
   For 0.1.1:
   `vyrtel check-data-dir` exits 0, changes nothing and prints the plan
-  (record `vyrtel.json`, readable by 0.1.1 and later afterwards); the
-  started server answers every verification query exactly as that release
-  did before it was stopped, its ingest key works, its revoked key and
+  (record `vyrtel.json` in format 2, which no released version reads
+  afterwards, so back up first); the started server answers every
+  verification query exactly as that release did before it was stopped,
+  from its codec 1 WAL records, its ingest key works, its revoked key and
   anonymous requests get 401, nothing is quarantined, `vyrtel.json` is
-  recorded, and a second start migrates nothing. The Observer 0.1.0
+  recorded, an event ingested afterwards is appended to the same WALs in
+  codec 2, and a second start reads both and migrates nothing. Storage's
+  `wal_with_codec_1_and_codec_2_records_replays_both` covers the same mix
+  directly, and that replayed events of one resource share it. The Observer 0.1.0
   directory is refused by `check-data-dir` and by `App::build` with what to
   do, and nothing is quarantined (0.1.1 quarantined all 5 of its files;
   storage unit tests `observer_files_stop_startup_and_are_kept`). A newer manifest format,
@@ -591,8 +607,10 @@ unaffected by the derived sizing below (and log its over-budget warning).
 ### Ingest amplification and derived admission
 
 REL-14 replaced the derived ingest limit with one budgeted from measured
-parse amplification ([formula](configuration.md#ingest-memory)). Three
-tests in the same `overload` binary back it. Clients run on a separate
+parse amplification ([formula](configuration.md#ingest-memory)), and
+REL-16 made it hold for every body shape by limiting decoding
+([decoding limits](configuration.md#decoding-limits)). Three tests in the
+same `overload` binary back them. Clients run on a separate
 runtime whose allocations the counting allocator skips, so only the
 server's heap is measured. Run them on a release build; the figures below
 are from one Windows 11 x86_64 laptop (`cargo test --release`, Rust 1.96),
@@ -609,74 +627,132 @@ seed `0x5EED0014` (xorshift), so reruns are byte-identical. Each one is
 filled to just under the target decoded size (2 MB by default;
 `VYRTEL_AMPLIFICATION_TARGET=<bytes>` changes it) and sent plain and gzip.
 OTLP fixtures are built once as protobuf structs and encoded both ways, so
-both encodings carry the same records.
+both encodings carry the same records. Each fixture states whether the
+server accepts it or refuses it at the request-size limit (REL-16), and the
+test holds it to that.
 
 | Fixture | Record shape | Events in 2 MB |
 |---|---|---:|
-| native JSON / NDJSON representative | app event, level, service, trace ids, 5 properties (~330 B) | 6,150 |
-| CLEF representative | Serilog request log, template and 7 properties, 10% with `@x` | 5,940 |
+| native JSON / NDJSON representative | app event, level, service, trace ids, 5 properties (~330 B) | 6,161 |
+| CLEF representative | Serilog request log, template and 7 properties, 10% with `@x` | 5,977 |
 | NDJSON string-heavy | 12 KB of strings per event | 173 |
-| native JSON / NDJSON nested properties | 6 levels, ~40 small values | ~7,950 |
-| native JSON / NDJSON many small events | `{"message":"…"}` (~30 B) | 87,626 |
+| native JSON / NDJSON nested properties | 6 levels, ~40 small values | 7,973 |
+| native JSON / NDJSON many small events | `{"message":"…"}` (~24 B) | 87,844 |
 | NDJSON empty objects | `{}` | 699,050 |
-| OTLP logs representative | SDK resource (7 attributes), body, 4 attributes, trace ids | 9,078 protobuf / 4,017 JSON |
-| OTLP logs many small records | body only (~20 B) | 131,072 / 13,189 |
-| OTLP logs large shared resource | 200-attribute resource, tiny records | 15,887 / 5,745 |
-| OTLP traces representative | 5 attributes, 1 in 8 with an event, 1 in 10 failed | 8,594 / 3,432 |
-| OTLP metrics representative | gauges and sums (2 points), histograms (11 buckets) | 11,650 / 5,287 data points |
+| NDJSON wide arrays | 500 one-digit numbers in one property | 2,016 |
+| OTLP logs representative | SDK resource (7 attributes), body, 4 attributes, trace ids | 9,271 protobuf / 4,089 JSON |
+| OTLP logs many small records | body only (~20 B) | 137,999 / 13,775 |
+| OTLP logs large shared resource | 200-attribute resource, tiny records | 183,361 / 14,055 |
+| OTLP logs large resource, representative records | 200-attribute resource shared by SDK-like records | 9,238 / 4,064 |
+| OTLP logs empty array values | 1,000 empty `AnyValue`s in one attribute | 1,039 / 661 |
+| OTLP traces representative | 5 attributes, 1 in 8 with an event, 1 in 10 failed | 8,768 / 3,485 |
+| OTLP metrics representative | gauges and sums (2 points), histograms (11 buckets) | 11,819 / 5,362 data points |
+
+Before REL-16 the fixture builder sized fixtures from a 64-record probe,
+so those dominated by a large resource came out far below the target
+(0.08 MB of protobuf instead of 2 MB); it now searches for the largest
+record count that fits.
 
 **Per-format peaks** (`amplification_per_format_is_within_the_admission_estimate`).
 For every fixture and encoding it measures, as multiples of the decoded
-body: *parse*, decoding alone in-process over a body already in memory;
-*admission*, from sending the request until its batch is in the storage
-queue, with the writer parked (body read and gzip-decoded, parse, parsed
-batch: what an admitted request owns); and *end to end*, until the
-response, which adds the WAL record and the active segment (storage's
-budget). A fresh server per request keeps earlier writes out of the
-window. It asserts that every fixture inside the supported envelope stays
-at or under the 20× estimate.
+body: *parse*, decoding alone in-process over a body already in memory with
+the server's decoding limits; *admission*, from sending the request until
+its batch is in the storage queue with the writer parked, or until its 413
+(body read and gzip-decoded, parse, parsed batch: what an admitted request
+owns); and *end to end*, until the response, which adds the WAL record and
+the active segment (storage's budget). A fresh server per request keeps
+earlier writes out of the window. Requests are exactly as large as the
+fixture and `queue_capacity` is effectively unlimited, so the
+decoded-bytes limit (17 × `max_request_size`) is the one exercised. It
+asserts, for **every** fixture with no exemptions, that the admission and
+end-to-end peaks are at or under the 20× estimate and that the fixture is accepted (200) or
+refused (413 `maxDecodedBytes`, nothing queued) as it expects.
 
-| Fixture | Admission ×body, plain / gzip | End to end ×body | In the 20× envelope |
-|---|---:|---:|:---:|
-| native JSON representative | 9.42 / 9.35 | 9.42 | yes |
-| NDJSON representative | 9.42 / 9.35 | 9.42 | yes |
-| CLEF representative | 6.96 / 6.82 | 6.96 | yes |
-| NDJSON string-heavy | 2.33 / 2.48 | 3.66 | yes |
-| OTLP protobuf logs representative | 12.54 / 12.46 | 12.65 | yes |
-| OTLP JSON logs representative | 13.34 / 13.20 | 13.34 | yes |
-| OTLP JSON logs many small records | 17.00 / 16.83 | 17.00 | yes |
-| OTLP protobuf traces representative | 14.60 / 14.52 | 14.60 | yes |
-| OTLP JSON traces representative | 14.36 / 14.22 | 14.36 | yes |
-| OTLP protobuf metrics representative | 13.67 / 13.59 | 14.22 | yes |
-| OTLP JSON metrics representative | 15.95 / 15.78 | 15.95 | yes |
-| native JSON / NDJSON nested properties | 30.42 / 30.28 | 30.42 | no |
-| native JSON / NDJSON many small events | 32.10 / 32.03 | 34.72 | no |
-| OTLP protobuf logs many small records | 92.28 / 92.28 | 130.86 | no |
-| OTLP JSON logs large shared resource | 124.76 / 124.29 | 222.75 | no |
-| NDJSON empty objects | 213.25 / 213.05 | 269.24 | no |
-| OTLP protobuf logs large shared resource | 1696.56 / 1695.99 | 3079.30 | no |
+| Fixture | Admission ×body, 2 MB plain / gzip | 1 MB plain / gzip | End to end ×body (2 MB) | Status |
+|---|---:|---:|---:|:---:|
+| native JSON representative | 3.83 / 3.83 | 3.89 / 3.89 | 3.83 | 200 |
+| NDJSON representative | 3.83 / 3.83 | 3.89 / 3.89 | 3.83 | 200 |
+| CLEF representative | 4.32 / 4.32 | 4.38 / 4.38 | 4.32 | 200 |
+| NDJSON string-heavy | 2.10 / 2.12 | 2.16 / 2.24 | 2.10 | 200 |
+| native JSON / NDJSON many small events | 15.51 / 15.51 | 15.64 / 15.64 | 15.51 | 200 |
+| OTLP protobuf logs representative | 8.46 / 8.46 | 8.52 / 8.52 | 8.46 | 200 |
+| OTLP JSON logs representative | 9.64 / 9.64 | 9.70 / 9.70 | 9.64 | 200 |
+| OTLP JSON logs many small records | 13.14 / 13.14 | 13.22 / 13.19 | 13.14 | 200 |
+| OTLP JSON logs large shared resource | 13.35 / 13.34 | 13.43 / 13.40 | 13.35 | 200 |
+| OTLP protobuf logs large resource, representative records | 8.40 / 8.40 | 8.45 / 8.45 | 8.40 | 200 |
+| OTLP JSON logs large resource, representative records | 9.65 / 9.65 | 9.72 / 9.72 | 9.65 | 200 |
+| OTLP protobuf traces representative | 10.57 / 10.57 | 10.63 / 10.63 | 10.57 | 200 |
+| OTLP JSON traces representative | 11.06 / 11.06 | 11.12 / 11.12 | 11.06 | 200 |
+| OTLP protobuf metrics representative | 9.35 / 9.35 | 9.41 / 9.41 | 9.35 | 200 |
+| OTLP JSON metrics representative | 11.82 / 11.82 | 11.88 / 11.88 | 11.82 | 200 |
+| native JSON / NDJSON nested properties | 18.06 / 18.06 | 18.11 / 18.11 | 18.06 | 413 |
+| NDJSON wide arrays | 18.05 / 18.05 | 18.11 / 18.11 | 18.05 | 413 |
+| OTLP JSON logs empty array values | 18.06 / 18.03 | 18.12 / 18.06 | 18.06 | 413 |
+| NDJSON empty objects | 1.12 / 2.05 | 1.24 / 2.11 | 1.12 | 413 |
+| OTLP protobuf logs many small records | 1.12 / 2.11 | 1.24 / 2.29 | 1.12 | 413 |
+| OTLP protobuf logs large shared resource | 1.12 / 2.11 | 1.24 / 2.22 | 1.12 | 413 |
+| OTLP protobuf logs empty array values | 1.12 / 2.05 | 1.24 / 2.11 | 1.12 | 413 |
 
-At 1 MB (`VYRTEL_AMPLIFICATION_TARGET=1048576`, the new default request
-size) every figure is within 3% of the 2 MB one: the highest supported
-fixture is 17.29× (OTLP/JSON small records) and the worst representative
-16.20× (OTLP/JSON metrics); empty objects peak at 213.49×, i.e. 213 MB for
-one 1 MB request. These shapes are accepted in production; see the
-limitations in [configuration](configuration.md#ingest-memory).
+The highest accepted fixture is 15.6× (tiny native events), the highest
+representative one 11.9× (OTLP/JSON metrics), and no refused request goes
+past 18.1×: 20× keeps a margin of at least 10% over every shape.
+Representative batches use far less than before REL-16 (native 9.4× → 3.9×,
+OTLP 12.5–16.0× → 8.5–11.9×): native events are converted as they are
+parsed instead of after the whole body is, the batch is allocated once at
+its counted size, and OTLP records share their resource. Shapes that
+cannot fit are refused while they decode: native JSON and OTLP/JSON when
+the charged tree and events reach the limit (about 17× plus the body);
+NDJSON of empty objects when its counted events alone cannot fit, and
+OTLP/protobuf by the pre-scan, both before anything is decoded (1.1×, the
+body; 2.1× with gzip, the body joined from its parts). Before REL-16 these
+shapes were accepted at 30–1,700×, 213 MB for one 1 MB request of empty
+objects.
 
-Parse alone is consistently 1.25× body below admission (the body itself
-plus read buffers). gzip adds nothing measurable at these sizes: decoding
-is streamed in 64 KB reads. The highest supported figure is 17.0× (17.29×
-at 1 MB); 20× keeps a 16–18% margin over it and 23–25% over the worst
-representative batch (OTLP/JSON metrics, 15.95–16.20×). The shapes outside the envelope amplify by event count
-(each event costs a few hundred bytes however small its JSON) or by copying
-a shared OTLP resource into every event. Count-based admission cannot cover
-them at useful request sizes; see the limitations in
-[configuration](configuration.md#ingest-memory).
+Writing adds nothing measurable: the end-to-end column equals admission.
+The WAL record is streamed to the file in 64 KiB pieces as it is encoded,
+and in event codec 2 a batch stores each distinct resource once
+([storage format](storage-format.md#batch)). Before, the writer encoded
+the whole batch, every event with its own copy of the resource, and then
+copied it into the record, holding the encoding twice: up to 105× end to
+end for a 200-attribute resource over tiny records, 72× over SDK-like
+records, and 26.6× for tiny native events.
+
+**WAL size** (event codec 1, as 0.1.1 wrote it, against codec 2). Each
+accepted 1 MB fixture was decoded and encoded both ways in-process (release
+build, median of 11 encodings):
+
+| Fixture | Codec 1 MB | Codec 2 MB | Codec 2 / 1 | Encode ms, codec 1 / 2 |
+|---|---:|---:|---:|---:|
+| native JSON / NDJSON representative | 0.63 | 0.63 | 1.00 | 0.26–0.46 / 0.25–0.30 |
+| CLEF representative | 1.05 | 1.05 | 1.00 | 0.62 / 0.53 |
+| NDJSON string-heavy | 0.99 | 0.99 | 1.00 | 0.36 / 0.44 |
+| native JSON / NDJSON many small events | 1.25 | 1.25 | 1.00 | 1.35–2.28 / 1.98–2.95 |
+| OTLP protobuf logs representative | 1.93 | 1.04 | 0.54 | 1.17 / 0.95 |
+| OTLP JSON logs representative | 0.85 | 0.46 | 0.54 | 0.98 / 0.42 |
+| OTLP JSON logs many small records | 1.78 | 0.45 | 0.26 | 2.32 / 0.81 |
+| OTLP JSON logs large shared resource | 46.32 | 0.35 | 0.01 | 49.11 / 0.79 |
+| OTLP protobuf logs large resource, representative records | 31.22 | 0.98 | 0.03 | 30.45 / 1.16 |
+| OTLP JSON logs large resource, representative records | 13.69 | 0.43 | 0.03 | 12.45 / 0.30 |
+| OTLP protobuf traces representative | 2.04 | 1.20 | 0.59 | 2.17 / 1.56 |
+| OTLP JSON traces representative | 0.81 | 0.48 | 0.59 | 0.72 / 0.59 |
+| OTLP protobuf metrics representative | 2.27 | 1.14 | 0.50 | 2.44 / 1.43 |
+| OTLP JSON metrics representative | 1.03 | 0.51 | 0.50 | 0.92 / 0.39 |
+
+OTLP batches repeat an SDK resource (7 attributes) on every record in codec
+1, so codec 2 halves their WAL and its write time; a large shared resource
+goes from dominating the WAL to costing once per batch. Native events have
+no resource and encode the same, about 0.6 ms per MB slower for tiny events
+(the per-event resource index). Segments are unchanged: their bodies keep
+the resource inline and are compressed per block.
 
 **Sustained overload** (`derived_admission_holds_the_ingest_budget_under_overload`).
 Default and constrained derived configurations, three consecutive runs
-each. `4 × limit + 16` clients cycle through every supported fixture at the
-request-size limit, plain and gzip, retrying 429s after 5 ms. Each run has
+each. `4 × limit + 16` clients cycle through every fixture at the
+request-size limit, the high-amplification shapes among them, plain and
+gzip, retrying 429s after 5 ms. A body over the configuration's decoding
+limits (decided in-process with the same limits) must get 413, any other
+body 200 or 429; with the default `queue_capacity` most high-amplification
+bodies are refused by event count, the rest by decoded size. Each run has
 three phases: 1 s of warm-up with every slot held by the test, so all
 clients are rejected and their connections' read buffers reach working
 size (reported, not counted: per-connection HTTP overhead); 2 s with every
@@ -688,20 +764,52 @@ server's connection and runtime buffers, which over-counts. It must stay
 within the ingest budget. Process heap growth over both phases includes the
 WAL and active segments and must stay within `max_memory`.
 
-| Config | Run | Limit | Clients | Ingest budget | Conn. buffers | Ingest peak (parked) | 429s parked | 200s / 429s running | Process heap peak | RSS before / parked / after |
+| Config | Run | Limit | Clients | Ingest budget | Conn. buffers | Ingest peak (parked) | 429s parked | 200s / 429s / 413s | Process heap peak | RSS before / parked / after |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| default (512MB, 1MB) | 1 | 3 | 28 | 76.8 MB | 12.0 MB | 36.2 MB | 4,959 | 22 / 6,673 | 129.7 MB | 67.5 / 97.8 / 200.9 MB |
-| default (512MB, 1MB) | 2 | 3 | 28 | 76.8 MB | 12.3 MB | 37.7 MB | 4,590 | 26 / 6,656 | 142.4 MB | 142.8 / 145.9 / 220.5 MB |
-| default (512MB, 1MB) | 3 | 3 | 28 | 76.8 MB | 12.3 MB | 43.4 MB | 4,606 | 22 / 6,385 | 102.3 MB | 42.8 / 112.0 / 183.9 MB |
-| constrained (128MB, 256KB) | 1 | 1 | 20 | 19.2 MB | 6.2 MB | 3.5 MB | 2,966 | 76 / 5,151 | 45.9 MB | 53.2 / 60.9 / 115.0 MB |
-| constrained (128MB, 256KB) | 2 | 1 | 20 | 19.2 MB | 5.9 MB | 4.1 MB | 2,907 | 86 / 5,192 | 43.2 MB | 114.9 / 115.6 / 78.5 MB |
-| constrained (128MB, 256KB) | 3 | 1 | 20 | 19.2 MB | 5.9 MB | 3.5 MB | 2,996 | 68 / 5,067 | 49.0 MB | 32.5 / 47.0 / 106.1 MB |
+| default (512MB, 1MB) | 1 | 3 | 28 | 76.8 MB | 2.2 MB | 30.1 MB | 3,703 | 39 / 6,678 / 21 | 126.1 MB | 61.5 / 84.6 / 199.2 MB |
+| default (512MB, 1MB) | 2 | 3 | 28 | 76.8 MB | 2.2 MB | 40.7 MB | 3,679 | 17 / 6,681 / 32 | 70.3 MB | 54.9 / 101.8 / 144.0 MB |
+| default (512MB, 1MB) | 3 | 3 | 28 | 76.8 MB | 2.2 MB | 29.7 MB | 3,678 | 15 / 6,482 / 13 | 61.4 MB | 129.5 / 133.7 / 102.7 MB |
+| constrained (128MB, 256KB) | 1 | 1 | 20 | 19.2 MB | 1.5 MB | 4.5 MB | 2,771 | 42 / 5,188 / 66 | 19.4 MB | 69.4 / 70.2 / 75.0 MB |
+| constrained (128MB, 256KB) | 2 | 1 | 20 | 19.2 MB | 1.5 MB | 4.6 MB | 2,792 | 30 / 5,091 / 55 | 19.1 MB | 32.2 / 41.4 / 67.8 MB |
+| constrained (128MB, 256KB) | 3 | 1 | 20 | 19.2 MB | 1.6 MB | 3.3 MB | 2,735 | 50 / 5,262 / 55 | 23.6 MB | 66.7 / 66.9 / 74.8 MB |
 
-Every run saturated at exactly the derived limit, returned only 200s and
-429s (no resets) and accepted a request afterwards. The default runs peak at
-36–43 MB of ingest heap, under both the 72.75 MB estimate and the 76.8 MB
-budget. RSS is the whole test process (clients, fixtures and earlier runs
-included) and is reported for context only.
+Every run saturated at exactly the derived limit, returned only 200s, 429s
+and the expected 413s (no resets) and accepted a request afterwards. With
+the high-amplification shapes in the mix, the default runs peak at 30–41 MB
+of ingest heap, under both the 72.75 MB estimate and the 76.8 MB budget
+(36–43 MB before REL-16 with representative bodies only), and process heap
+at 61–126 MB (102–142 MB before; streaming the WAL record removed the
+encoded batch's two copies). RSS is the whole
+test process (clients, fixtures and earlier runs included) and is reported
+for context only.
+
+**Decoding throughput** (AC4). The tolerance declared for REL-16 is a
+regression of at most 10% in median decode time per accepted fixture. Each
+accepted 1 MB fixture was decoded 21 times in-process by `main` (090669d)
+and by REL-16, three alternating rounds, release build, same laptop; the
+medians:
+
+| Fixture | Events | `main` ms | REL-16 ms | Change |
+|---|---:|---:|---:|---:|
+| native JSON representative | 3,075 | 15.88 | 14.50 | −8.7% |
+| NDJSON representative | 3,075 | 15.14 | 13.06 | −13.7% |
+| CLEF representative | 2,970 | 12.64 | 11.96 | −5.3% |
+| NDJSON string-heavy | 86 | 0.39 | 0.41 | +5.7% |
+| NDJSON many small events | 43,810 | 34.05 | 27.96 | −17.9% |
+| native JSON many small events | 43,810 | 31.11 | 27.24 | −12.4% |
+| OTLP protobuf logs representative | 4,539 | 17.32 | 18.23 | +5.2% |
+| OTLP JSON logs representative | 2,008 | 20.71 | 21.58 | +4.2% |
+| OTLP JSON logs many small records | 6,594 | 22.15 | 18.99 | −14.3% |
+| OTLP JSON logs large shared resource | 2,872 | 49.57 | 7.79 | −84.3% |
+| OTLP protobuf traces representative | 4,297 | 21.69 | 22.40 | +3.3% |
+| OTLP JSON traces representative | 1,716 | 23.17 | 22.65 | −2.2% |
+| OTLP protobuf metrics representative | 5,825 | 12.21 | 10.08 | −17.4% |
+| OTLP JSON metrics representative | 2,644 | 20.59 | 19.05 | −7.5% |
+| total | | 296.61 | 235.88 | −20.5% |
+
+Every fixture is within the tolerance. The OTLP/protobuf pre-scan costs a
+few percent; streaming native parsing and shared resources save more. (The
+large-shared-resource row is the pre-REL-16 fixture size, 0.42 MB.)
 
 **Before and after.** `pre_rel14_defaults_under_the_same_overload` runs the
 same harness with the old defaults (16MB requests, 4 slots) and
@@ -720,7 +828,7 @@ fewer bytes per second of writing and rejects far more requests, and
 clients that sent 16MB batches must send smaller ones. In return ingest
 stays inside its budget instead of exceeding `max_memory`.
 
-**Linux release run.** The same suite in a `rust:1-bookworm` container
+**Linux release run** (REL-14, before the decoding limits). The same suite in a `rust:1-bookworm` container
 (Docker Desktop, Linux x86_64, 22 cores, 15 GB, Rust 1.99.0, `--release
 --locked`), with the repository mounted read-only:
 

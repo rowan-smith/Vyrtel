@@ -46,7 +46,7 @@ pub enum StorageError {
     /// because a newer Vyrtel wrote it. Not evidence of damage: recovery
     /// stops instead of quarantining it, and leaves the file as it is.
     #[error(
-        "{} uses {what} version {found}, but this Vyrtel reads only version {supported}",
+        "{} uses {what} version {found}, but this Vyrtel reads versions up to {supported}",
         path.display()
     )]
     UnsupportedFormat { path: PathBuf, what: &'static str, found: u16, supported: u16 },

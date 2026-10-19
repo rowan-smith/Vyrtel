@@ -5,6 +5,7 @@
 //! without breaking existing data directories.
 
 use std::fmt;
+use std::sync::Arc;
 
 use crate::time::Timestamp;
 use crate::value::Fields;
@@ -68,6 +69,11 @@ macro_rules! id_type {
 
             pub fn as_str(&self) -> &str {
                 &self.0
+            }
+
+            /// Heap bytes held, by capacity.
+            pub fn heap_size(&self) -> usize {
+                self.0.capacity()
             }
         }
 
@@ -454,7 +460,9 @@ pub struct TelemetryEvent {
     pub trace_id: Option<TraceId>,
     pub span_id: Option<SpanId>,
 
-    pub resource: Fields,
+    /// Shared by every event decoded from the same OTLP resource, so a
+    /// large resource is held once per request, not once per record.
+    pub resource: Arc<Fields>,
     pub attributes: Fields,
 
     pub payload: TelemetryPayload,
@@ -503,6 +511,47 @@ impl TelemetryEvent {
         match &self.payload {
             TelemetryPayload::Metric(m) => Some(m),
             _ => None,
+        }
+    }
+
+    /// Heap bytes this event owns, by capacity, beyond its own
+    /// `size_of`. The resource is left out: it is shared, and whoever
+    /// builds it accounts for it once.
+    pub fn heap_size(&self) -> usize {
+        let s = |s: &String| s.capacity();
+        let opt = |o: &Option<String>| o.as_ref().map_or(0, String::capacity);
+        let base = opt(&self.service)
+            + opt(&self.environment)
+            + self.trace_id.as_ref().map_or(0, |t| t.heap_size())
+            + self.span_id.as_ref().map_or(0, |t| t.heap_size())
+            + self.attributes.heap_size();
+        base + match &self.payload {
+            TelemetryPayload::Log(l) => {
+                s(&l.message)
+                    + opt(&l.message_template)
+                    + l.exception.as_ref().map_or(0, |e| opt(&e.kind) + opt(&e.message) + opt(&e.stack_trace))
+            }
+            TelemetryPayload::Span(sp) => {
+                s(&sp.name)
+                    + sp.parent_span_id.as_ref().map_or(0, |t| t.heap_size())
+                    + opt(&sp.status.message)
+                    + sp.events.capacity() * std::mem::size_of::<SpanEventItem>()
+                    + sp.events.iter().map(|e| s(&e.name) + e.attributes.heap_size()).sum::<usize>()
+                    + sp.links.capacity() * std::mem::size_of::<SpanLink>()
+                    + sp.links
+                        .iter()
+                        .map(|l| l.trace_id.heap_size() + l.span_id.heap_size() + l.attributes.heap_size())
+                        .sum::<usize>()
+            }
+            TelemetryPayload::Metric(m) => {
+                s(&m.name)
+                    + opt(&m.description)
+                    + opt(&m.unit)
+                    + match &m.value {
+                        MetricValue::Number(_) => 0,
+                        MetricValue::Histogram(h) => (h.bucket_counts.capacity() + h.explicit_bounds.capacity()) * 8,
+                    }
+            }
         }
     }
 

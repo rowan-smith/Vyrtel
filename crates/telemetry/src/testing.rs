@@ -152,7 +152,7 @@ pub fn event_with(payload: impl Strategy<Value = TelemetryPayload>) -> impl Stra
             environment: env.map(String::from),
             trace_id: trace.and_then(|t| TraceId::new(&t)),
             span_id: span.and_then(|s| SpanId::new(&s)),
-            resource,
+            resource: resource.into(),
             attributes,
             payload,
         })

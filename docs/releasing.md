@@ -205,8 +205,11 @@ release gate: performance sign-off for v0.1.2 is incomplete:
    the downgrade table in
    [configuration.md](configuration.md#downgrades). The unit test
    `releases_are_listed_oldest_first_and_never_shrink` fails for a
-   non-prerelease version without a row, and for a row that does not match
-   the build.
+   non-prerelease version without a row, and for a row that claims a newer
+   format or schema than the build reads. Between releases the build keeps
+   the last release's version while `FORMAT` may already be newer (0.1.2
+   reads format 2 while still versioned 0.1.1), so set the new row from
+   `FORMAT` and `metadata::SCHEMA_VERSION`, not from the previous row.
 
 2. Check the tag before pushing it. This is the same check `preflight` runs:
 
