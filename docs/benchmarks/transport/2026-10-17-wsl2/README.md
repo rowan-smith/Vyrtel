@@ -27,7 +27,7 @@ the final candidate.
 | Kernel | `net.core.somaxconn = 4096`, `tcp_max_syn_backlog = 1024`, `tcp_syncookies = 1`, `tcp_abort_on_overflow = 0` |
 | Build | `cargo build --release --locked -p server -p loadgen`, Rust 1.96.1, `[profile.release]` (thin LTO, 1 codegen unit) |
 | Baseline | `main` at `6c8a4a230eb76a8c6a35c24e992bebeced3a4287`; `vyrtel` sha256 `4e3225c68e2e2af6ea1b7d54422c45b85c9db1d3c16cf939b418b079d83db2ad` |
-| Candidate | the REL-18 change on that commit (working tree before commit); `vyrtel` sha256 `4e651698103ba4e5bc7fdfda07390afc172232f389a7262ed6be45d241b847db`, `connload` sha256 `abef186d3a94cc3c9c12a7a4e1c9fb468dd33a694a0ecc4e26e0bc8a277a3a1e` |
+| Candidate | the REL-18 change on that commit (working tree before commit); `vyrtel` sha256 `4e651698103ba4e5bc7fdfda07390afc172232f389a7262ed6be45d241b847db`, `connload` sha256 `abef186d3a94cc3c9c12a7a4e1c9fb468dd33a694a0ecc4e26e0bc8a277a3a1e`. Review later made `body_timeout` absolute (checked before each body read, not only while waiting), so the merged code is not this binary; #170 measures the final one |
 | Configurations | **normal**: defaults (`max_memory = 512MB`, `max_connections = 256`, `connection_buffer = 64KB`). **constrained**: `max_memory = 256MB`, `max_connections = 64`, `connection_buffer = 16KB` |
 | Steady load (every run) | 4 ingest senders, 200-event NDJSON batches (~40 KB) every 50 ms on keep-alive connections; 2 count-query senders every second; the sampler (1 connection) |
 | Waves (flood, soak) | 1,000 simultaneous attempts per wave, a quarter each idle, head trickled 1 byte / 500 ms, body stalled after 10 bytes, normal `GET /health`; every 30 s (flood, 3 min) or 60 s (soak, 30 min); each wave waits up to 90 s for its connections to end |

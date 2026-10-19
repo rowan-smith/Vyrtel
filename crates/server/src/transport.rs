@@ -380,9 +380,12 @@ async fn connection(
 
 /// A request body that must be complete by `deadline`
 /// (`server.body_timeout` after its head arrived). Once it passes, every
-/// further read fails with [`BodyTimeout`].
-struct DeadlineBody {
-    inner: Incoming,
+/// further read fails with [`BodyTimeout`], even of data already
+/// buffered: the deadline is checked before each read, not only while
+/// waiting for the client. A body that has already ended has nothing left
+/// to time out.
+struct DeadlineBody<B = Incoming> {
+    inner: B,
     deadline: Instant,
     /// Created the first time the body has to wait for the client.
     sleep: Option<Pin<Box<Sleep>>>,
@@ -390,20 +393,32 @@ struct DeadlineBody {
     transport: Arc<Transport>,
 }
 
-impl DeadlineBody {
-    fn new(inner: Incoming, deadline: Instant, transport: Arc<Transport>) -> DeadlineBody {
+impl<B> DeadlineBody<B> {
+    fn new(inner: B, deadline: Instant, transport: Arc<Transport>) -> DeadlineBody<B> {
         DeadlineBody { inner, deadline, sleep: None, expired: false, transport }
+    }
+
+    fn expire<T>(&mut self) -> Poll<Option<Result<T, axum::BoxError>>> {
+        if !self.expired {
+            self.expired = true;
+            self.transport.count(|s| &s.body_timeouts);
+        }
+        Poll::Ready(Some(Err(BodyTimeout(self.transport.limits.body_timeout).into())))
     }
 }
 
-impl http_body::Body for DeadlineBody {
+impl<B> http_body::Body for DeadlineBody<B>
+where
+    B: http_body::Body<Data = Bytes> + Unpin,
+    B::Error: Into<axum::BoxError>,
+{
     type Data = Bytes;
     type Error = axum::BoxError;
 
     fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
         let this = &mut *self;
-        if this.expired {
-            return Poll::Ready(Some(Err(BodyTimeout(this.transport.limits.body_timeout).into())));
+        if this.expired || (Instant::now() >= this.deadline && !this.inner.is_end_stream()) {
+            return this.expire();
         }
         match Pin::new(&mut this.inner).poll_frame(cx) {
             Poll::Ready(frame) => Poll::Ready(frame.map(|f| f.map_err(Into::into))),
@@ -411,9 +426,7 @@ impl http_body::Body for DeadlineBody {
                 let deadline = this.deadline;
                 let sleep = this.sleep.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
                 ready!(sleep.as_mut().poll(cx));
-                this.expired = true;
-                this.transport.count(|s| &s.body_timeouts);
-                Poll::Ready(Some(Err(BodyTimeout(this.transport.limits.body_timeout).into())))
+                this.expire()
             }
         }
     }
@@ -570,6 +583,76 @@ mod tests {
         );
         let huge = TransportLimits { max_connections: usize::MAX, connection_buffer: usize::MAX, ..limits };
         assert_eq!(huge.estimated_peak(), u64::MAX, "saturates");
+    }
+
+    /// A body whose frames are always ready: reading it never waits.
+    struct Buffered(std::collections::VecDeque<Bytes>);
+
+    impl http_body::Body for Buffered {
+        type Data = Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+            Poll::Ready(self.0.pop_front().map(|b| Ok(Frame::data(b))))
+        }
+
+        fn is_end_stream(&self) -> bool {
+            self.0.is_empty()
+        }
+    }
+
+    fn deadline_body(frames: usize, timeout: Duration) -> DeadlineBody<Buffered> {
+        let limits = TransportLimits {
+            max_connections: 1,
+            header_timeout: timeout,
+            body_timeout: timeout,
+            write_timeout: timeout,
+            connection_buffer: 8 << 10,
+        };
+        let chunks = (0..frames).map(|i| Bytes::from(format!("chunk {i}"))).collect();
+        DeadlineBody::new(Buffered(chunks), Instant::now() + timeout, Transport::new(limits))
+    }
+
+    async fn next(body: &mut DeadlineBody<Buffered>) -> Option<Result<Frame<Bytes>, axum::BoxError>> {
+        use http_body::Body as _;
+        std::future::poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx)).await
+    }
+
+    // REL-18 review: the deadline is absolute. A frame that is already
+    // available once it has passed is refused, not read; so is every
+    // later one.
+    #[tokio::test(start_paused = true)]
+    async fn body_frames_available_after_the_deadline_are_refused() {
+        let timeout = Duration::from_millis(300);
+        let mut body = deadline_body(3, timeout);
+        let first = next(&mut body).await.unwrap().unwrap();
+        assert_eq!(first.into_data().unwrap(), "chunk 0", "read before the deadline");
+        tokio::time::advance(timeout).await;
+        for _ in 0..2 {
+            let e = next(&mut body).await.unwrap().unwrap_err();
+            assert!(is_body_timeout(e.as_ref()), "{e}");
+        }
+        assert!(!http_body::Body::is_end_stream(&body), "an expired body is not a complete one");
+        assert_eq!(body.transport.snapshot().body_timeouts, 1, "counted once");
+        assert_eq!(body.inner.0.len(), 2, "the frames after the deadline were never read");
+    }
+
+    // A body that ended before the deadline has nothing left to time out,
+    // however late the handler gets to its end.
+    #[tokio::test(start_paused = true)]
+    async fn a_body_that_already_ended_does_not_time_out() {
+        let timeout = Duration::from_millis(300);
+        let mut body = deadline_body(1, timeout);
+        assert!(next(&mut body).await.unwrap().is_ok());
+        tokio::time::advance(timeout * 2).await;
+        assert!(next(&mut body).await.is_none());
+        assert_eq!(body.transport.snapshot().body_timeouts, 0);
+        let mut empty = deadline_body(0, timeout);
+        tokio::time::advance(timeout * 2).await;
+        assert!(next(&mut empty).await.is_none());
     }
 
     #[test]

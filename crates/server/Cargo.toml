@@ -69,7 +69,8 @@ axum.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 telemetry.workspace = true
-tokio.workspace = true
+# Paused time for the deadline unit tests (transport.rs).
+tokio = { workspace = true, features = ["test-util"] }
 
 [[test]]
 name = "integration"
