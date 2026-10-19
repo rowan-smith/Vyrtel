@@ -98,6 +98,15 @@ impl Budget {
         Ok(())
     }
 
+    /// Start over after everything decoded so far has been dropped: no
+    /// bytes charged and no records counted. The peak is kept, as it is the
+    /// request's.
+    pub fn reset(&mut self) {
+        self.used = 0;
+        self.events = 0;
+        self.failure = None;
+    }
+
     /// Credit back `bytes` that have been freed.
     pub fn release(&mut self, bytes: usize) {
         self.used = self.used.saturating_sub(bytes);

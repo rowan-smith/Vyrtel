@@ -169,7 +169,10 @@ memory at stake when a limit is reached.
   by a scan of the wire format, and OTLP/JSON records and the events of a
   `{"events": [...]}` envelope whose key is escaped or repeated as they are
   reached. A batch the queue could never hold is refused as soon as its
-  count is known, never after it has been parsed.
+  count is known, never after it has been parsed. An object is a batch
+  only if `events` is its only key (repeated, the last one counts); an
+  ordinary event with an `events` property is one event whatever the
+  order of its keys, and is held to the decoded-data limit like any other.
 * **Decoded data** is the decoders' own estimate of the heap they hold:
   the parsed JSON tree or OTLP structures, and the events built from them,
   each charged before or as it is allocated and credited back once freed.

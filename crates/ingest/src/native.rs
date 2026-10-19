@@ -9,7 +9,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value as Json};
 use telemetry::*;
 
@@ -140,33 +140,32 @@ impl Batch {
     fn array(&mut self, body: &[u8], n: usize, budget: &mut Budget) -> Result<(), IngestError> {
         self.reserve(n, budget)?;
         let mut de = serde_json::Deserializer::from_slice(body);
-        let parsed = de.deserialize_seq(Elements { batch: self, budget: &mut *budget }).and_then(|()| de.end());
+        let parsed =
+            de.deserialize_seq(Elements { batch: self, budget: &mut *budget, refused: None }).and_then(|()| de.end());
         parsed.map_err(|e| budget.take_failure().unwrap_or_else(|| jsontree::syntax_error(&e, budget)))
     }
 
     /// A top-level object that is not a plainly spelt envelope. It is
     /// first streamed as `{"events": [...]}` (see [`Envelope`]), so that a
     /// batch with too many events is refused as soon as the count passes
-    /// the limit and the whole tree is never built. A limit reached that
-    /// way is final. Anything else, which includes an object that is not an
-    /// envelope after all, an invalid event or invalid JSON, is read again
-    /// whole, which decides what it is.
+    /// the limit and the whole tree is never built. Whether it is an
+    /// envelope is only known at its last key, so an error found while
+    /// streaming is kept until then and returned only if every key was
+    /// `events`. Otherwise (another key, a limit reached inside one
+    /// element, invalid JSON) the object is read again whole, within the
+    /// same limits, which decides what it is: an ordinary event with an
+    /// `events` property is stored like any other, wherever its keys are.
     fn object(&mut self, body: &[u8], budget: &mut Budget) -> Result<(), IngestError> {
         let mut de = serde_json::Deserializer::from_slice(body);
-        let streamed = de.deserialize_map(Envelope { batch: self, budget: &mut *budget }).and_then(|()| de.end());
-        match (streamed, budget.take_failure()) {
-            (Ok(()), _) => return Ok(()),
-            (
-                Err(_),
-                Some(
-                    e
-                    @ (IngestError::TooManyEvents { .. } | IngestError::TooLarge { .. } | IngestError::TooDeep { .. }),
-                ),
-            ) => return Err(e),
-            (Err(_), _) => {}
+        let streamed =
+            de.deserialize_map(Envelope { batch: self, budget: &mut *budget }).and_then(|r| de.end().map(|()| r));
+        match streamed {
+            Ok(None) => return Ok(()),
+            Ok(Some(e)) => return Err(e),
+            Err(_) => {}
         }
         self.out = Vec::new();
-        *budget = Budget::new(budget.limits());
+        budget.reset();
         self.whole(body, budget)
     }
 
@@ -207,54 +206,58 @@ impl Batch {
 /// The entries of a top-level object, read as `{"events": [...]}`: every
 /// key must decode to `events` (escapes included; a repeated key replaces
 /// the earlier array, as in any JSON object) and its value is streamed by
-/// [`Elements`]. Anything else stops it with an error but no limit
-/// recorded, and the object is read whole instead.
+/// [`Elements`]. The result is the error the last array was refused for,
+/// if it was. A key other than `events`, or an array that could not be
+/// streamed to its end, stops it with an error and the object is read
+/// whole instead.
 struct Envelope<'a> {
     batch: &'a mut Batch,
     budget: &'a mut Budget,
 }
 
 impl<'de> Visitor<'de> for Envelope<'_> {
-    type Value = ();
+    type Value = Option<IngestError>;
 
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str("an object of events")
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        let mut found = false;
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Option<IngestError>, A::Error> {
+        let (mut found, mut refused) = (false, None);
         while let Some(key) = map.next_key::<String>()? {
             if key != "events" {
                 return Err(serde::de::Error::custom("not an envelope"));
             }
             self.batch.out = Vec::new();
-            *self.budget = Budget::new(self.budget.limits());
-            map.next_value_seed(Array { batch: &mut *self.batch, budget: &mut *self.budget })?;
+            self.budget.reset();
+            refused = None;
+            let array = Elements { batch: &mut *self.batch, budget: &mut *self.budget, refused: Some(&mut refused) };
+            map.next_value_seed(array)?;
             found = true;
         }
-        if found { Ok(()) } else { Err(serde::de::Error::custom("not an envelope")) }
+        if found { Ok(refused) } else { Err(serde::de::Error::custom("not an envelope")) }
     }
 }
 
-/// An envelope's array, streamed by [`Elements`].
-struct Array<'a> {
-    batch: &'a mut Batch,
-    budget: &'a mut Budget,
-}
-
-impl<'de> DeserializeSeed<'de> for Array<'_> {
-    type Value = ();
-
-    fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<(), D::Error> {
-        de.deserialize_seq(Elements { batch: self.batch, budget: self.budget })
-    }
-}
-
-/// The elements of a top-level JSON array, each converted as soon as it
-/// has been parsed.
+/// The elements of a JSON array, each converted as soon as it has been
+/// parsed. A top-level array is a batch for certain, so the first error is
+/// returned at once. An envelope's array may turn out to be an event's
+/// property instead (see [`Envelope`]): with `refused`, an error found
+/// between elements (too many events, too much decoded data, an invalid
+/// event) is kept there, the events built so far are dropped, and the rest
+/// of the array is read without building anything.
 struct Elements<'a> {
     batch: &'a mut Batch,
     budget: &'a mut Budget,
+    refused: Option<&'a mut Option<IngestError>>,
+}
+
+impl<'de> DeserializeSeed<'de> for Elements<'_> {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<(), D::Error> {
+        de.deserialize_seq(self)
+    }
 }
 
 impl<'de> Visitor<'de> for Elements<'_> {
@@ -265,16 +268,20 @@ impl<'de> Visitor<'de> for Elements<'_> {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-        let max_depth = self.budget.limits().max_depth;
+        let limits = self.budget.limits();
         loop {
             let before = self.budget.used();
-            let mut ctx = Ctx::new(&mut *self.budget, max_depth);
+            let mut ctx = Ctx::new(&mut *self.budget, limits.max_depth);
             let Some(v) = seq.next_element_seed(ctx.seed(0))? else { return Ok(()) };
             let containers = ctx.containers;
             let index = self.batch.out.len();
-            if let Err(e) = self.batch.convert(v, index, before, containers, self.budget) {
-                return Err(self.budget.fail(e));
-            }
+            let Err(e) = self.batch.convert(v, index, before, containers, self.budget) else { continue };
+            let Some(refused) = self.refused else { return Err(self.budget.fail(e)) };
+            *refused = Some(e);
+            self.batch.out = Vec::new();
+            self.budget.reset();
+            while seq.next_element::<IgnoredAny>()?.is_some() {}
+            return Ok(());
         }
     }
 }
@@ -573,6 +580,55 @@ mod tests {
         assert_eq!(v.iter().map(|e| e.message()).collect::<Vec<_>>(), ["c"]);
         // Within the limit, escaped envelopes are stored like plain ones.
         assert_eq!(peak_of(&envelope_of(&escaped("events", &[2]), 1000), limits).0, Ok(1000));
+    }
+
+    // An ordinary event with an `events` property is one event, whatever
+    // the order of its keys, even when its property has more items than a
+    // batch may have events: limits reached while it was being read as an
+    // envelope count only if it is one.
+    #[test]
+    fn an_events_property_is_not_mistaken_for_a_batch() {
+        let one = Limits { max_events: 1, ..U };
+        let steps = r#""events":[{"message":"Step A"},{"message":"Step B"}]"#;
+        for body in [
+            format!(r#"{{{steps},"message":"Workflow completed"}}"#),
+            format!(r#"{{"message":"Workflow completed",{steps}}}"#),
+            format!(r#"{{"events":[1,2,3],"events":[{{"message":"x"}}],{steps},"message":"Workflow completed"}}"#),
+        ] {
+            let v = parse(body.as_bytes(), Format::Json, NOW, one).unwrap_or_else(|e| panic!("{body}: {e}"));
+            assert_eq!(v.len(), 1, "{body}");
+            assert_eq!(v[0].message(), "Workflow completed");
+            assert!(matches!(v[0].attributes.get("events"), Some(Value::Array(a)) if a.len() == 2), "{body}");
+        }
+        // Too much decoded data as events, but not as one event's property.
+        let wide = format!(r#"{{"events":[{}],"message":"m"}}"#, vec!["{}"; 100].join(","));
+        let small = Limits { max_decoded_bytes: 20 << 10, ..U };
+        assert_eq!(parse(wide.as_bytes(), Format::Json, NOW, small).map(|v| v.len()), Ok(1));
+        let envelope = format!(r#"{{"events":[{}]}}"#, vec!["{}"; 100].join(","));
+        let (r, _) = peak_of(envelope.as_bytes(), small);
+        assert_eq!(r, Err(IngestError::TooLarge { limit_bytes: 20 << 10 }));
+    }
+
+    // A repeated `events` key: the last array decides, whether an earlier
+    // one was over the limit or the last one is.
+    #[test]
+    fn a_repeated_envelope_key_is_decided_by_its_last_array() {
+        let two = Limits { max_events: 2, ..U };
+        let many = [r#"{"message":"x"}"#; 5].join(",");
+        let replaced = format!(r#"{{"events":[{many}],"events":[{{"message":"c"}}]}}"#);
+        let v = parse(replaced.as_bytes(), Format::Json, NOW, two).unwrap();
+        assert_eq!(v.iter().map(|e| e.message()).collect::<Vec<_>>(), ["c"]);
+        let over = format!(r#"{{"events":[{{"message":"c"}}],"events":[{many}]}}"#);
+        assert_eq!(peak_of(over.as_bytes(), two).0, Err(IngestError::TooManyEvents { limit: 2 }));
+        // An invalid event in the envelope that stands is reported with its
+        // index, an invalid one in a replaced array is not.
+        let invalid = br#"{"events":[{"message":"a"},5],"events":[{"message":"b"},{"message":"c"},7]}"#;
+        assert_eq!(
+            parse(invalid, Format::Json, NOW, U),
+            Err(IngestError::InvalidEvent { index: 2, message: "expected a JSON object".into() })
+        );
+        let fixed = br#"{"events":[{"message":"a"},5],"events":[{"message":"b"}]}"#;
+        assert_eq!(parse(fixed, Format::Json, NOW, U).map(|v| v.len()), Ok(1));
     }
 
     #[test]
