@@ -606,7 +606,9 @@ impl Config {
     /// `[server]` connection limits: each finite and positive, so no value
     /// (zero, out of range or overflowed) can turn a limit off.
     fn validate_transport(&self) -> Result<(), String> {
-        use crate::transport::{MAX_CONNECTIONS_LIMIT, MAX_CONNECTION_BUFFER, MIN_CONNECTION_BUFFER};
+        const MAX_CONNECTIONS_LIMIT: usize = crate::transport::MAX_CONNECTIONS_LIMIT;
+        const MIN_CONNECTION_BUFFER: u64 = crate::transport::MIN_CONNECTION_BUFFER;
+        const MAX_CONNECTION_BUFFER: u64 = crate::transport::MAX_CONNECTION_BUFFER;
         let s = &self.server;
         if !(1..=MAX_CONNECTIONS_LIMIT).contains(&s.max_connections) {
             return Err(format!("server.max_connections must be between 1 and {MAX_CONNECTIONS_LIMIT}"));
@@ -957,7 +959,11 @@ shutdown_timeout = 0",
     // value from a file or the environment turns a limit off.
     #[test]
     fn transport_limits() {
-        use crate::transport::{MAX_CONNECTIONS_LIMIT, MAX_CONNECTION_BUFFER, MIN_CONNECTION_BUFFER};
+        // One item each: an import list here is ordered differently by
+        // rustfmt and by some editors' import optimisers.
+        const MAX_CONNECTIONS_LIMIT: usize = crate::transport::MAX_CONNECTIONS_LIMIT;
+        const MIN_CONNECTION_BUFFER: u64 = crate::transport::MIN_CONNECTION_BUFFER;
+        const MAX_CONNECTION_BUFFER: u64 = crate::transport::MAX_CONNECTION_BUFFER;
         let d = Config::default();
         assert_eq!(
             (d.server.max_connections, d.server.header_timeout, d.server.body_timeout, d.server.write_timeout),
