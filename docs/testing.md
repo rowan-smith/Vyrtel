@@ -22,8 +22,8 @@ Next to the code (`#[cfg(test)]` modules). Highlights:
 | Field resolution                                                     | `crates/query/src/fields.rs`         |
 | Timestamp parsing (RFC 3339, Unix units, precision)                  | `crates/telemetry/src/time.rs`       |
 | Varints, zigzag, bounds checks                                       | `crates/storage/src/encoding.rs`     |
-| Event codec, versioning, garbage/truncation handling                 | `crates/storage/src/codec.rs`        |
-| WAL encoding/decoding, CRC validation, torn records                  | `crates/storage/src/wal.rs`          |
+| Event codec, versioning, garbage/truncation handling; codec 2 resource tables (one entry per distinct resource, shared on decode, codec 1 still read) | `crates/storage/src/codec.rs`        |
+| WAL encoding/decoding, CRC validation, torn records; streamed appends write the same bytes as whole ones | `crates/storage/src/wal.rs`          |
 | Segment write/read, metadata, corruption detection                   | `crates/storage/src/segment/mod.rs`  |
 | Bloom filters, bitmaps, HyperLogLog, canonical index keys            | `crates/storage/src/index/`          |
 | Configuration parsing, env overrides, memory budgets                 | `crates/server/src/config.rs`        |
@@ -326,11 +326,15 @@ talks HTTP to it:
   byte for byte from the sizes and SHA-256 sums in each `fixture.json`).
   For 0.1.1:
   `vyrtel check-data-dir` exits 0, changes nothing and prints the plan
-  (record `vyrtel.json`, readable by 0.1.1 and later afterwards); the
-  started server answers every verification query exactly as that release
-  did before it was stopped, its ingest key works, its revoked key and
+  (record `vyrtel.json` in format 2, which no released version reads
+  afterwards, so back up first); the started server answers every
+  verification query exactly as that release did before it was stopped,
+  from its codec 1 WAL records, its ingest key works, its revoked key and
   anonymous requests get 401, nothing is quarantined, `vyrtel.json` is
-  recorded, and a second start migrates nothing. The Observer 0.1.0
+  recorded, an event ingested afterwards is appended to the same WALs in
+  codec 2, and a second start reads both and migrates nothing. Storage's
+  `wal_with_codec_1_and_codec_2_records_replays_both` covers the same mix
+  directly, and that replayed events of one resource share it. The Observer 0.1.0
   directory is refused by `check-data-dir` and by `App::build` with what to
   do, and nothing is quarantined (0.1.1 quarantined all 5 of its files;
   storage unit tests `observer_files_stop_startup_and_are_kept`). A newer manifest format,
@@ -704,12 +708,41 @@ shapes were accepted at 30–1,700×, 213 MB for one 1 MB request of empty
 objects.
 
 Writing adds nothing measurable: the end-to-end column equals admission.
-The WAL record still encodes each event's resource in full (the format is
-unchanged), but it is streamed to the file in 64 KiB pieces as it is
-encoded ([storage format](storage-format.md#write-ahead-log)). Before, the
-writer encoded the whole batch and then copied it into the record, holding
-the encoding twice: up to 105× end to end for a 200-attribute resource over
-tiny records, 72× over SDK-like records, and 26.6× for tiny native events.
+The WAL record is streamed to the file in 64 KiB pieces as it is encoded,
+and in event codec 2 a batch stores each distinct resource once
+([storage format](storage-format.md#batch)). Before, the writer encoded
+the whole batch, every event with its own copy of the resource, and then
+copied it into the record, holding the encoding twice: up to 105× end to
+end for a 200-attribute resource over tiny records, 72× over SDK-like
+records, and 26.6× for tiny native events.
+
+**WAL size** (event codec 1, as 0.1.1 wrote it, against codec 2). Each
+accepted 1 MB fixture was decoded and encoded both ways in-process (release
+build, median of 11 encodings):
+
+| Fixture | Codec 1 MB | Codec 2 MB | Codec 2 / 1 | Encode ms, codec 1 / 2 |
+|---|---:|---:|---:|---:|
+| native JSON / NDJSON representative | 0.63 | 0.63 | 1.00 | 0.26–0.46 / 0.25–0.30 |
+| CLEF representative | 1.05 | 1.05 | 1.00 | 0.62 / 0.53 |
+| NDJSON string-heavy | 0.99 | 0.99 | 1.00 | 0.36 / 0.44 |
+| native JSON / NDJSON many small events | 1.25 | 1.25 | 1.00 | 1.35–2.28 / 1.98–2.95 |
+| OTLP protobuf logs representative | 1.93 | 1.04 | 0.54 | 1.17 / 0.95 |
+| OTLP JSON logs representative | 0.85 | 0.46 | 0.54 | 0.98 / 0.42 |
+| OTLP JSON logs many small records | 1.78 | 0.45 | 0.26 | 2.32 / 0.81 |
+| OTLP JSON logs large shared resource | 46.32 | 0.35 | 0.01 | 49.11 / 0.79 |
+| OTLP protobuf logs large resource, representative records | 31.22 | 0.98 | 0.03 | 30.45 / 1.16 |
+| OTLP JSON logs large resource, representative records | 13.69 | 0.43 | 0.03 | 12.45 / 0.30 |
+| OTLP protobuf traces representative | 2.04 | 1.20 | 0.59 | 2.17 / 1.56 |
+| OTLP JSON traces representative | 0.81 | 0.48 | 0.59 | 0.72 / 0.59 |
+| OTLP protobuf metrics representative | 2.27 | 1.14 | 0.50 | 2.44 / 1.43 |
+| OTLP JSON metrics representative | 1.03 | 0.51 | 0.50 | 0.92 / 0.39 |
+
+OTLP batches repeat an SDK resource (7 attributes) on every record in codec
+1, so codec 2 halves their WAL and its write time; a large shared resource
+goes from dominating the WAL to costing once per batch. Native events have
+no resource and encode the same, about 0.6 ms per MB slower for tiny events
+(the per-event resource index). Segments are unchanged: their bodies keep
+the resource inline and are compressed per block.
 
 **Sustained overload** (`derived_admission_holds_the_ingest_budget_under_overload`).
 Default and constrained derived configurations, three consecutive runs

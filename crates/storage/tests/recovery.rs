@@ -289,6 +289,51 @@ fn older_wals_are_sealed_on_startup() {
     assert!(d.path().join("wal/logs").join(wal_file_name(id + 1)).exists());
 }
 
+// A WAL written by 0.1.1 (event codec 1) is replayed, and the records a
+// later build appends to it in codec 2 sit next to the old ones: every start
+// reads both, and events of one resource come back sharing it.
+#[test]
+fn wal_with_codec_1_and_codec_2_records_replays_both() {
+    use std::sync::Arc;
+    use telemetry::{Fields, Value};
+    let d = tempfile::tempdir().unwrap();
+    {
+        let s = Storage::open(config(d.path()), None).unwrap();
+        submit(&s, vec![log(1, "first")]);
+    }
+    let path = only_wal(d.path());
+    {
+        let mut w = wal::WalWriter::open_append(
+            &path,
+            wal::parse_wal_file_name(path.file_name().unwrap().to_str().unwrap()).unwrap(),
+            std::fs::metadata(&path).unwrap().len(),
+        )
+        .unwrap();
+        let mut e = log(2, "old codec");
+        e.id = EventId(2);
+        w.append(&storage::codec::encode_batch_v1(&[e])).unwrap();
+        w.sync().unwrap();
+    }
+    let resource: Arc<Fields> = Arc::new([("host.name".to_string(), Value::from("web-1"))].into_iter().collect());
+    {
+        let s = Storage::open(config(d.path()), None).unwrap();
+        assert_eq!(messages(&s), ["first", "old codec"]);
+        let shared: Vec<_> = (3..5)
+            .map(|i| {
+                let mut e = log(i, &format!("shared {i}"));
+                e.resource = resource.clone();
+                e
+            })
+            .collect();
+        submit(&s, shared);
+    }
+    let s = Storage::open(config(d.path()), None).unwrap();
+    assert_eq!(messages(&s), ["first", "old codec", "shared 3", "shared 4"]);
+    let events = all_events(&s);
+    assert_eq!(*events[2].resource, *resource);
+    assert!(Arc::ptr_eq(&events[2].resource, &events[3].resource), "replayed events share their resource");
+}
+
 #[test]
 fn restart_during_compaction_does_not_duplicate() {
     let d = tempfile::tempdir().unwrap();
@@ -704,9 +749,13 @@ fn assert_newer_format_stops_startup(dir: &Path, path: &Path, what: &str, found:
     let before = snapshot(dir);
     match Storage::open(config(dir), None) {
         Err(StorageError::UnsupportedFormat { path: p, what: w, found: f, supported }) => {
-            assert_eq!((p.as_path(), w, f, supported), (path, what, found, 1));
+            // Event codec 2 is current; every other format is still at 1.
+            let newest = if what == "event codec" { storage::codec::CODEC_VERSION.into() } else { 1 };
+            assert_eq!((p.as_path(), w, f, supported), (path, what, found, newest));
             let text = StorageError::UnsupportedFormat { path: p, what: w, found: f, supported }.to_string();
-            assert!(text.ends_with(&format!("uses {what} version {found}, but this Vyrtel reads only version 1")));
+            assert!(
+                text.ends_with(&format!("uses {what} version {found}, but this Vyrtel reads versions up to {newest}"))
+            );
         }
         Err(e) => panic!("expected UnsupportedFormat, got {e}"),
         Ok(_) => panic!("startup must not continue past a file in a newer format"),

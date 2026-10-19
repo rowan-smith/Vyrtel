@@ -47,10 +47,11 @@ the segment sealed from it share the same id.
 ```
 
 `format` is the data-directory format: it names every format version
-below that the directory may contain. Format 1 is WAL file format 1, WAL
-record version 1, event codec 1, segment format 1 and metadata schema
-version 1. `writtenBy` is the Vyrtel version that last wrote the file.
-Unknown keys are ignored.
+below that the directory may contain. Format 2 (0.1.2) is WAL file format
+1, WAL record version 1, event codec 2 (batches in codec 1 may remain from
+format 1 and are read), segment format 1 and metadata schema version 1.
+Format 1 (0.1.1) is the same with event codec 1 only. `writtenBy` is the
+Vyrtel version that last wrote the file. Unknown keys are ignored.
 
 `inventory` exists only while the directory is stopped after a clean
 shutdown. It lists every `wal/<signal>/*.wal` and
@@ -118,9 +119,11 @@ each is then logged as a warning. The others never are.
 Operator-facing messages are in
 [configuration → backup and restore](configuration.md#what-startup-checks).
 
-## Event codec (version 1)
+## Event codec (version 2)
 
-Shared by the WAL and segments (`crates/storage/src/codec.rs`).
+Shared by the WAL and segments (`crates/storage/src/codec.rs`). Version 2
+changed only the [batch](#batch): segments store event bodies as below in
+both versions.
 
 ### Values
 
@@ -176,11 +179,35 @@ Payload by kind:
 
 ### Batch
 
+A WAL record's payload. Version 2 (written since 0.1.2):
+
+```
+batch     := u8 codec_version (= 2)
+             varint n_resources | fields resource × n_resources
+             varint count | event2 × count
+event2    := head | body2
+body2     := zigzag (observed_timestamp - timestamp)
+             varint resource        0 = none, i = the batch's resource i - 1
+             fields attributes
+             payload
+```
+
+Each distinct non-empty resource is stored once per batch, in the order its
+first event appears. Events that share one in memory (an OTLP resource and
+its records) are found by pointer, and others by their encoding (native
+events with identical resources), so equal resources are never stored
+twice in a batch. Decoding builds each table entry once and its events
+share it. An index past the table is a decode error.
+
+Version 1 (0.1.1), still read:
+
 ```
 batch := u8 codec_version (= 1) | varint count | event*
 ```
 
-Trailing bytes after the last event are a decode error.
+with every event's resource inline in its body. In both versions trailing
+bytes after the last event are a decode error, and any other codec version
+is a [newer format](#versioning).
 
 ## Write-ahead log
 
@@ -200,14 +227,14 @@ into `wal/<signal>/` and the directory is fsynced. A WAL never has a torn
 header.
 
 **Appending**: the record is written as it is encoded, in 64 KiB pieces,
-so neither the batch nor the record is held whole in memory (an encoded
-batch can be far larger than its events, whose OTLP resource is shared in
-memory but written out with each event). A first encoding pass takes the
-length, so a batch over 256 MiB is refused before anything is written. On
+so neither the batch nor the record is held whole in memory: only the
+batch's resource table and one event's encoding. A first encoding pass
+takes the length, so a batch over 256 MiB is refused before anything is
+written. On
 failure, part-way or not, the writer truncates back to the last good offset
 straight away (and again before the next append if that truncation fails
 too), so a short write never leaves a torn record behind. The bytes are
-the same as encoding the record whole: this is not a format change.
+the same as encoding the record whole.
 
 **Durability**:
 

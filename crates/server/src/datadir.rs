@@ -41,9 +41,12 @@ use telemetry::Signal;
 pub const MANIFEST: &str = "vyrtel.json";
 
 /// The data-directory format this build reads and writes: WAL file format
-/// 1, WAL record version 1, event codec 1, segment format 1, metadata
-/// schema up to [`metadata::SCHEMA_VERSION`].
-pub const FORMAT: u32 = 1;
+/// 1, WAL record version 1, event codec 2 (WAL batches with a resource
+/// table; codec 1 is still read), segment format 1, metadata schema up to
+/// [`metadata::SCHEMA_VERSION`]. Format 1 (0.1.1) differs only in the event
+/// codec, so a format 1 directory is read as it is and new WAL records are
+/// written in codec 2.
+pub const FORMAT: u32 = 2;
 
 /// Where the metadata database lives, relative to the data directory.
 pub const METADATA_DB: &str = "metadata/metadata.db";
@@ -134,6 +137,9 @@ pub enum Step {
     Create,
     /// A directory from before manifests gets one.
     RecordFormat,
+    /// A directory in an older format is recorded in this one. Its files
+    /// are read as they are; what is written from then on is in this format.
+    UpgradeFormat { from: u32 },
     /// The metadata database is migrated, one transaction per version.
     MigrateSchema { from: i64, to: i64 },
 }
@@ -145,6 +151,11 @@ impl fmt::Display for Step {
             Step::RecordFormat => {
                 write!(f, "record data-directory format {FORMAT} in {MANIFEST} (it has none: written before 0.1.2)")
             }
+            Step::UpgradeFormat { from } => write!(
+                f,
+                "record data-directory format {FORMAT} in {MANIFEST} (it has {from}); files already written are read \
+                 as they are, and WAL batches are written in event codec 2 from then on"
+            ),
             Step::MigrateSchema { from: 0, to } => write!(f, "create the schema of {METADATA_DB} (version {to})"),
             Step::MigrateSchema { from, to } => write!(f, "migrate {METADATA_DB} from schema version {from} to {to}"),
         }
@@ -157,9 +168,10 @@ impl fmt::Display for Step {
 /// interruption redoes what was left. Telemetry files are not rewritten.
 pub fn plan(checked: &Checked) -> Vec<Step> {
     let mut steps = Vec::new();
-    match checked.layout {
+    match &checked.layout {
         Layout::New => return vec![Step::Create],
         Layout::Unversioned => steps.push(Step::RecordFormat),
+        Layout::Versioned(m) if m.format < FORMAT => steps.push(Step::UpgradeFormat { from: m.format }),
         Layout::Versioned(_) => {}
     }
     if checked.schema < metadata::SCHEMA_VERSION {
@@ -213,7 +225,8 @@ pub fn report(dir: &Path, checked: &Checked) -> String {
             out.push_str(&format!("  - {step}\n"));
         }
     }
-    match (readable_since(format, checked.schema), readable_since(FORMAT, schema)) {
+    let (before, after) = (readable_since(format, checked.schema), readable_since(FORMAT, schema));
+    match (before, after) {
         (_, None) => out.push_str(
             "Afterwards no released Vyrtel version can read it, only this build and later ones. To go back, \
              restore the backup taken before the upgrade.\n",
@@ -226,7 +239,7 @@ pub fn report(dir: &Path, checked: &Checked) -> String {
              backup taken before the upgrade.\n"
         )),
     }
-    if steps.iter().any(|s| matches!(s, Step::MigrateSchema { .. })) {
+    if !steps.is_empty() && before != after {
         out.push_str(
             "Back up the stopped data directory first (see docs/configuration.md#upgrades-and-data-migrations).\n",
         );
@@ -289,7 +302,7 @@ impl fmt::Display for DataDirError {
             DataDirError::UnsupportedFile { dir, file, what, found, supported } => write!(
                 f,
                 "data directory {} cannot be read by Vyrtel {this}: {file} uses {what} version {found}, and this \
-                 version reads only {supported}. {NOTHING_CHANGED}. Start it with the Vyrtel version that wrote \
+                 version reads versions up to {supported}. {NOTHING_CHANGED}. Start it with the Vyrtel version that wrote \
                  it, or newer ({SEE})",
                 dir.display()
             ),
@@ -622,10 +635,10 @@ mod tests {
         record(d.path(), &Layout::Unversioned).unwrap();
         assert_eq!(layout(d.path()), Layout::Versioned(Manifest::current()));
         let text = std::fs::read_to_string(d.path().join(MANIFEST)).unwrap();
-        assert!(text.contains("\"format\": 1"), "{text}");
+        assert!(text.contains(&format!("\"format\": {FORMAT}")), "{text}");
         assert!(!d.path().join("vyrtel.json.tmp").exists());
         // Unknown manifest keys from the same format are ignored.
-        write_raw_manifest(d.path(), r#"{"format": 1, "writtenBy": "0.1.9", "note": "x"}"#);
+        write_raw_manifest(d.path(), &format!(r#"{{"format": {FORMAT}, "writtenBy": "0.1.9", "note": "x"}}"#));
         assert!(matches!(layout(d.path()), Layout::Versioned(m) if m.written_by == "0.1.9"));
     }
 
@@ -748,7 +761,7 @@ mod tests {
         assert_eq!(checked.accepted, ["wal/metrics is missing", "wal/logs/000000000003.wal is missing"]);
         begin(d.path(), &checked).unwrap();
         // Format problems are never accepted.
-        write_raw_manifest(d.path(), r#"{"format": 2, "writtenBy": "9.0.0"}"#);
+        write_raw_manifest(d.path(), r#"{"format": 3, "writtenBy": "9.0.0"}"#);
         assert!(matches!(check(d.path(), true), Err(DataDirError::NewerFormat { .. })));
     }
 
@@ -762,11 +775,11 @@ mod tests {
     fn manifest_problems_are_refused() {
         let d = tempfile::tempdir().unwrap();
         complete(d.path());
-        write_raw_manifest(d.path(), r#"{"format": 2, "writtenBy": "0.3.0"}"#);
+        write_raw_manifest(d.path(), r#"{"format": 3, "writtenBy": "0.3.0"}"#);
         let e = check(d.path(), false).unwrap_err();
-        assert!(matches!(e, DataDirError::NewerFormat { found: 2, .. }), "{e:?}");
+        assert!(matches!(e, DataDirError::NewerFormat { found: 3, .. }), "{e:?}");
         let text = e.to_string();
-        assert!(text.contains("has format 2 (written by Vyrtel 0.3.0)"), "{text}");
+        assert!(text.contains("has format 3 (written by Vyrtel 0.3.0)"), "{text}");
         assert!(text.contains("Start it with Vyrtel 0.3.0 or newer"), "{text}");
 
         for bad in [
@@ -811,12 +824,15 @@ mod tests {
         let last = RELEASES.last().unwrap();
         assert!(last.format <= FORMAT && last.schema <= metadata::SCHEMA_VERSION, "{last:?}");
         // The version bump of a release adds its row (docs/releasing.md), and
-        // the row says what the build reads. Prereleases need none.
+        // the row says what that release reads. Between releases the build
+        // still carries the last release's version but may already read a
+        // newer format, so the row may claim less than the build, never more.
+        // Prereleases need none.
         let this = env!("CARGO_PKG_VERSION");
         if !this.contains('-') {
             let r = RELEASES.iter().find(|r| r.version == this);
             let r = r.unwrap_or_else(|| panic!("add Vyrtel {this} to datadir::RELEASES (see docs/releasing.md)"));
-            assert_eq!((r.format, r.schema), (FORMAT, metadata::SCHEMA_VERSION), "RELEASES row for {this}");
+            assert!(r.format <= FORMAT && r.schema <= metadata::SCHEMA_VERSION, "RELEASES row for {this}: {r:?}");
         }
         assert_eq!(readable_since(1, 1), Some("0.1.1"));
         assert_eq!(readable_since(FORMAT + 1, 1), None);
@@ -845,7 +861,17 @@ mod tests {
         assert_eq!(plan(&c), [Step::RecordFormat]);
         assert_eq!(
             Step::RecordFormat.to_string(),
-            "record data-directory format 1 in vyrtel.json (it has none: written before 0.1.2)"
+            "record data-directory format 2 in vyrtel.json (it has none: written before 0.1.2)"
+        );
+
+        // A directory in format 1 (0.1.1 with a manifest, or an earlier build
+        // of 0.1.2): recorded in format 2, its files read as they are.
+        write_raw_manifest(d.path(), r#"{"format": 1, "writtenBy": "0.1.1"}"#);
+        assert_eq!(plan(&checked(d.path())), [Step::UpgradeFormat { from: 1 }]);
+        assert_eq!(
+            Step::UpgradeFormat { from: 1 }.to_string(),
+            "record data-directory format 2 in vyrtel.json (it has 1); files already written are read as they \
+             are, and WAL batches are written in event codec 2 from then on"
         );
 
         // A current directory: nothing to do.
@@ -867,8 +893,8 @@ mod tests {
         assert!(text.contains("  new: none of Vyrtel's files yet\n"), "{text}");
         assert!(
             text.ends_with(&format!(
-                "Vyrtel {this} (format 1, metadata schema up to 1) can start it.\nStarting it will create a new data \
-             directory in format 1.\n"
+                "Vyrtel {this} (format 2, metadata schema up to 1) can start it.\nStarting it will create a new data \
+             directory in format 2.\n"
             )),
             "{text}"
         );
@@ -877,18 +903,18 @@ mod tests {
         let text = report(d.path(), &checked(d.path()));
         let expected = format!(
             "  vyrtel.json: none (written before 0.1.2, or a first start that stopped early)\n  \
-             metadata/metadata.db: schema version 1\nVyrtel {this} (format 1, metadata schema up to 1) can start \
-             it.\nStarting it will:\n  - record data-directory format 1 in vyrtel.json (it has none: written \
-             before 0.1.2)\nAfterwards every release that reads it now (Vyrtel 0.1.1 and later) can still read \
-             it.\n"
+             metadata/metadata.db: schema version 1\nVyrtel {this} (format 2, metadata schema up to 1) can start \
+             it.\nStarting it will:\n  - record data-directory format 2 in vyrtel.json (it has none: written \
+             before 0.1.2)\nAfterwards no released Vyrtel version can read it, only this build and later ones. To \
+             go back, restore the backup taken before the upgrade.\nBack up the stopped data directory first (see \
+             docs/configuration.md#upgrades-and-data-migrations).\n"
         );
         assert!(text.ends_with(&expected), "{text}");
-        assert!(!text.contains("Back up"), "nothing is migrated that a backup would undo: {text}");
 
         std::fs::write(d.path().join("wal/logs/000000000003.wal"), [0u8; 40]).unwrap();
         record_stopped(d.path()).unwrap();
         let text = report(d.path(), &checked(d.path()));
-        assert!(text.contains(&format!("  vyrtel.json: format 1, last written by Vyrtel {this}\n")), "{text}");
+        assert!(text.contains(&format!("  vyrtel.json: format 2, last written by Vyrtel {this}\n")), "{text}");
         assert!(text.contains("  clean-shutdown inventory: every WAL and segment file is present with its size\n"));
         assert!(text.contains("Starting it migrates nothing.\n"), "{text}");
 

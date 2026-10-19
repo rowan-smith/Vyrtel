@@ -1183,7 +1183,7 @@ fix the restore and start again:
 | `metadata/metadata.db` is empty (no schema) next to `vyrtel.json` or telemetry  | `is incomplete: metadata/metadata.db is empty (it has no schema)`       | Restore it from the same backup |
 | `metadata/metadata.db` but a signal's `wal/` or `segments/` directory is missing (no `vyrtel.json`) | `is incomplete: wal/logs is missing; …`                  | Restore the whole directory again |
 | `vyrtel.json` is not valid JSON, has no usable `format`, or its inventory lists something other than WAL and segment files | `has an unusable vyrtel.json: …` | Restore `vyrtel.json` from the same backup |
-| `vyrtel.json` has a newer `format`                                               | `has format 2 (written by Vyrtel 0.3.0), but Vyrtel 0.1.2 reads only format 1` | Start it with that version or newer |
+| `vyrtel.json` has a newer `format`                                               | `has format 3 (written by Vyrtel 0.3.0), but Vyrtel 0.1.2 reads only format 2` | Start it with that version or newer |
 | A WAL or segment file written by Observer 0.1.0 (Vyrtel's first release, under its earlier name) | `was written by Observer 0.1.0, … (segments/logs/000000000001.seg is in Observer's file format), and Vyrtel 0.1.2 cannot read its telemetry` | See [Data from Observer 0.1.0](#data-from-observer-010) |
 | A segment or WAL file in a newer format (its header or footer, or any checksummed WAL record or event batch in it) | `cannot be read by Vyrtel 0.1.2: segments/logs/000000000004.seg uses segment format version 2, …` | Start it with the version that wrote it, or newer |
 | `metadata/metadata.db` migrated by a newer version                              | `cannot be read by Vyrtel 0.1.2: metadata/metadata.db has schema version 2, …` | Start it with the version that wrote it, or newer |
@@ -1329,35 +1329,39 @@ $ vyrtel check-data-dir --data-dir /var/lib/vyrtel/data
 data directory /var/lib/vyrtel/data
   vyrtel.json: none (written before 0.1.2, or a first start that stopped early)
   metadata/metadata.db: schema version 1
-Vyrtel 0.1.2 (format 1, metadata schema up to 1) can start it.
+Vyrtel 0.1.2 (format 2, metadata schema up to 1) can start it.
 Starting it will:
-  - record data-directory format 1 in vyrtel.json (it has none: written before 0.1.2)
-Afterwards every release that reads it now (Vyrtel 0.1.1 and later) can still read it.
+  - record data-directory format 2 in vyrtel.json (it has none: written before 0.1.2)
+Afterwards only Vyrtel 0.1.2 and later can read it. To go back to an older version, restore the backup taken before the upgrade.
+Back up the stopped data directory first (see docs/configuration.md#upgrades-and-data-migrations).
 ```
 
 The same directory once 0.1.2 has stopped cleanly:
 
 ```text
 data directory /var/lib/vyrtel/data
-  vyrtel.json: format 1, last written by Vyrtel 0.1.2
+  vyrtel.json: format 2, last written by Vyrtel 0.1.2
   clean-shutdown inventory: every WAL and segment file is present with its size
   metadata/metadata.db: schema version 1
-Vyrtel 0.1.2 (format 1, metadata schema up to 1) can start it.
+Vyrtel 0.1.2 (format 2, metadata schema up to 1) can start it.
 Starting it migrates nothing.
-Afterwards every release that reads it now (Vyrtel 0.1.1 and later) can still read it.
+Afterwards every release that reads it now (Vyrtel 0.1.2 and later) can still read it.
 ```
 
 ### What a start migrates
 
 | Step (as `check-data-dir` and the startup log name it) | When | Interrupted? | Afterwards readable by |
 |---|---|---|---|
-| `record data-directory format 1 in vyrtel.json` | the directory has no `vyrtel.json` (0.1.1) | atomic: `vyrtel.json` is there or not; the next start writes it | every Vyrtel release (0.1.1 ignores the file) |
+| `record data-directory format 2 in vyrtel.json (it has none: …)` | the directory has no `vyrtel.json` (0.1.1) | atomic: `vyrtel.json` is there or not; the next start writes it | 0.1.2 and later (new WAL batches use event codec 2) |
+| `record data-directory format 2 in vyrtel.json (it has 1); …` | `vyrtel.json` says format 1 (a pre-release build of 0.1.2) | atomic, as above | 0.1.2 and later |
 | `migrate metadata/metadata.db from schema version N to M` | a release with a newer metadata schema (none yet: every release so far uses schema 1) | each version is one SQLite transaction: the database stays at the last version committed, and the next start continues from there | only releases that know schema M |
 
-Telemetry files are never rewritten by an upgrade: every release so far
-reads and writes WAL format 1, record version 1, event codec 1 and segment
-format 1, and a future release that changes one keeps the old decoder
-([Versioning](storage-format.md#versioning)). The order of a start is
+Telemetry files are never rewritten by an upgrade. Format 2 (0.1.2) differs
+from format 1 (0.1.1) only in the event codec of WAL batches: 0.1.2 still
+reads codec 1 batches, so a 0.1.1 directory's WALs replay as they are, and
+records appended to them from then on are in codec 2. WAL format 1, record
+version 1 and segment format 1 are unchanged, and a future release that
+changes one keeps the old decoder ([Versioning](storage-format.md#versioning)). The order of a start is
 fixed: check (reading only), lock, metadata migrations, `vyrtel.json` with
 the new format, then storage recovery. So an upgrade interrupted at any
 point has already recorded the new format before any telemetry file
@@ -1389,7 +1393,7 @@ needs no backup to be undone; it is still a good moment to take one.
 |---------|-----------------------|-----------------|------------------------------|
 | 0.1.0 (Observer) | Observer's own (see below) | 1 | no               |
 | 0.1.1   | 1                     | 1               | no                           |
-| 0.1.2   | 1                     | 1               | yes                          |
+| 0.1.2   | 2                     | 1               | yes                          |
 
 * A release can read a directory whose format and schema are at most its
   own. `check-data-dir` prints the oldest release that can read the
@@ -1401,11 +1405,11 @@ needs no backup to be undone; it is still a good moment to take one.
 * 0.1.1 does not check: it would open a newer metadata schema or set
   aside newer files as damaged. Never start it on a directory a newer
   release has migrated.
-* Going back after 0.1.2: 0.1.1 still reads the directory, as nothing but
-  `vyrtel.json` was added. Starting it leaves a clean-shutdown inventory
-  that no longer matches, so the next 0.1.2 start is refused as incomplete;
-  start that once with `--accept-incomplete-restore` after checking that
-  nothing is missing ([Limitations](#what-startup-checks)).
+* Going back after 0.1.2 is not possible in place: from its first start,
+  0.1.2 writes WAL batches in event codec 2 (each batch stores its OTLP
+  resources once, in a table), which 0.1.1 cannot decode and would set
+  aside as damaged. Take a backup of the stopped 0.1.1 directory before
+  the upgrade; to go back, restore it (see the next point).
 * Going back after a migration that `check-data-dir` reported as readable
   only by newer releases: stop the new version, restore the backup taken
   before the upgrade, and start the old version on it. Telemetry and
@@ -1492,6 +1496,11 @@ with the answers that release gave.
   by the check before anything changes, in every signal, instead of while
   recovering its signal.
 * A failed metadata migration names the version it stopped at.
+* The data-directory format is 2: WAL batches are written in event codec 2,
+  which stores each distinct OTLP resource once per batch instead of with
+  every record. Representative OTLP batches take about half the WAL space,
+  and batches sharing a large resource up to 99% less. 0.1.1 cannot read
+  the directory afterwards; see [Downgrades](#downgrades).
 * A data directory written by Observer 0.1.0 is refused with exit status 1
   and left unchanged. Before, every WAL and segment file in it was moved
   to `quarantine/` as damaged.

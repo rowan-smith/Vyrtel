@@ -255,19 +255,18 @@ impl WalWriter {
 
     /// Append one batch as a record, encoding it as it is written. The
     /// bytes are exactly those of `append(&codec::encode_batch(events))`,
-    /// but neither the batch nor the record is ever held whole: only one
-    /// event's encoding and a [`WRITE_CHUNK`] buffer. That matters when the
-    /// encoding is far larger than the events in memory, as when many
-    /// events share one large OTLP resource, which the codec writes out
-    /// with each of them. The length is taken by a first encoding pass, so
+    /// but neither the batch nor the record is ever held whole: only its
+    /// resource table, one event's encoding and a [`WRITE_CHUNK`] buffer.
+    /// The length is taken by a first encoding pass, so
     /// a batch over [`MAX_RECORD_LEN`] is refused before anything is
     /// written. A failure part-way is handled like a failed `append`.
     pub fn append_batch(&mut self, events: &[TelemetryEvent]) -> Result<()> {
         if self.poisoned {
             self.recover_from_partial_write()?;
         }
+        let plan = codec::plan_batch(events);
         let mut scratch = Writer::new();
-        let len = codec::encoded_batch_len(events, &mut scratch);
+        let len = codec::encoded_batch_len(events, &plan, &mut scratch);
         if len > MAX_RECORD_LEN as usize {
             return Err(crate::StorageError::BatchTooLarge(len));
         }
@@ -285,7 +284,7 @@ impl WalWriter {
         let result = (|| {
             out.put(&[RECORD_VERSION])?;
             out.put(&(len as u32).to_le_bytes())?;
-            codec::encode_batch_with(events, &mut scratch, |b| out.put(b))?;
+            codec::encode_batch_with(events, &plan, &mut scratch, |b| out.put(b))?;
             let crc = out.crc.clone().finalize();
             out.buf.extend_from_slice(&crc.to_le_bytes());
             out.flush()
@@ -530,7 +529,7 @@ pub fn check_record_formats(path: &Path, codec_version: u8) -> std::result::Resu
         let mut first = [0u8; 1];
         let got_first = if len > 0 { read_full(&mut r, &mut first).map_err(ReplayError::Io)? } else { 0 };
         let known = prefix[0] == RECORD_VERSION;
-        if known && got_first == 1 && first[0] == codec_version {
+        if known && got_first == 1 && (1..=codec_version).contains(&first[0]) {
             r.seek_relative(len as i64 - 1 + 4).map_err(ReplayError::Io)?;
             offset += (RECORD_OVERHEAD + len as usize) as u64;
             continue;
@@ -614,13 +613,15 @@ mod tests {
         (out, rep)
     }
 
-    /// Events whose encoding is far larger than they are in memory: each
-    /// carries the same 100-attribute resource.
-    fn shared_resource_events(n: usize) -> Vec<TelemetryEvent> {
+    /// Events with a 100-attribute resource: one shared by all of them, or
+    /// a different one each.
+    fn resource_events(n: usize, shared: bool) -> Vec<TelemetryEvent> {
         use std::sync::Arc;
         use telemetry::*;
-        let resource: Arc<Fields> =
-            Arc::new((0..100).map(|k| (format!("attr.{k}"), Value::from("x".repeat(24)))).collect());
+        let resource = |i: usize| -> Arc<Fields> {
+            Arc::new((0..100).map(|k| (format!("attr.{k}"), Value::from(format!("{i:024}")))).collect())
+        };
+        let one = resource(0);
         (0..n)
             .map(|i| TelemetryEvent {
                 id: EventId(i as u64 + 1),
@@ -630,7 +631,7 @@ mod tests {
                 environment: None,
                 trace_id: None,
                 span_id: None,
-                resource: resource.clone(),
+                resource: if shared { one.clone() } else { resource(i) },
                 attributes: Fields::new(),
                 payload: TelemetryPayload::Log(LogEvent {
                     level: Level::Information,
@@ -647,8 +648,8 @@ mod tests {
     // events.
     #[test]
     fn append_batch_writes_the_same_bytes_as_append() {
-        for n in [0, 1, 7, 200] {
-            let events = shared_resource_events(n);
+        for (n, shared) in [(0, true), (1, true), (7, false), (200, true), (200, false)] {
+            let events = resource_events(n, shared);
             let (_d, dir, tmp) = setup();
             let mut whole = WalWriter::create(&dir, &tmp, header(1)).unwrap();
             whole.append(&codec::encode_batch(&events)).unwrap();
@@ -659,7 +660,7 @@ mod tests {
             let record = &a[HEADER_LEN as usize..];
             assert_eq!(&b[HEADER_LEN as usize..], [record, record].concat(), "{n} events");
             assert_eq!(streamed.len(), HEADER_LEN + 2 * record.len() as u64);
-            if n == 200 {
+            if n == 200 && !shared {
                 assert!(record.len() > 4 * WRITE_CHUNK, "spans several chunks: {}", record.len());
             }
             let (payloads, _) = collect(streamed.path());
@@ -670,8 +671,9 @@ mod tests {
 
     #[test]
     fn encoded_batch_len_matches_the_encoding() {
-        let events = shared_resource_events(50);
-        assert_eq!(codec::encoded_batch_len(&events, &mut Writer::new()), codec::encode_batch(&events).len());
+        let events = resource_events(50, false);
+        let plan = codec::plan_batch(&events);
+        assert_eq!(codec::encoded_batch_len(&events, &plan, &mut Writer::new()), codec::encode_batch(&events).len());
     }
 
     #[test]

@@ -6,8 +6,15 @@
 //! column chunks. Both use the functions in this module, so there is exactly
 //! one definition of how an event becomes bytes.
 //!
+//! A WAL batch in codec 2 holds each distinct resource once, in a table at
+//! its start, and its events refer to it by index; segment bodies (and
+//! codec 1 batches, still read) carry the resource inline.
+//!
 //! The layout is documented in `docs/storage-format.md`. Any change must bump
 //! [`CODEC_VERSION`] and keep a decoder for older versions.
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use telemetry::*;
 
@@ -15,7 +22,8 @@ use crate::encoding::{Reader, Writer};
 use crate::error::DecodeError;
 
 /// Version of the event codec, written at the start of every WAL record.
-pub const CODEC_VERSION: u8 = 1;
+/// Version 1 (no resource table) is still read.
+pub const CODEC_VERSION: u8 = 2;
 
 /// Maximum nesting of structured values accepted when decoding.
 pub const MAX_DEPTH: usize = 64;
@@ -121,12 +129,22 @@ pub fn level_code(e: &TelemetryEvent) -> u8 {
     e.level().map_or(0, Level::code)
 }
 
-/// The body: everything not stored as a dedicated segment column.
+/// The body: everything not stored as a dedicated segment column, with the
+/// resource inline.
 pub fn encode_body(w: &mut Writer, e: &TelemetryEvent) {
+    encode_body_as(w, e, None);
+}
+
+/// The body with the resource inline (`None`) or as an index into its
+/// batch's resource table (0 for none, `i` for entry `i - 1`).
+fn encode_body_as(w: &mut Writer, e: &TelemetryEvent, resource: Option<u64>) {
     // Observed time is usually within milliseconds of the event time, so a
     // zigzag delta is a couple of bytes instead of eight.
     w.varint_i(e.observed_timestamp.0.wrapping_sub(e.timestamp.0));
-    encode_fields(w, &e.resource);
+    match resource {
+        None => encode_fields(w, &e.resource),
+        Some(i) => w.varint(i),
+    }
     encode_fields(w, &e.attributes);
     match &e.payload {
         TelemetryPayload::Log(l) => {
@@ -226,8 +244,25 @@ impl Head {
 
 /// Rebuild a full event from its head and an encoded body.
 pub fn decode_with_body(head: Head, r: &mut Reader) -> Result<TelemetryEvent, DecodeError> {
+    decode_body_as(head, r, None)
+}
+
+/// A resource read inline, shared if empty.
+fn shared(f: Fields) -> Arc<Fields> {
+    if f.is_empty() { Fields::shared_empty() } else { Arc::new(f) }
+}
+
+/// The body with the resource inline (`None`) or as an index into
+/// `table` (see [`encode_body_as`]).
+fn decode_body_as(head: Head, r: &mut Reader, table: Option<&[Arc<Fields>]>) -> Result<TelemetryEvent, DecodeError> {
     let observed = Timestamp(head.timestamp.0.wrapping_add(r.varint_i()?));
-    let resource = decode_fields(r)?;
+    let resource = match table {
+        None => shared(decode_fields(r)?),
+        Some(t) => match r.varint()? {
+            0 => Fields::shared_empty(),
+            i => t.get(i as usize - 1).cloned().ok_or(DecodeError::Invalid("resource index out of range"))?,
+        },
+    };
     let attributes = decode_fields(r)?;
     let payload = match head.kind {
         1 => {
@@ -322,14 +357,19 @@ pub fn decode_with_body(head: Head, r: &mut Reader) -> Result<TelemetryEvent, De
         environment: head.environment,
         trace_id: head.trace_id,
         span_id: head.span_id,
-        resource: if resource.is_empty() { Fields::shared_empty() } else { resource.into() },
+        resource,
         attributes,
         payload,
     })
 }
 
-/// Self-contained event encoding (used by WAL records).
+/// Self-contained event encoding, resource inline (codec 1 batches).
 pub fn encode_event(w: &mut Writer, e: &TelemetryEvent) {
+    encode_head(w, e);
+    encode_body(w, e);
+}
+
+fn encode_head(w: &mut Writer, e: &TelemetryEvent) {
     w.varint(e.id.0);
     w.i64(e.timestamp.0);
     w.u8(kind_code(e));
@@ -339,11 +379,15 @@ pub fn encode_event(w: &mut Writer, e: &TelemetryEvent) {
     w.opt_str(e.trace_id.as_ref().map(TraceId::as_str));
     w.opt_str(e.span_id.as_ref().map(SpanId::as_str));
     w.str(e.message());
-    encode_body(w, e);
 }
 
 pub fn decode_event(r: &mut Reader) -> Result<TelemetryEvent, DecodeError> {
-    let head = Head {
+    let head = decode_head(r)?;
+    decode_with_body(head, r)
+}
+
+fn decode_head(r: &mut Reader) -> Result<Head, DecodeError> {
+    Ok(Head {
         id: EventId(r.varint()?),
         timestamp: Timestamp(r.i64()?),
         kind: r.u8()?,
@@ -353,14 +397,54 @@ pub fn decode_event(r: &mut Reader) -> Result<TelemetryEvent, DecodeError> {
         trace_id: r.opt_string()?.map(TraceId::from_stored),
         span_id: r.opt_string()?.map(SpanId::from_stored),
         message: r.string()?,
-    };
-    decode_with_body(head, r)
+    })
 }
 
-/// Encode a batch: codec version, count, events.
+/// The resource table of a batch about to be encoded (codec 2): each
+/// distinct non-empty resource once, and every event's index into it.
+/// Events that share a resource (`Arc`) are found by pointer; others with
+/// identical resources, such as native events each carrying their own copy,
+/// by their encoding.
+pub struct BatchPlan {
+    resources: u64,
+    table: Vec<u8>,
+    index: Vec<u64>,
+}
+
+pub fn plan_batch(events: &[TelemetryEvent]) -> BatchPlan {
+    let mut plan = BatchPlan { resources: 0, table: Vec::new(), index: Vec::with_capacity(events.len()) };
+    let mut by_ptr: HashMap<*const Fields, u64> = HashMap::new();
+    let mut by_bytes: HashMap<Vec<u8>, u64> = HashMap::new();
+    for e in events {
+        if e.resource.is_empty() {
+            plan.index.push(0);
+            continue;
+        }
+        let ptr = Arc::as_ptr(&e.resource);
+        let i = match by_ptr.get(&ptr) {
+            Some(&i) => i,
+            None => {
+                let mut w = Writer::new();
+                encode_fields(&mut w, &e.resource);
+                let i = *by_bytes.entry(w.into_inner()).or_insert_with_key(|bytes| {
+                    plan.table.extend_from_slice(bytes);
+                    plan.resources += 1;
+                    plan.resources
+                });
+                by_ptr.insert(ptr, i);
+                i
+            }
+        };
+        plan.index.push(i);
+    }
+    plan
+}
+
+/// Encode a batch: codec version, resource table, count, events.
 pub fn encode_batch(events: &[TelemetryEvent]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(events.len() * 256);
-    let r: std::io::Result<()> = encode_batch_with(events, &mut Writer::new(), |b| {
+    let plan = plan_batch(events);
+    let mut out = Vec::with_capacity(plan.table.len() + events.len() * 256);
+    let r: std::io::Result<()> = encode_batch_with(events, &plan, &mut Writer::new(), |b| {
         out.extend_from_slice(b);
         Ok(())
     });
@@ -370,28 +454,35 @@ pub fn encode_batch(events: &[TelemetryEvent]) -> Vec<u8> {
 
 /// Encode a batch piece by piece: `put` receives, in order, exactly the
 /// bytes of [`encode_batch`], one event at a time, so the batch is never
-/// held whole. `scratch` holds the piece being encoded.
+/// held whole. `plan` is [`plan_batch`] of the same events; `scratch` holds
+/// the piece being encoded.
 pub fn encode_batch_with<E>(
     events: &[TelemetryEvent],
+    plan: &BatchPlan,
     scratch: &mut Writer,
     mut put: impl FnMut(&[u8]) -> Result<(), E>,
 ) -> Result<(), E> {
     scratch.buf.clear();
     scratch.u8(CODEC_VERSION);
+    scratch.varint(plan.resources);
+    put(&scratch.buf)?;
+    put(&plan.table)?;
+    scratch.buf.clear();
     scratch.varint(events.len() as u64);
     put(&scratch.buf)?;
-    for e in events {
+    for (e, &i) in events.iter().zip(&plan.index) {
         scratch.buf.clear();
-        encode_event(scratch, e);
+        encode_head(scratch, e);
+        encode_body_as(scratch, e, Some(i));
         put(&scratch.buf)?;
     }
     Ok(())
 }
 
 /// Length of [`encode_batch`]'s output, computed one event at a time.
-pub fn encoded_batch_len(events: &[TelemetryEvent], scratch: &mut Writer) -> usize {
+pub fn encoded_batch_len(events: &[TelemetryEvent], plan: &BatchPlan, scratch: &mut Writer) -> usize {
     let mut n = 0;
-    let r: Result<(), std::convert::Infallible> = encode_batch_with(events, scratch, |b| {
+    let r: Result<(), std::convert::Infallible> = encode_batch_with(events, plan, scratch, |b| {
         n += b.len();
         Ok(())
     });
@@ -399,16 +490,41 @@ pub fn encoded_batch_len(events: &[TelemetryEvent], scratch: &mut Writer) -> usi
     n
 }
 
+/// A batch in codec 1, as releases before 0.1.2 wrote it (every resource
+/// inline, no table). For tests of data written by those releases.
+#[doc(hidden)]
+pub fn encode_batch_v1(events: &[TelemetryEvent]) -> Vec<u8> {
+    let mut w = Writer::with_capacity(events.len() * 256);
+    w.u8(1);
+    w.varint(events.len() as u64);
+    for e in events {
+        encode_event(&mut w, e);
+    }
+    w.into_inner()
+}
+
+/// Decode a batch in codec 1 or 2. Events of one resource table entry
+/// share it.
 pub fn decode_batch(bytes: &[u8]) -> Result<Vec<TelemetryEvent>, DecodeError> {
     let mut r = Reader::new(bytes);
     let version = r.u8()?;
-    if version != CODEC_VERSION {
-        return Err(DecodeError::UnsupportedVersion(version as u16));
-    }
+    let table = match version {
+        1 => None,
+        2 => {
+            let n = r.len()?;
+            let mut table = Vec::with_capacity(n);
+            for _ in 0..n {
+                table.push(shared(decode_fields(&mut r)?));
+            }
+            Some(table)
+        }
+        v => return Err(DecodeError::UnsupportedVersion(v as u16)),
+    };
     let n = r.len()?;
     let mut events = Vec::with_capacity(n);
     for _ in 0..n {
-        events.push(decode_event(&mut r)?);
+        let head = decode_head(&mut r)?;
+        events.push(decode_body_as(head, &mut r, table.as_deref())?);
     }
     if !r.is_empty() {
         return Err(DecodeError::Invalid("trailing bytes after batch"));
@@ -439,7 +555,9 @@ mod tests {
         #[test]
         fn batch_round_trip(events in proptest::collection::vec(any_event(), 0..8)) {
             let bytes = encode_batch(&events);
-            prop_assert_eq!(decode_batch(&bytes).unwrap(), events);
+            prop_assert_eq!(&decode_batch(&bytes).unwrap(), &events);
+            // Batches written before 0.1.2 still read the same.
+            prop_assert_eq!(decode_batch(&encode_batch_v1(&events)).unwrap(), events);
         }
 
         /// Arbitrary garbage must produce an error, never a panic.
@@ -455,6 +573,68 @@ mod tests {
             let at = cut.index(bytes.len());
             prop_assert!(decode_batch(&bytes[..at]).is_err());
         }
+    }
+
+    fn with_resource(id: u64, resource: Arc<Fields>) -> TelemetryEvent {
+        TelemetryEvent {
+            id: EventId(id),
+            timestamp: Timestamp(id as i64),
+            observed_timestamp: Timestamp(id as i64),
+            service: None,
+            environment: None,
+            trace_id: None,
+            span_id: None,
+            resource,
+            attributes: Fields::new(),
+            payload: TelemetryPayload::Log(LogEvent {
+                level: Level::Information,
+                message: format!("m{id}"),
+                message_template: None,
+                exception: None,
+            }),
+        }
+    }
+
+    fn big_resource(tag: &str) -> Fields {
+        (0..50).map(|k| (format!("attr.{k}"), Value::from(format!("{tag}-{k:020}")))).collect()
+    }
+
+    // Codec 2 stores each distinct resource once per batch, whether events
+    // share it or carry equal copies, and decoded events share it again.
+    #[test]
+    fn resources_are_stored_once_per_batch() {
+        let a = Arc::new(big_resource("a"));
+        let events: Vec<TelemetryEvent> = (0..100)
+            .map(|i| match i % 4 {
+                0 | 1 => with_resource(i, a.clone()),
+                2 => with_resource(i, Arc::new(big_resource("b"))), // an equal copy each time
+                _ => with_resource(i, Fields::shared_empty()),
+            })
+            .collect();
+        let plan = plan_batch(&events);
+        assert_eq!(plan.resources, 2);
+        let v2 = encode_batch(&events);
+        let v1 = encode_batch_v1(&events);
+        assert!(v2.len() * 10 < v1.len(), "codec 2: {} bytes, codec 1: {}", v2.len(), v1.len());
+        let back = decode_batch(&v2).unwrap();
+        assert_eq!(back, events);
+        assert!(Arc::ptr_eq(&back[0].resource, &back[1].resource));
+        assert!(Arc::ptr_eq(&back[2].resource, &back[6].resource));
+        assert!(!Arc::ptr_eq(&back[0].resource, &back[2].resource));
+        assert!(back[3].resource.is_empty());
+    }
+
+    #[test]
+    fn resource_index_out_of_range_is_an_error() {
+        let mut bytes = encode_batch(&[with_resource(1, Arc::new(big_resource("a")))]);
+        // Drop the table entry but keep the event's reference to it.
+        let mut w = Writer::new();
+        encode_fields(&mut w, &big_resource("a"));
+        let entry = w.into_inner();
+        let at = bytes.windows(entry.len()).position(|x| x == entry).unwrap();
+        bytes.drain(at..at + entry.len());
+        bytes[1] = 0;
+        assert_eq!(decode_batch(&bytes), Err(DecodeError::Invalid("resource index out of range")));
     }
 
     #[test]
@@ -473,5 +653,7 @@ mod tests {
         let mut bytes = encode_batch(&[]);
         bytes[0] = 99;
         assert_eq!(decode_batch(&bytes), Err(DecodeError::UnsupportedVersion(99)));
+        bytes[0] = 3;
+        assert_eq!(decode_batch(&bytes), Err(DecodeError::UnsupportedVersion(3)));
     }
 }
