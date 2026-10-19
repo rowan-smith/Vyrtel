@@ -382,6 +382,113 @@ and refusing zero `timeout`, `max_results`, `max_trace_spans` and
 `max_metric_names`. The engine fixture also holds 600 metric points (two
 each of 300 names, `m-000` to `m-299`).
 
+### Transport limit tests
+
+```bash
+cargo test -p server --test integration transport          # behaviour over real sockets
+cargo test -p server --lib transport config::tests::transport_limits config::tests::durations_that_overflow_are_errors
+cargo test -p server --release --test overload transport -- --nocapture   # heap, see below
+```
+
+`tests/integration/transport.rs` drives a real server with raw TCP sockets,
+so a test controls exactly which bytes arrive and when. Limits are set
+small (2 to 16 connections, deadlines of 300 to 500 ms) and every wait is on
+the server's own counters (`AppState::transport`), not a sleep; the only
+time that passes is the deadline under test.
+
+| Acceptance criterion / case | Tests |
+|---|---|
+| AC1, TC1 finite admission: C−1, C, C+1, waiting cap, refusal | `connections_beyond_the_limit_wait_briefly_then_are_refused` (C = 4: four idle connections admitted one by one, the fifth waits and gets the first freed slot and is served; with 64 waiting the next is refused at once with the fixed 503 or a close; the 64 are refused after 2 s; the server then ingests and queries) |
+| AC1, AC6, TC1 ≥1,000 attempts and reconnect waves | `a_thousand_simultaneous_attempts_never_exceed_the_limits` (C = 16: a wave of 1,000 simultaneous attempts, half idle and half keep-alive `GET`s, then three of 300; a 1 ms sampler never sees more than 16 active or 64 waiting; every attempt is admitted or refused; each wave returns to 0 active) |
+| AC1, TC5 listeners share one budget | `listeners_share_one_connection_budget` (a second listener on the same `Transport`: 2 + 1 connections fill C = 3, the next on the second listener waits) |
+| AC2, AC4, TC2 nothing routed before a head; deadlines; parser bounds | `incomplete_idle_and_oversized_request_heads_are_closed` (silent socket closed after `header_timeout`; a head sent one byte every 20 ms closed, never routed; a keep-alive connection reused twice then closed when idle; a 16 KB head with an 8 KB buffer and 101 headers get `431`) |
+| AC4, TC3 slow bodies | `slow_request_bodies_get_408_and_release_their_slots` (ingest and query bodies stalled after 10 bytes get `408 request_timeout`; the ingest slot is released) |
+| AC4, TC3 clients that stop reading | `clients_that_stop_reading_are_closed_on_the_write_timeout` (pipelined 1 MB query responses to a socket with a 4 KB receive buffer that never reads; closed on `write_timeout`) |
+| AC2, TC3 pipelining and protocols | `pipelined_requests_are_served_in_order_and_http2_is_not_served` (20 pipelined requests answered in order on one connection; an HTTP/2 preface is a protocol error; an `h2c` upgrade is answered as HTTP/1.1) |
+| AC5, TC4 every ending releases its slot | `every_way_a_connection_ends_releases_its_slot` (C = 2: resets with a waiter behind them, EOF mid-head, malformed input, a handler error on a kept-alive connection, abandoned responses; 0 active after each, then ingest and query work) |
+| AC5, TC4 shutdown while saturated | `shutdown_while_saturated_is_bounded` (every slot held and one waiting: the stop finishes in under 2 s, idle connections just close, the waiting one is refused) |
+| AC2 observability | `system_info_reports_connection_limits_and_outcomes` (`connections` object; `[server]` in `/api/v1/system/config`) |
+| AC3, TC5 configuration | `config.rs` `transport_limits` (finite defaults; minimum and maximum of each setting accepted; zero, out of range, negative, fractional, non-numeric and overflowing values refused from TOML and the environment; an unrepresentable size saturates and fails validation); `durations_that_overflow_are_errors`; `transport.rs` unit tests (the fixed 503 is well formed; the estimate saturates; body timeouts are found through error wrappers). No reload exists, so none is tested |
+| TC7 regression | `cargo test --workspace --all-features`; `shutdown.rs` `live_streams_end_cleanly_and_reconnect_after_restart` now asserts that a slow consumer gets an in-order prefix, then `shutdown`; the REL-02 flood test sets `max_connections` above its 600 connections so that it still exercises ingest admission |
+
+#### Transport heap
+
+`connection_heap_stays_within_the_transport_estimate`, in the `overload`
+binary (counting allocator; clients on the uncounted runtime), holds all
+200 slots of a server with the default 64 KB buffer: first idle, then with
+request heads that fill each read buffer and never end, then floods the
+full server with 1,000 more attempts, closes everything, and finally holds
+every slot with clients that pipeline requests and never read. It asserts
+heap per connection within `3 × connection_buffer + 16 KB`, peak growth
+within `TransportLimits::estimated_peak`, never more than 200 active or 64
+waiting, at most `C + 64 + 16` new runtime tasks, and at most 512 KB
+retained after the connections close and after the stalled ones are closed
+by `write_timeout`.
+
+| Measured (release)                     | Linux x86_64 (WSL2, Rust 1.96) | Windows 11 x86_64 |
+|----------------------------------------|-------------------------------:|------------------:|
+| Heap per idle connection               |                        18.0 KB |           18.1 KB |
+| Heap per full read buffer              |                       122.3 KB |          122.4 KB |
+| Heap per stalled reader                |                        47.7 KB |           21.4 KB |
+| Flood of 1,000: waiting / refused      |                       64 / 936 |          64 / 936 |
+| New runtime tasks                      |                            264 |               264 |
+| Peak heap growth / estimate            |               23.99 / 40.75 MB |  24.03 / 40.75 MB |
+| Retained after close / after timeouts  |              63.1 KB / 63.0 KB |  65.1 KB / 65.1 KB |
+
+On Linux the test needs several GB of memory: the 200 stalled readers'
+kernel socket buffers (client and server sides, autotuned up to
+`tcp_rmem`/`tcp_wmem`) peaked at about 1 GB in a container limited to
+6 GB, against 24 MB of heap; with a 1 GB limit the container was killed.
+That memory is the kernel's, which is why the
+[configuration docs](configuration.md#memory-accounting) account for it
+separately.
+
+#### Transport soak on Linux
+
+`scripts/bench/transport-soak.sh` runs a release `vyrtel` and
+`connload` (`tools/loadgen/src/connload.rs`) in separate containers with
+their own CPU and memory limits, samples the server process every second
+from `/proc` and its cgroup (RSS, threads, file descriptors, sockets, CPU
+time, the listen backlog and the kernel's `ListenOverflows`, established
+sockets, cgroup memory and kernel socket buffers), then waits for idle, stops the server with `docker stop`
+and records the shutdown time and exit status. `connload` keeps steady
+ingest (4 keep-alive senders of 200-event NDJSON batches every 50 ms) and
+count queries (2 senders, every second), opens waves of simultaneous
+connections of four kinds (idle, a head trickled one byte every 500 ms, a
+body that stalls after 10 bytes, a normal `GET /health`), samples
+`/api/v1/system/info`, and at the end checks that every acknowledged event
+is stored.
+
+```bash
+# Release binaries on a volume (any Linux host with Docker):
+docker volume create rel18-target
+docker run --rm -v "$PWD:/src:ro" -v rel18-target:/target -e CARGO_TARGET_DIR=/target -w /src \
+  rust:1.96-bookworm cargo build --release --locked -p server -p loadgen
+
+# Steady load only, for a baseline/candidate comparison (repeat 3×; for the
+# baseline, build the prior commit onto another volume and set SERVER_VOLUME):
+IMAGE=rust:1.96-bookworm scripts/bench/transport-soak.sh out/steady-1 --no-waves --duration 60s
+
+# 1,000 simultaneous attempts every 30 s for 3 minutes, normal and constrained:
+IMAGE=rust:1.96-bookworm scripts/bench/transport-soak.sh out/flood-normal-1 --duration 180s --attempts 1000
+IMAGE=rust:1.96-bookworm SERVER_MEMORY=384m NOFILE=1024 \
+  SERVER_ENV="-e VYRTEL_STORAGE_MAX_MEMORY=256MB -e VYRTEL_SERVER_MAX_CONNECTIONS=64 -e VYRTEL_SERVER_CONNECTION_BUFFER=16KB" \
+  scripts/bench/transport-soak.sh out/flood-constrained-1 --duration 180s --attempts 1000
+
+# The 30-minute soak:
+IMAGE=rust:1.96-bookworm IDLE_AFTER=60 scripts/bench/transport-soak.sh out/soak --duration 30m --wave-interval 60s
+```
+
+Each run directory holds `resources.csv`, `resources.json`,
+`samples.csv`, `summary.json`, `connload.log` and `server.log`. The budgets
+were declared before the candidate was measured in
+[`docs/benchmarks/transport/budgets.md`](benchmarks/transport/budgets.md); the
+results, per budget with PASS/FAIL, are in
+[`docs/benchmarks/transport/2026-10-17-wsl2`](benchmarks/transport/2026-10-17-wsl2/README.md).
+They come from a developer laptop's WSL2 VM, not the release sign-off host:
+[#170](https://github.com/rowan-smith/Vyrtel/issues/170) repeats them on the
+final candidate.
+
 ### Restore drill
 
 `scripts/backup/restore-drill.sh` runs the published
@@ -816,6 +923,21 @@ cargo run --release -p loadgen -- \
 Options: `--rate`, `--duration`, `--services`, `--error-rate`,
 `--cardinality`, `--batch`, `--concurrency`, `--traces-every`, `--api-key`,
 `--seed`. It reports throughput, latency and backpressure (429/503).
+
+The same package has `connload`, which keeps a steady mixed load while
+opening waves of idle, slow and normal connections, for the
+[transport soak](#transport-soak-on-linux):
+
+```bash
+cargo run --release -p loadgen --bin connload -- --target http://localhost:8080 \
+  --duration 3m --attempts 1000 --wave-interval 30s --out connload-out
+```
+
+Options: `--attempts`, `--wave-interval`, `--wave-patience`,
+`--ingest-clients`, `--batch`, `--ingest-interval`, `--query-clients`,
+`--query-interval`, `--sample-interval`, `--no-waves`, `--out`, `--label`.
+It writes `summary.json` and `samples.csv`, and exits with status 1 if any
+acknowledged event is missing afterwards.
 
 Observed on the same laptop with a release build (`--rate 10000 --duration
 30s --traces-every 200`, default config):

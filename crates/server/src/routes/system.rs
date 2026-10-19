@@ -289,6 +289,7 @@ pub async fn info(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
             "discarding": crate::routes::ingest::MAX_DISCARD_PENDING
                 .saturating_sub(state.discard_pending.available_permits()),
         },
+        "connections": state.transport.snapshot(),
         "query": {
             "maxConcurrent": state.config.query.max_concurrent,
             "inFlight": state.config.query.max_concurrent.saturating_sub(state.query_permits.available_permits()),

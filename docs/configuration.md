@@ -47,10 +47,15 @@ admin_password = "change-me"     # or VYRTEL_AUTH_ADMIN_PASSWORD
 
 ### `[server]`
 
-| Key                | Default        | Env                              | Description                                                                                                                                                                          |
-|--------------------|----------------|----------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `bind`             | `0.0.0.0:8080` | `VYRTEL_SERVER_BIND`             | Listen address for the UI, API and OTLP/HTTP.                                                                                                                                        |
-| `shutdown_timeout` | `8s`           | `VYRTEL_SERVER_SHUTDOWN_TIMEOUT` | After a stop signal, how long accepted work may take to drain before Vyrtel reports what is unfinished and exits with status 1. Must be positive. See [stopping and upgrading](#stopping-and-upgrading). |
+| Key                 | Default        | Env                               | Description                                                                                                                                                                                                    |
+|---------------------|----------------|-----------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `bind`              | `0.0.0.0:8080` | `VYRTEL_SERVER_BIND`              | Listen address for the UI, API and OTLP/HTTP.                                                                                                                                                                  |
+| `shutdown_timeout`  | `8s`           | `VYRTEL_SERVER_SHUTDOWN_TIMEOUT`  | After a stop signal, how long accepted work may take to drain before Vyrtel reports what is unfinished and exits with status 1. Must be positive. See [stopping and upgrading](#stopping-and-upgrading).       |
+| `max_connections`   | `256`          | `VYRTEL_SERVER_MAX_CONNECTIONS`   | Connections held open at once, across every listener. More wait up to 2 s for a slot (at most 64 wait), then are refused. 1 to 65536. See [connections and transport limits](#connections-and-transport-limits). |
+| `header_timeout`    | `10s`          | `VYRTEL_SERVER_HEADER_TIMEOUT`    | How long a connection may take to send a complete request head, from when it is accepted or finishes a response. Also how long an idle keep-alive connection stays open. Positive, at most `1h`.              |
+| `body_timeout`      | `1m`           | `VYRTEL_SERVER_BODY_TIMEOUT`      | How long a request body may take to arrive in full, from its head; then `408`. Positive, at most `1h`.                                                                                                       |
+| `write_timeout`     | `30s`          | `VYRTEL_SERVER_WRITE_TIMEOUT`     | How long one write may stay blocked because the client is not reading; then the connection closes. Positive, at most `1h`.                                                                                    |
+| `connection_buffer` | `64KB`         | `VYRTEL_SERVER_CONNECTION_BUFFER` | Cap on each connection's read buffer, which holds the request head (larger heads get `431`), and on its write buffer. `8KB` to `408KB`.                                                                       |
 
 ### `[storage]`
 
@@ -115,21 +120,22 @@ the effective limit and the estimate under `ingest`
 gzip-decoded, the parse working set and the parsed batch, which stays
 admitted in the storage queue until its write is acknowledged. The fixed
 overhead covers rejected bodies being drained so their clients read the 429
-(at most 32 at once, each through its connection's read buffer of up to
-408 KB). The rest of the process is budgeted elsewhere and not counted
+(at most 32 at once, each through its connection's read buffer; the
+overhead assumes the largest `server.connection_buffer`, 408 KB, so it
+holds whatever that is set to). The rest of the process is budgeted elsewhere and not counted
 here: the WAL record and the active segment a batch is written into (the
 active segments budget), batches still queued after their client went away
-(bounded by `queue_capacity`), the read buffers of connections that are not
-draining a rejected body, and the runtime.
+(bounded by `queue_capacity`), the buffers of connections that are not
+draining a rejected body (the
+[transport estimate](#connections-and-transport-limits)), and the runtime.
 
 So the ingest budget bounds what admission owns; it is not a ceiling on
-all memory used to receive data over the network. Every connection that
-uploads quickly has a read buffer of up to 408 KB, whether its request is
-admitted, rejected and waiting to be drained (up to 256 are kept), or idle
-between keep-alive requests, and Vyrtel does not limit the number of
-connections. In the overload test, 28 connections held about 12 MB this way
-and 64 held about 29 MB. Limit connections at a reverse proxy or load
-balancer if many clients upload at once.
+all memory used to receive data over the network. Every open connection has
+buffers of its own, whether its request is admitted, rejected and waiting
+to be drained (up to 256 are kept), or idle between keep-alive requests.
+Those are bounded separately, by `server.max_connections` and
+`server.connection_buffer`
+([connections and transport limits](#connections-and-transport-limits)).
 
 **Where 20× comes from.** The `amplification` test measures each format's
 peak heap per byte of decoded body
@@ -347,6 +353,254 @@ budget is enforced by its owner; nothing grows without bound.
 
 Live tail keeps a ring of the last 64 committed batches for slow clients;
 clients that fall further behind are told how many batches they missed.
+
+Connections are budgeted outside `max_memory`, by their own limits; see
+[connections and transport limits](#connections-and-transport-limits).
+
+## Connections and transport limits
+
+Vyrtel bounds what clients can make it hold before any request is routed,
+authenticated or admitted, so idle, slow and excessive connections cannot
+exhaust memory, tasks or file descriptors ahead of ingest and query
+admission. These limits are enforced by the server itself; a reverse proxy
+in front is optional extra protection, not a requirement.
+
+| Setting                    | Default | Bounds                                                                                                                         |
+|----------------------------|--------:|--------------------------------------------------------------------------------------------------------------------------------|
+| `server.max_connections`   |   `256` | Connections holding a slot at once. 1 to 65536.                                                                                |
+| (fixed) waiting            |    `64` | Connections waiting for a slot at once, each for at most 2 s.                                                                  |
+| `server.header_timeout`    |   `10s` | From accept, or from the end of a response, until the next request head is complete. Ends idle keep-alive connections too.     |
+| `server.body_timeout`      |    `1m` | From a request head until the end of its body.                                                                                 |
+| `server.write_timeout`     |   `30s` | One write blocked because the client is not reading.                                                                           |
+| `server.connection_buffer` |  `64KB` | Bytes in each connection's read buffer (request head plus any pipelined requests) and in its write buffer. `8KB` to `408KB`. |
+| (fixed) headers            |   `100` | Headers in one request head.                                                                                                   |
+
+Every value is finite: zero, values out of range and values that overflow
+(for example a duration of `18446744073709551615w`) are refused at startup,
+so no setting turns a limit off. Durations need a unit or are seconds;
+`1h` is the longest. Settings are read at startup only; there is no reload.
+
+**One budget per process.** Vyrtel listens on one address, `server.bind`.
+The limits are owned by the process, not the listener: if a build serves
+more than one listener, all of them share the same slots and waiting places,
+so the aggregate is bounded by the same numbers. `GET /api/v1/system/info`
+reports them under `connections`
+([fields](api.md#system)); the startup banner shows `max_connections` and
+the buffer estimate.
+
+### What happens to a connection
+
+1. **Accepted.** The kernel completes the TCP handshake and queues the
+   connection in the listen backlog; Vyrtel accepts from it continuously,
+   whatever the connection's state. The backlog is 1024 (also capped by the
+   kernel's `net.core.somaxconn`, 4096 by default on Linux 5.4 and later).
+   It is the kernel's, not Vyrtel's: a burst of connections faster than
+   Vyrtel accepts (1,000 at once on 2 CPUs, in the Linux runs) or running
+   out of file descriptors overflows it. Linux then drops the handshake
+   (`ListenOverflows` in `/proc/net/netstat`) unless
+   `net.ipv4.tcp_abort_on_overflow = 1`. With SYN cookies, the default, the
+   client may believe it is connected while the server has no record of it:
+   a client that sends data gets a reset, an idle one waits until its own
+   timeout. Vyrtel holds nothing for such connections. Clients should use
+   connect and response timeouts, as the OpenTelemetry exporters do.
+2. **Admitted or waiting.** With a slot free, the connection takes it before
+   any task is spawned for it or any buffer is allocated. Otherwise it waits
+   for one, holding only its socket (no buffers), at most 64 at a time and
+   each for at most 2 s, first come first served. A slot frees as soon as a
+   connection ends.
+3. **Refused.** With no slot after 2 s, or 64 already waiting, Vyrtel tries
+   one non-blocking write of a fixed `503 server_busy` response
+   ([format](api.md#connections)) and closes the socket. It reads nothing,
+   allocates nothing and does not wait. If the client had already sent its
+   request, closing with unread data makes the kernel send a reset, which
+   can arrive before the 503. So a client may see the 503, a closed
+   connection or a reset, and should treat all three alike: retry with
+   backoff. No readable 503 is promised before HTTP is parsed.
+4. **Served.** HTTP/1.1, one request at a time. Pipelined requests are
+   answered in order; the read buffer holds at most `connection_buffer`
+   bytes of them and the rest wait in the kernel (TCP flow control). Ingest
+   admission (`ingest.max_concurrent`), query admission
+   (`query.max_concurrent`) and live-tail streams (`query.max_live_streams`)
+   apply on top, unchanged.
+5. **Closed.** At EOF, a reset, a protocol error, a deadline below, the end
+   of a `Connection: close` exchange, or shutdown. Its slot, buffers, task
+   and file descriptor are released whichever way it ends.
+
+| Deadline or limit                        | Outcome                                                                                       |
+|------------------------------------------|-----------------------------------------------------------------------------------------------|
+| No complete head within `header_timeout` | Closed without a response (counted in `headerTimeouts`). Idle keep-alive connections end so. |
+| Head over `connection_buffer`            | `431 Request Header Fields Too Large`, closed (`protocolErrors`).                             |
+| More than 100 headers                    | `431`, closed (`protocolErrors`).                                                             |
+| Body not complete within `body_timeout`  | `408 request_timeout`, closed (`bodyTimeouts`). Any ingest slot it held is released.          |
+| A write blocked for `write_timeout`      | Closed, the response cut off (`writeTimeouts`).                                               |
+| Malformed head, HTTP/2 preface           | `400` or closed (`protocolErrors`).                                                           |
+
+A request that is being handled (a query running, an ingest write waiting
+for its acknowledgement) is bounded by its own limits (`query.timeout`,
+`ingest.ack_timeout`), not by these deadlines.
+
+**Protocols.** HTTP/1.1 only. HTTP/2 (prior knowledge or `h2c` upgrade),
+WebSockets and other upgrades are not served, so HTTP/2 stream multiplexing
+does not apply. TLS is not terminated by Vyrtel.
+
+**Live tail.** A live-tail stream (Server-Sent Events) holds its connection
+slot for as long as it is open; there is no maximum duration. At most
+`query.max_live_streams` (64) are open at once, so keep that below
+`max_connections` (Vyrtel warns at startup otherwise) to leave slots for
+ingest and queries. Streams send a keep-alive comment every 15 s, so
+`header_timeout` and `write_timeout` do not end a stream whose client
+reads. A client that stops reading is closed once a write stays blocked for
+`write_timeout`; that can take a while, because the kernel's socket buffers
+fill first. Until then the server holds at most `connection_buffer` of
+events for it; it falls behind and is told how many batches it missed
+(`lagged`) rather than having them queued. At shutdown a stream sends what
+it has already matched, then `shutdown`.
+
+### Memory accounting
+
+Measured with the counting allocator in `tests/overload/transport.rs`
+(release build, Linux x86_64 and Windows 11 alike, within 1%):
+
+| Connection state                                      | Heap per connection (64 KB buffer) |
+|-------------------------------------------------------|-----------------------------------:|
+| Idle (accepted, nothing sent)                         |                              18 KB |
+| Request head filling the read buffer, never finished |                             122 KB |
+| Pipelining requests, never reading responses          |                              48 KB |
+| Waiting for a slot (estimated; too small to separate) |                          under 2 KB |
+| Closed                                                |                                  0 |
+
+A read buffer that grows to its limit can have up to twice the limit
+allocated, so the estimate Vyrtel reports (`estimatedPeakBytes`, and the
+banner) is:
+
+```
+per connection = 3 × connection_buffer + 16 KB
+transport peak = max_connections × per connection + 64 × 2 KB
+```
+
+That is 52.1 MB at the defaults (256 × 208 KB) and 4.1 MB with
+`max_connections = 64` and `connection_buffer = "16KB"`. It is on top of
+`storage.max_memory`, and is reached only if every slot holds a full read
+buffer at once; typical idle connections cost 18 KB each. Request and
+response bodies are not part of it: ingest admission and the query budgets
+bound those.
+
+**Kernel memory.** Each socket also has kernel send and receive buffers,
+which are neither heap nor counted in RSS, but are charged to a container's
+memory limit (the `sock` line of its cgroup `memory.stat`). Linux grows them
+up to `net.ipv4.tcp_rmem` and `net.ipv4.tcp_wmem` (6 MB and 4 MB at most by
+default) for connections that move data quickly, so many connections
+uploading or downloading at once can hold far more kernel memory than
+heap: in the overload test, 200 connections that sent requests without
+reading responses held about 1 GB of socket buffers, client and server
+sides together, against 24 MB of server heap. On a small host, lower the
+maximums (for example `sysctl -w net.ipv4.tcp_rmem="4096 131072 1048576"
+net.ipv4.tcp_wmem="4096 16384 1048576"`) and leave headroom in the container
+limit, or lower `max_connections`.
+
+**File descriptors.** Vyrtel needs one per connection (slots and waiting
+places, `max_connections + 64`), about 25 for the listener, the runtime, the
+WAL and the metadata database, and one per segment file it has open, which
+grows with the data kept (storage keeps each sealed segment open for reads).
+In the 30-minute Linux soaks, segment files added about 120 (normal) and
+190 (constrained, smaller segments) descriptors. So allow
+`max_connections + 64 + 25 + segments`, with room for growth: 1024 covers
+the defaults for a modest data directory; size it from
+`ls /proc/$(pidof vyrtel)/fd | wc -l` on a running instance. Raise
+`ulimit -n` (systemd `LimitNOFILE=`, Docker `--ulimit nofile=`) if you raise
+`max_connections`, and check it where Vyrtel actually runs: many systems
+default to 1024.
+Running out shows as `acceptErrors` and a `cannot accept connections`
+warning; Vyrtel pauses accepting for 250 ms and retries.
+
+### Choosing the limits
+
+The defaults come from the measurements above and the Linux runs in
+[`docs/benchmarks/transport`](benchmarks/transport/2026-10-17-wsl2/README.md):
+
+* **`max_connections = 256`.** OpenTelemetry SDKs and Collectors, log
+  shippers and browsers reuse a handful of keep-alive connections each, so
+  256 serves dozens of producers and UI users. At 18 KB each, 256 idle
+  connections cost 4.5 MB; the worst case is the 52.1 MB above.
+* **`connection_buffer = 64KB`.** Larger than the request heads common
+  proxies accept (8 to 32 KB), and ingest throughput is unchanged from the
+  previous 408 KB limit (see the steady-load comparison in the report). A
+  smaller buffer lowers the worst case linearly.
+* **`header_timeout = 10s`.** Ends idle keep-alive connections and slow
+  heads quickly enough that a flood of idle connections turns over every
+  10 s, while still allowing clients on slow links.
+* **`body_timeout = 1m`.** A 1 MB ingest body (the default
+  `max_request_size`) at 17 KB/s. An admitted ingest body holds its ingest
+  slot until it arrives or this passes: in the Linux floods, bodies stalled
+  on purpose held all 3 default ingest slots for the full minute while other
+  producers got `429`. Where untrusted clients can reach ingest and uploads
+  are fast, lower it (for example `10s`).
+* **`write_timeout = 30s`.** A client that has not read for 30 s while its
+  socket buffers are full has gone away.
+
+**A low-memory example.** A 384 MiB container:
+
+```toml
+[server]
+max_connections = 64          # 64 × (3 × 16 KB + 16 KB) + 128 KB = 4.1 MB at most
+connection_buffer = "16KB"    # heads up to 16 KB
+
+[storage]
+max_memory = "256MB"          # ingest derives 1 slot for 1 MB requests (see ingest memory)
+
+[query]
+max_live_streams = 8          # below max_connections
+```
+
+The same limits from the environment (`max_live_streams` has no variable,
+so Vyrtel warns that it is not below `max_connections`):
+
+```bash
+docker run --memory 384m --ulimit nofile=1024 -p 8080:8080 \
+  -e VYRTEL_STORAGE_MAX_MEMORY=256MB -e VYRTEL_SERVER_MAX_CONNECTIONS=64 \
+  -e VYRTEL_SERVER_CONNECTION_BUFFER=16KB ghcr.io/rowan-smith/vyrtel
+```
+
+With waves of 1,000 simultaneous connection attempts every minute for 30
+minutes, alongside steady ingest and queries, this configuration held at
+most 64 connections and 64 waiting, peaked at 92 MiB RSS (130 MiB for the
+whole container, kernel buffers and page cache included) and settled at
+77 MiB afterwards, with every acknowledged event stored
+([report](benchmarks/transport/2026-10-17-wsl2/README.md)).
+
+**Behind a reverse proxy or load balancer.** Vyrtel then sees the proxy's
+upstream connections, not the clients': set `max_connections` at least as
+large as the proxy's upstream connection pool, and the proxy's upstream
+idle timeout below `header_timeout` (nginx: `keepalive_timeout 5s;` in the
+`upstream` block), or raise `header_timeout` above it. Otherwise Vyrtel may
+close an idle upstream connection just as the proxy reuses it, and the
+proxy answers `502`. Proxy limits on clients (rate, per-IP connections,
+TLS) apply first and complement these.
+
+**Not covered.** Fairness between clients or tenants (one client can take
+every slot, each for up to `header_timeout` at a time), bandwidth limits,
+and defence against distributed floods. Use network-level controls for
+those. Rejected ingest bodies are drained with their own limits
+([ingest limits](api.md#ingest-limits-and-retries)).
+
+#### Connection limit changes in 0.1.2
+
+* Connections are now limited (`server.max_connections`, default 256);
+  before, every connection was accepted and kept. Beyond the limit,
+  connections wait up to 2 s, then are refused with `503 server_busy` or
+  closed. Deployments with more than 256 concurrent clients that each hold
+  a connection open, or a proxy with a larger upstream pool, should raise it.
+* Idle keep-alive connections close after `server.header_timeout` (10 s);
+  before, they stayed open until the client closed them. Clients reconnect
+  transparently; a proxy whose upstream idle timeout is longer may log
+  occasional `502`s until it is set below 10 s.
+* Request heads larger than 64 KB get `431` (before: about 408 KB), slow
+  bodies get `408 request_timeout` after 1 minute (before: no limit), and
+  connections whose client stops reading for 30 s close (before: no limit).
+* A live-tail client that is not reading is buffered for less (64 KB rather
+  than about 408 KB), so it skips more events; it reconnects as before.
+* `GET /api/v1/system/info` has a new `connections` object, and the startup
+  banner a `Connections` line.
 
 ## Docker and bind mounts
 

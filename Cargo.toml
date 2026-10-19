@@ -38,6 +38,10 @@ crc32fast = "1"
 flate2 = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hex = "0.4"
+http-body = "1"
+# The HTTP/1 server under axum, driven directly so the transport boundary is bounded (REL-18).
+hyper = { version = "1", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 mime_guess = { version = "2", default-features = false }
 prost = { version = "0.13", default-features = false, features = ["std", "derive"] }
 rand = "0.8"

@@ -144,6 +144,14 @@ give the `ingestion`, `queries`, `backpressure`, `footprint` and `storage` rows 
    (too noisy or fewer than 3 runs) needs a `noBaseline` reason or a quieter re-run, not an
    invented limit.
 
+For 0.1.2, the `networking` and `lifecycle` rows also cover the connection limits
+([REL-18](https://github.com/rowan-smith/Vyrtel/issues/184)). Rerun the transport soak against
+the candidate on the sign-off host ([transport soak on Linux](testing.md#transport-soak-on-linux)),
+using [`docs/benchmarks/transport/budgets.md`](benchmarks/transport/budgets.md) as the limits,
+and link its run directories from `reports`. The developer-host runs in
+[`docs/benchmarks/transport/2026-10-17-wsl2`](benchmarks/transport/2026-10-17-wsl2/README.md)
+show the procedure and expected magnitudes; they are not sign-off evidence.
+
 The check recomputes every row. A value outside its limit fails even when it is marked `pass`,
 any `fail` row fails the gate, and a delta that does not match its baseline is rejected. Limits
 are never loosened to pass: a regression is fixed and the affected workloads re-run.

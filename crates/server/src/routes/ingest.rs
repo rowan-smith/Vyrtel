@@ -151,6 +151,8 @@ enum ReadError {
     Decode(io::Error),
     /// The body itself could not be read (e.g. the client went away).
     Transport(io::Error),
+    /// The body did not arrive within `server.body_timeout`.
+    TimedOut(io::Error),
 }
 
 /// The body passed `ingest.max_request_size` on the wire.
@@ -242,6 +244,7 @@ pub async fn read_body(
             ),
         ),
         Err(ReadError::Transport(e)) => ApiError::bad_request(format!("could not read request body: {e}")),
+        Err(ReadError::TimedOut(e)) => ApiError::request_timeout(e.to_string()),
     };
     // The rest of the body is being discarded in the background and may not
     // be read to the end; the connection must not carry another request.
@@ -253,6 +256,7 @@ pub async fn read_body(
 fn read_error(e: io::Error) -> ReadError {
     match e.get_ref() {
         Some(inner) if inner.is::<WireLimitExceeded>() => ReadError::TooLarge,
+        Some(_) if crate::transport::is_body_timeout(&e) => ReadError::TimedOut(e),
         Some(inner) if inner.is::<axum::Error>() => ReadError::Transport(e),
         _ => ReadError::Decode(e),
     }

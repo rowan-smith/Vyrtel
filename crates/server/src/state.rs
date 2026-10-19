@@ -11,6 +11,7 @@ use tokio::sync::{Semaphore, broadcast, watch};
 
 use crate::config::{Config, MemoryBudgets};
 use crate::error::{ApiError, ApiResult};
+use crate::transport::Transport;
 
 /// A committed batch, fanned out to live-tail subscribers.
 #[derive(Clone)]
@@ -45,6 +46,9 @@ pub struct AppState {
     pub discard_permits: Arc<Semaphore>,
     /// Bounds rejected ingest bodies held at all (discarding or waiting).
     pub discard_pending: Arc<Semaphore>,
+    /// Connection admission and transport limits (REL-18), shared by
+    /// every listener this process serves.
+    pub transport: Arc<Transport>,
     pub started_at: Instant,
     pub started_ts: Timestamp,
     pub received_bytes: AtomicU64,

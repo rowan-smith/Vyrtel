@@ -10,6 +10,7 @@ pub mod datadir;
 pub mod error;
 pub mod routes;
 pub mod state;
+pub mod transport;
 pub mod web;
 
 pub use app::App;

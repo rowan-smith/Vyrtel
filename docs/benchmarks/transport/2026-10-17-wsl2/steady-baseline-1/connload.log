@@ -1,0 +1,70 @@
+{
+  "label": "steady-baseline-1",
+  "startedAtMs": 1792221208822,
+  "durationS": 62.154431105,
+  "args": {
+    "attempts": 1000,
+    "waveIntervalS": 30.0,
+    "noWaves": true,
+    "ingestClients": 4,
+    "batch": 200,
+    "ingestIntervalMs": 50,
+    "queryClients": 2,
+    "queryIntervalMs": 1000
+  },
+  "server": {
+    "version": "0.1.1",
+    "config": {
+      "bind": "0.0.0.0:8080",
+      "shutdown_timeout": "8s"
+    },
+    "before": null,
+    "after": null
+  },
+  "ingest": {
+    "requestsOk": 4519,
+    "rejected429": 18,
+    "unavailable503": 0,
+    "otherStatus": 0,
+    "transportErrors": 0,
+    "acknowledgedEvents": 903800,
+    "persistedEvents": 903800,
+    "eventsPerSecond": 14541.199781447183,
+    "ackLatency": {
+      "samples": 4519,
+      "p50Ms": 1.467,
+      "p95Ms": 2.24,
+      "p99Ms": 6.7,
+      "maxMs": 28.121
+    }
+  },
+  "query": {
+    "ok": 118,
+    "unavailable503": 0,
+    "otherStatus": 0,
+    "transportErrors": 0,
+    "latency": {
+      "samples": 118,
+      "p50Ms": 17.857,
+      "p95Ms": 33.508,
+      "p99Ms": 48.258,
+      "maxMs": 57.505
+    }
+  },
+  "waves": [],
+  "peaks": {
+    "acceptErrors": 0,
+    "active": 0,
+    "admitted": 0,
+    "bodyTimeouts": 0,
+    "headerTimeouts": 0,
+    "ingestInFlight": 3,
+    "ingestRejected": 18,
+    "pending": 0,
+    "protocolErrors": 0,
+    "queued": 0,
+    "refused": 0,
+    "writeTimeouts": 0
+  },
+  "reconciled": true
+}
