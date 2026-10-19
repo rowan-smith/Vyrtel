@@ -2,6 +2,7 @@ use super::proto::*;
 use super::*;
 
 const NOW: Timestamp = Timestamp(42);
+const U: Limits = Limits::UNBOUNDED;
 
 fn kv(k: &str, v: any_value::Value) -> KeyValue {
     KeyValue { key: k.into(), value: Some(AnyValue { value: Some(v) }) }
@@ -57,7 +58,7 @@ fn protobuf_logs_map_to_events() {
             }],
         }],
     };
-    let m = decode_logs(&req.encode_to_vec(), Encoding::Protobuf, NOW).unwrap();
+    let m = decode_logs(&req.encode_to_vec(), Encoding::Protobuf, NOW, U).unwrap();
     assert_eq!(m.rejected, 0);
     let e = &m.events[0];
     assert_eq!(e.timestamp, Timestamp(1_700_000_000_000_000_000));
@@ -108,7 +109,7 @@ fn json_logs_follow_otlp_json_rules() {
         }]
       }]
     }"#;
-    let m = decode_logs(body, Encoding::Json, NOW).unwrap();
+    let m = decode_logs(body, Encoding::Json, NOW, U).unwrap();
     let e = &m.events[0];
     assert_eq!(e.timestamp, Timestamp(1_544_712_660_300_000_000));
     assert_eq!(e.level(), Some(Level::Information));
@@ -124,7 +125,7 @@ fn json_logs_follow_otlp_json_rules() {
 #[test]
 fn structured_body_and_missing_times() {
     let body = br#"{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"body":{"kvlistValue":{"values":[{"key":"message","value":{"stringValue":"hi"}},{"key":"n","value":{"intValue":3}}]}},"severityText":"WARN"}]}]}]}"#;
-    let m = decode_logs(body, Encoding::Json, NOW).unwrap();
+    let m = decode_logs(body, Encoding::Json, NOW, U).unwrap();
     let e = &m.events[0];
     assert_eq!(e.message(), "hi");
     assert_eq!(e.timestamp, NOW);
@@ -163,7 +164,7 @@ fn spans_map_and_invalid_spans_are_rejected() {
             }],
         }],
     };
-    let m = decode_traces(&req.encode_to_vec(), Encoding::Protobuf, NOW).unwrap();
+    let m = decode_traces(&req.encode_to_vec(), Encoding::Protobuf, NOW, U).unwrap();
     assert_eq!(m.events.len(), 1);
     assert_eq!(m.rejected, 1);
     let e = &m.events[0];
@@ -182,7 +183,7 @@ fn spans_map_and_invalid_spans_are_rejected() {
 #[test]
 fn json_spans_accept_enum_names() {
     let body = br#"{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"0102030405060708090a0b0c0d0e0f10","spanId":"0102030405060708","name":"op","kind":"SPAN_KIND_CLIENT","startTimeUnixNano":"10","endTimeUnixNano":"30","status":{"code":"STATUS_CODE_OK"}}]}]}]}"#;
-    let m = decode_traces(body, Encoding::Json, NOW).unwrap();
+    let m = decode_traces(body, Encoding::Json, NOW, U).unwrap();
     let sp = m.events[0].as_span().unwrap();
     assert_eq!(sp.kind, SpanKind::Client);
     assert_eq!(sp.status.code, StatusCode::Ok);
@@ -241,7 +242,7 @@ fn metrics_each_point_is_an_event() {
             }],
         }],
     };
-    let m = decode_metrics(&req.encode_to_vec(), Encoding::Protobuf, NOW).unwrap();
+    let m = decode_metrics(&req.encode_to_vec(), Encoding::Protobuf, NOW, U).unwrap();
     assert_eq!(m.events.len(), 3);
     assert_eq!(m.rejected, 1);
     let first = m.events[0].as_metric().unwrap();
@@ -268,7 +269,7 @@ fn json_metrics() {
         {"name":"lat","histogram":{"aggregationTemporality":2,"dataPoints":[{"timeUnixNano":"100","count":"3","sum":6,"bucketCounts":["1","2"],"explicitBounds":[1]}]}},
         {"name":"q","summary":{"dataPoints":[{"timeUnixNano":"100","count":"2","sum":4}]}}
     ]}]}]}"#;
-    let m = decode_metrics(body, Encoding::Json, NOW).unwrap();
+    let m = decode_metrics(body, Encoding::Json, NOW, U).unwrap();
     assert_eq!(m.events.len(), 3);
     assert_eq!(m.events[0].as_metric().unwrap().value, MetricValue::Number(0.5));
     match &m.events[1].as_metric().unwrap().value {
@@ -279,16 +280,16 @@ fn json_metrics() {
 
 #[test]
 fn malformed_payloads_error() {
-    assert!(matches!(decode_logs(b"\xff\xff\xff", Encoding::Protobuf, NOW), Err(IngestError::Malformed(_))));
-    assert!(matches!(decode_logs(b"[]", Encoding::Json, NOW), Err(IngestError::Malformed(_))));
+    assert!(matches!(decode_logs(b"\xff\xff\xff", Encoding::Protobuf, NOW, U), Err(IngestError::Malformed(_))));
+    assert!(matches!(decode_logs(b"[]", Encoding::Json, NOW, U), Err(IngestError::Malformed(_))));
     assert!(matches!(
-        decode_traces(br#"{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"zz"}]}]}]}"#, Encoding::Json, NOW),
+        decode_traces(br#"{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"zz"}]}]}]}"#, Encoding::Json, NOW, U),
         Err(IngestError::Malformed(_))
     ));
     assert!(matches!(Encoding::from_content_type(Some("text/plain")), Err(IngestError::UnsupportedContentType(_))));
     // An empty request is valid OTLP.
-    assert!(decode_logs(b"", Encoding::Protobuf, NOW).unwrap().events.is_empty());
-    assert!(decode_logs(b"{}", Encoding::Json, NOW).unwrap().events.is_empty());
+    assert!(decode_logs(b"", Encoding::Protobuf, NOW, U).unwrap().events.is_empty());
+    assert!(decode_logs(b"{}", Encoding::Json, NOW, U).unwrap().events.is_empty());
 }
 
 #[test]

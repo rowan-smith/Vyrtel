@@ -69,6 +69,18 @@ impl Value {
             }
     }
 
+    /// Heap bytes this value owns, by capacity, beyond its own `size_of`.
+    pub fn heap_size(&self) -> usize {
+        match self {
+            Value::String(s) => s.capacity(),
+            Value::Array(a) => {
+                a.capacity() * std::mem::size_of::<Value>() + a.iter().map(Value::heap_size).sum::<usize>()
+            }
+            Value::Object(f) => f.heap_size(),
+            _ => 0,
+        }
+    }
+
     /// Render a scalar for display / grouping. Composite values render as JSON.
     pub fn to_display_string(&self) -> String {
         match self {
@@ -194,6 +206,13 @@ impl Fields {
         Self(Vec::new())
     }
 
+    /// One empty set shared process-wide, for events without a resource:
+    /// cloning it allocates nothing.
+    pub fn shared_empty() -> std::sync::Arc<Fields> {
+        static EMPTY: std::sync::OnceLock<std::sync::Arc<Fields>> = std::sync::OnceLock::new();
+        EMPTY.get_or_init(Default::default).clone()
+    }
+
     pub fn with_capacity(n: usize) -> Self {
         Self(Vec::with_capacity(n))
     }
@@ -282,6 +301,13 @@ impl Fields {
 
     pub fn approx_size(&self) -> usize {
         self.0.iter().map(|(k, v)| k.len() + 24 + v.approx_size()).sum()
+    }
+
+    /// Heap bytes these fields own, by capacity, beyond the `Fields`
+    /// itself.
+    pub fn heap_size(&self) -> usize {
+        self.0.capacity() * std::mem::size_of::<(String, Value)>()
+            + self.0.iter().map(|(k, v)| k.capacity() + v.heap_size()).sum::<usize>()
     }
 }
 

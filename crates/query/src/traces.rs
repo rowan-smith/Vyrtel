@@ -129,7 +129,7 @@ mod tests {
             environment: None,
             trace_id: TraceId::new("t1"),
             span_id: SpanId::new(id),
-            resource: Fields::new(),
+            resource: Fields::new().into(),
             attributes: Fields::new(),
             payload: TelemetryPayload::Span(SpanEvent {
                 parent_span_id: parent.and_then(SpanId::new),

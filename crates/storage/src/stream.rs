@@ -41,7 +41,6 @@ use std::time::{Duration, Instant};
 use telemetry::*;
 
 use crate::cache::IndexCache;
-use crate::codec;
 use crate::config::{CompactionConfig, Durability, StreamConfig};
 use crate::crash;
 use crate::error::{Result, StorageError};
@@ -680,8 +679,7 @@ impl Writer {
             e.id = EventId(self.next_event);
             self.next_event += 1;
         }
-        let bytes = codec::encode_batch(&events);
-        match self.wal.append(&bytes) {
+        match self.wal.append_batch(&events) {
             Ok(()) => {
                 self.recovering |= self.shared.has_fault(FaultArea::Wal);
                 pending.push(Pending {

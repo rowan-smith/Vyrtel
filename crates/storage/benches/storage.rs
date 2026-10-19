@@ -31,7 +31,10 @@ fn events(n: usize) -> Vec<TelemetryEvent> {
                 environment: Some("production".into()),
                 trace_id: TraceId::new(&format!("{:032x}", i / 4 + 1)),
                 span_id: SpanId::new(&format!("{:016x}", i + 1)),
-                resource: [("host.name".to_string(), Value::from(format!("web-{}", i % 8)))].into_iter().collect(),
+                resource: [("host.name".to_string(), Value::from(format!("web-{}", i % 8)))]
+                    .into_iter()
+                    .collect::<Fields>()
+                    .into(),
                 attributes: attrs,
                 payload: TelemetryPayload::Log(LogEvent {
                     level: if i % 50 == 0 { Level::Error } else { Level::Information },

@@ -65,7 +65,7 @@ mod tests {
             environment: None,
             trace_id: TraceId::new(&format!("{ts:032x}")),
             span_id: None,
-            resource: Fields::new(),
+            resource: Fields::new().into(),
             attributes: attrs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
             payload: TelemetryPayload::Log(LogEvent {
                 level,

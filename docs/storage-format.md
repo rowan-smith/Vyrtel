@@ -199,10 +199,15 @@ record := u8 record_version (=1) | u32 length | payload[length] | u32 crc32
 into `wal/<signal>/` and the directory is fsynced. A WAL never has a torn
 header.
 
-**Appending**: the record is written with a single `write_all`. On failure
-the writer truncates back to the last good offset straight away (and again
-before the next append if that truncation fails too), so a short write
-never leaves a torn record behind.
+**Appending**: the record is written as it is encoded, in 64 KiB pieces,
+so neither the batch nor the record is held whole in memory (an encoded
+batch can be far larger than its events, whose OTLP resource is shared in
+memory but written out with each event). A first encoding pass takes the
+length, so a batch over 256 MiB is refused before anything is written. On
+failure, part-way or not, the writer truncates back to the last good offset
+straight away (and again before the next append if that truncation fails
+too), so a short write never leaves a torn record behind. The bytes are
+the same as encoding the record whole: this is not a format change.
 
 **Durability**:
 

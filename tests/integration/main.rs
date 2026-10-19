@@ -10,6 +10,7 @@ mod auth;
 mod backup;
 mod crash;
 mod data_dir_access;
+mod decode_limits;
 mod ingest_limits;
 mod live;
 mod query_budgets;

@@ -30,7 +30,7 @@ fn log(i: i64, msg: &str) -> TelemetryEvent {
         environment: Some("production".into()),
         trace_id: None,
         span_id: None,
-        resource: Fields::new(),
+        resource: Fields::new().into(),
         attributes: [("i".to_string(), Value::Int(i))].into_iter().collect(),
         payload: TelemetryPayload::Log(LogEvent {
             level: Level::Information,

@@ -322,7 +322,7 @@ pub fn decode_with_body(head: Head, r: &mut Reader) -> Result<TelemetryEvent, De
         environment: head.environment,
         trace_id: head.trace_id,
         span_id: head.span_id,
-        resource,
+        resource: if resource.is_empty() { Fields::shared_empty() } else { resource.into() },
         attributes,
         payload,
     })
@@ -359,13 +359,44 @@ pub fn decode_event(r: &mut Reader) -> Result<TelemetryEvent, DecodeError> {
 
 /// Encode a batch: codec version, count, events.
 pub fn encode_batch(events: &[TelemetryEvent]) -> Vec<u8> {
-    let mut w = Writer::with_capacity(events.len() * 256);
-    w.u8(CODEC_VERSION);
-    w.varint(events.len() as u64);
+    let mut out = Vec::with_capacity(events.len() * 256);
+    let r: std::io::Result<()> = encode_batch_with(events, &mut Writer::new(), |b| {
+        out.extend_from_slice(b);
+        Ok(())
+    });
+    r.expect("writing to a Vec cannot fail");
+    out
+}
+
+/// Encode a batch piece by piece: `put` receives, in order, exactly the
+/// bytes of [`encode_batch`], one event at a time, so the batch is never
+/// held whole. `scratch` holds the piece being encoded.
+pub fn encode_batch_with<E>(
+    events: &[TelemetryEvent],
+    scratch: &mut Writer,
+    mut put: impl FnMut(&[u8]) -> Result<(), E>,
+) -> Result<(), E> {
+    scratch.buf.clear();
+    scratch.u8(CODEC_VERSION);
+    scratch.varint(events.len() as u64);
+    put(&scratch.buf)?;
     for e in events {
-        encode_event(&mut w, e);
+        scratch.buf.clear();
+        encode_event(scratch, e);
+        put(&scratch.buf)?;
     }
-    w.into_inner()
+    Ok(())
+}
+
+/// Length of [`encode_batch`]'s output, computed one event at a time.
+pub fn encoded_batch_len(events: &[TelemetryEvent], scratch: &mut Writer) -> usize {
+    let mut n = 0;
+    let r: Result<(), std::convert::Infallible> = encode_batch_with(events, scratch, |b| {
+        n += b.len();
+        Ok(())
+    });
+    let Ok(()) = r;
+    n
 }
 
 pub fn decode_batch(bytes: &[u8]) -> Result<Vec<TelemetryEvent>, DecodeError> {

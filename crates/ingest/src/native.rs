@@ -6,11 +6,16 @@
 //! Unknown top-level fields become structured properties, so nothing a
 //! producer sends is silently dropped.
 
+use std::fmt;
+use std::sync::Arc;
+
+use serde::de::{Deserializer, SeqAccess, Visitor};
 use serde_json::{Map, Value as Json};
 use telemetry::*;
 
-use crate::IngestError;
-use crate::render_template;
+use crate::jsontree::{self, Ctx};
+use crate::limits::{self, Budget, Limits};
+use crate::{IngestError, render_template};
 
 pub enum Format {
     Json,
@@ -33,54 +38,163 @@ impl Format {
     }
 }
 
-/// Parse a request body into log events. Batches are all-or-nothing: one
-/// invalid event rejects the request, with its index in the error.
-pub fn parse(body: &[u8], format: Format, now: Timestamp) -> Result<Vec<TelemetryEvent>, IngestError> {
-    let objects: Vec<Json> = match format {
+/// Parse a request body into log events, within `limits`. Batches are
+/// all-or-nothing: one invalid event, or any limit passed, rejects the
+/// request, with the event's index in the error.
+///
+/// Events are converted one at a time as they are parsed, so the working
+/// set is the batch built so far plus one event's JSON. The number of
+/// events is counted before parsing (lines, or a structural scan of a JSON
+/// array), so a batch with too many is refused at once and the batch is
+/// allocated exactly once.
+pub fn parse(body: &[u8], format: Format, now: Timestamp, limits: Limits) -> Result<Vec<TelemetryEvent>, IngestError> {
+    let mut budget = Budget::new(limits);
+    let mut b = Batch { out: Vec::new(), now, empty: Fields::shared_empty() };
+    match format {
         Format::Json => {
-            let v: Json =
-                serde_json::from_slice(body).map_err(|e| IngestError::Malformed(format!("invalid JSON: {e}")))?;
-            match v {
-                Json::Array(items) => items,
-                Json::Object(mut o) if o.len() == 1 && o.get("events").is_some_and(Json::is_array) => {
-                    match o.remove("events") {
-                        Some(Json::Array(items)) => items,
-                        _ => unreachable!(),
-                    }
-                }
-                obj @ Json::Object(_) => vec![obj],
-                _ => return Err(IngestError::Malformed("expected a JSON object or array of objects".into())),
+            // `{"events": [...]}` is streamed like a bare array.
+            let array = jsontree::envelope(body).unwrap_or(body);
+            match jsontree::count_array_elements(array) {
+                Some(n) => b.array(array, n, &mut budget)?,
+                None => b.object(body, &mut budget)?,
             }
         }
         Format::NdJson => {
             let text =
                 std::str::from_utf8(body).map_err(|_| IngestError::Malformed("body is not valid UTF-8".into()))?;
-            let mut out = Vec::new();
-            for (i, line) in text.lines().enumerate() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let v: Json = serde_json::from_str(line)
-                    .map_err(|e| IngestError::Malformed(format!("line {}: invalid JSON: {e}", i + 1)))?;
-                out.push(v);
+            let lines = || text.lines().map(str::trim).enumerate().filter(|(_, l)| !l.is_empty());
+            b.reserve(lines().count(), &mut budget)?;
+            for (i, line) in lines() {
+                let before = budget.used();
+                let mut ctx = Ctx::new(&mut budget, limits.max_depth);
+                let v = jsontree::from_slice(line.as_bytes(), &mut ctx).map_err(|e| match e {
+                    IngestError::Malformed(m) => IngestError::Malformed(format!("line {}: {m}", i + 1)),
+                    other => other,
+                })?;
+                let containers = ctx.containers;
+                let index = b.out.len();
+                b.convert(v, index, before, containers, &mut budget)?;
             }
-            out
         }
-    };
-    if objects.is_empty() {
+    }
+    if b.out.is_empty() {
         return Err(IngestError::Malformed("no events in request".into()));
     }
-    objects
-        .into_iter()
-        .enumerate()
-        .map(|(index, v)| match v {
-            Json::Object(o) => {
-                event_from_object(o, now).map_err(|message| IngestError::InvalidEvent { index, message })
+    Ok(b.out)
+}
+
+/// The events of one request as they are built.
+struct Batch {
+    out: Vec<TelemetryEvent>,
+    now: Timestamp,
+    /// Shared by every event without a resource.
+    empty: Arc<Fields>,
+}
+
+impl Batch {
+    /// Room for exactly `n` events, refused when there are too many or
+    /// their fixed size alone is over the byte limit.
+    fn reserve(&mut self, n: usize, budget: &mut Budget) -> Result<(), IngestError> {
+        budget.check_events(n)?;
+        limits::reserve(&mut self.out, n, budget)
+    }
+
+    /// Convert one event's JSON, whose tree took the budget from `before`
+    /// to where it is now. Conversion moves strings but allocates every
+    /// container again while the tree is still held, so that is charged
+    /// first; the tree is credited back once it is gone.
+    fn convert(
+        &mut self,
+        v: Json,
+        index: usize,
+        before: usize,
+        containers: usize,
+        budget: &mut Budget,
+    ) -> Result<(), IngestError> {
+        budget.event()?;
+        let tree = budget.used() - before;
+        budget.charge(containers)?;
+        let e = match v {
+            Json::Object(o) => event_from_object(o, self.now, &self.empty)
+                .map_err(|message| IngestError::InvalidEvent { index, message })?,
+            _ => return Err(IngestError::InvalidEvent { index, message: "expected a JSON object".into() }),
+        };
+        budget.release(tree + containers);
+        let resource = if Arc::ptr_eq(&e.resource, &self.empty) { 0 } else { limits::shared_fields(&e.resource) };
+        budget.charge(e.heap_size() + resource)?;
+        limits::push(&mut self.out, e, budget)
+    }
+
+    /// A JSON array of `n` events, parsed one element at a time.
+    fn array(&mut self, body: &[u8], n: usize, budget: &mut Budget) -> Result<(), IngestError> {
+        self.reserve(n, budget)?;
+        let mut de = serde_json::Deserializer::from_slice(body);
+        let parsed = de.deserialize_seq(Elements { batch: self, budget: &mut *budget }).and_then(|()| de.end());
+        parsed.map_err(|e| budget.take_failure().unwrap_or_else(|| jsontree::syntax_error(&e, budget)))
+    }
+
+    /// A single event, or an envelope [`jsontree::envelope`] does not
+    /// recognise (such as one with an escaped key), which is held whole.
+    fn object(&mut self, body: &[u8], budget: &mut Budget) -> Result<(), IngestError> {
+        let max_depth = budget.limits().max_depth;
+        let before = budget.used();
+        // The envelope puts its events two levels down.
+        let mut ctx = Ctx::new(budget, max_depth + 2);
+        let v = jsontree::from_slice(body, &mut ctx)?;
+        let containers = ctx.containers;
+        match v {
+            Json::Object(mut o) if o.len() == 1 && o.get("events").is_some_and(Json::is_array) => {
+                let Some(Json::Array(items)) = o.remove("events") else { unreachable!() };
+                self.reserve(items.len(), budget)?;
+                // The whole tree is held until the last event is converted.
+                let tree = budget.used() - before;
+                budget.charge(containers)?;
+                for (index, item) in items.into_iter().enumerate() {
+                    let at = budget.used();
+                    self.convert(item, index, at, 0, budget)?;
+                }
+                budget.release(tree + containers);
+                Ok(())
             }
-            _ => Err(IngestError::InvalidEvent { index, message: "expected a JSON object".into() }),
-        })
-        .collect()
+            obj @ Json::Object(_) => {
+                if jsontree::depth(&obj).is_some_and(|d| d > max_depth) {
+                    return Err(IngestError::TooDeep { limit: max_depth });
+                }
+                self.reserve(1, budget)?;
+                self.convert(obj, 0, before, containers, budget)
+            }
+            _ => Err(IngestError::Malformed("expected a JSON object or array of objects".into())),
+        }
+    }
+}
+
+/// The elements of a top-level JSON array, each converted as soon as it
+/// has been parsed.
+struct Elements<'a> {
+    batch: &'a mut Batch,
+    budget: &'a mut Budget,
+}
+
+impl<'de> Visitor<'de> for Elements<'_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("an array of events")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+        let max_depth = self.budget.limits().max_depth;
+        loop {
+            let before = self.budget.used();
+            let mut ctx = Ctx::new(&mut *self.budget, max_depth);
+            let Some(v) = seq.next_element_seed(ctx.seed(0))? else { return Ok(()) };
+            let containers = ctx.containers;
+            let index = self.batch.out.len();
+            if let Err(e) = self.batch.convert(v, index, before, containers, self.budget) {
+                return Err(self.budget.fail(e));
+            }
+        }
+    }
 }
 
 fn take(o: &mut Map<String, Json>, keys: &[&str]) -> Option<Json> {
@@ -132,7 +246,7 @@ fn exception_from(v: Json) -> Option<Exception> {
     }
 }
 
-fn event_from_object(mut o: Map<String, Json>, now: Timestamp) -> Result<TelemetryEvent, String> {
+fn event_from_object(mut o: Map<String, Json>, now: Timestamp, empty: &Arc<Fields>) -> Result<TelemetryEvent, String> {
     let timestamp = match take(&mut o, &["timestamp", "@t", "time", "ts", "Timestamp"]) {
         None => now,
         Some(v) => parse_json_timestamp(&v).ok_or_else(|| format!("invalid timestamp {v}"))?,
@@ -160,6 +274,7 @@ fn event_from_object(mut o: Map<String, Json>, now: Timestamp) -> Result<Telemet
         Some(Json::Null) | None => Fields::new(),
         Some(v) => fields_of(v, "resource")?,
     };
+    let resource = if resource.is_empty() { empty.clone() } else { Arc::new(resource) };
     // Everything else is a property (CLEF puts properties at top level).
     for (k, v) in o {
         attributes.insert(k, Value::from(v));
@@ -212,9 +327,10 @@ mod tests {
     use super::*;
 
     const NOW: Timestamp = Timestamp(1_000);
+    const U: Limits = Limits::UNBOUNDED;
 
     fn one(json: &str) -> TelemetryEvent {
-        let mut v = parse(json.as_bytes(), Format::Json, NOW).unwrap();
+        let mut v = parse(json.as_bytes(), Format::Json, NOW, U).unwrap();
         assert_eq!(v.len(), 1);
         v.pop().unwrap()
     }
@@ -271,32 +387,32 @@ mod tests {
 
     #[test]
     fn batches_and_ndjson() {
-        let v = parse(br#"[{"message":"a"},{"message":"b"}]"#, Format::Json, NOW).unwrap();
+        let v = parse(br#"[{"message":"a"},{"message":"b"}]"#, Format::Json, NOW, U).unwrap();
         assert_eq!(v.len(), 2);
-        let v = parse(br#"{"events":[{"message":"a"}]}"#, Format::Json, NOW).unwrap();
+        let v = parse(br#"{"events":[{"message":"a"}]}"#, Format::Json, NOW, U).unwrap();
         assert_eq!(v[0].message(), "a");
-        let v = parse(b"{\"message\":\"a\"}\n\n{\"message\":\"b\"}\r\n", Format::NdJson, NOW).unwrap();
+        let v = parse(b"{\"message\":\"a\"}\n\n{\"message\":\"b\"}\r\n", Format::NdJson, NOW, U).unwrap();
         assert_eq!(v.iter().map(|e| e.message()).collect::<Vec<_>>(), ["a", "b"]);
     }
 
     #[test]
     fn errors() {
-        assert!(matches!(parse(b"not json", Format::Json, NOW), Err(IngestError::Malformed(_))));
-        assert!(matches!(parse(b"[]", Format::Json, NOW), Err(IngestError::Malformed(_))));
-        assert!(matches!(parse(b"42", Format::Json, NOW), Err(IngestError::Malformed(_))));
+        assert!(matches!(parse(b"not json", Format::Json, NOW, U), Err(IngestError::Malformed(_))));
+        assert!(matches!(parse(b"[]", Format::Json, NOW, U), Err(IngestError::Malformed(_))));
+        assert!(matches!(parse(b"42", Format::Json, NOW, U), Err(IngestError::Malformed(_))));
         assert_eq!(
-            parse(br#"[{"message":"ok"}, 5]"#, Format::Json, NOW),
+            parse(br#"[{"message":"ok"}, 5]"#, Format::Json, NOW, U),
             Err(IngestError::InvalidEvent { index: 1, message: "expected a JSON object".into() })
         );
         assert!(matches!(
-            parse(br#"{"timestamp": "yesterday"}"#, Format::Json, NOW),
+            parse(br#"{"timestamp": "yesterday"}"#, Format::Json, NOW, U),
             Err(IngestError::InvalidEvent { index: 0, .. })
         ));
         assert!(matches!(
-            parse(br#"{"properties": [1]}"#, Format::Json, NOW),
+            parse(br#"{"properties": [1]}"#, Format::Json, NOW, U),
             Err(IngestError::InvalidEvent { index: 0, .. })
         ));
-        let e = parse(b"{\"a\":1}\n{oops", Format::NdJson, NOW).unwrap_err();
+        let e = parse(b"{\"a\":1}\n{oops", Format::NdJson, NOW, U).unwrap_err();
         assert!(e.to_string().starts_with("line 2"));
         assert!(matches!(Format::from_content_type(Some("text/csv")), Err(IngestError::UnsupportedContentType(_))));
         assert!(matches!(Format::from_content_type(Some("application/x-ndjson; charset=utf-8")), Ok(Format::NdJson)));
@@ -318,11 +434,39 @@ mod tests {
             br#"[{"message":"a","x":1},{"message":"b","x":"one"},{"message":"c","x":[1,{"y":null}]}]"#,
             Format::Json,
             NOW,
+            U,
         )
         .unwrap();
         assert_eq!(v[0].attributes.get("x"), Some(&Value::Int(1)));
         assert_eq!(v[1].attributes.get("x"), Some(&Value::from("one")));
         assert!(matches!(v[2].attributes.get("x"), Some(Value::Array(_))));
+    }
+
+    #[test]
+    fn envelopes_and_lookalikes() {
+        // Streamed like an array, whatever the whitespace.
+        let v = parse(
+            b" { \"events\" :
+ [{\"message\":\"a\"}, {\"message\":\"b\"}] } ",
+            Format::Json,
+            NOW,
+            U,
+        )
+        .unwrap();
+        assert_eq!(v.iter().map(|e| e.message()).collect::<Vec<_>>(), ["a", "b"]);
+        // Another key makes it one event with an `events` property.
+        let v = parse(br#"{"events":[1],"message":"m"}"#, Format::Json, NOW, U).unwrap();
+        assert_eq!((v.len(), v[0].message()), (1, "m"));
+        assert!(matches!(v[0].attributes.get("events"), Some(Value::Array(_))));
+        // An escaped key is still the envelope, decoded the general way.
+        let v = parse(br#"{"events":[{"message":"a"}]}"#, Format::Json, NOW, U).unwrap();
+        assert_eq!(v[0].message(), "a");
+        assert_eq!(
+            parse(br#"{"events":[{"message":"a"}, 5]}"#, Format::Json, NOW, U),
+            Err(IngestError::InvalidEvent { index: 1, message: "expected a JSON object".into() })
+        );
+        assert!(matches!(parse(br#"{"events":[]}"#, Format::Json, NOW, U), Err(IngestError::Malformed(_))));
+        assert!(matches!(parse(br#"{"events":[{}] "#, Format::Json, NOW, U), Err(IngestError::Malformed(_))));
     }
 
     #[test]

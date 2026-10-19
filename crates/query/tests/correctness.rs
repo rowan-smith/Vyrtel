@@ -77,7 +77,7 @@ fn messy_event(i: usize, rng: &mut impl FnMut(u32) -> u32) -> TelemetryEvent {
         environment: (rng(2) == 0).then(|| ["production", "staging"][rng(2) as usize].to_string()),
         trace_id: (rng(2) == 0).then(|| TraceId::new(&format!("{:032x}", rng(30) + 1)).unwrap()),
         span_id: None,
-        resource,
+        resource: resource.into(),
         attributes: attrs,
         payload: TelemetryPayload::Log(LogEvent {
             level,

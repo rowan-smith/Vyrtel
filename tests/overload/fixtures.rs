@@ -5,6 +5,11 @@
 //!
 //! OTLP fixtures are built once as protobuf structs and encoded both as
 //! protobuf and as OTLP/JSON, so the two encodings carry the same records.
+//!
+//! Each fixture says what the server does with it at the request-size
+//! limit ([`Expect`]): representative producer batches are accepted, and
+//! shapes that would decode past the per-request estimate are refused
+//! (REL-16). Either way the request stays within the estimate.
 
 use ingest::otlp::proto::*;
 use serde_json::{Value as Json, json};
@@ -80,18 +85,34 @@ impl Kind {
         }
     }
 
-    /// Run the same decoding the server runs; returns the decoded events.
-    pub fn parse(self, body: &[u8]) -> Vec<telemetry::TelemetryEvent> {
+    /// Run the same decoding the server runs, within `limits`.
+    pub fn parse(
+        self,
+        body: &[u8],
+        limits: ingest::Limits,
+    ) -> Result<Vec<telemetry::TelemetryEvent>, ingest::IngestError> {
         use ingest::{native, otlp};
         let now = telemetry::Timestamp::now();
         match self {
-            Kind::NativeJson => native::parse(body, native::Format::Json, now).unwrap(),
-            Kind::NativeNdJson => native::parse(body, native::Format::NdJson, now).unwrap(),
-            Kind::OtlpLogs(e) => otlp::decode_logs(body, e, now).unwrap().events,
-            Kind::OtlpTraces(e) => otlp::decode_traces(body, e, now).unwrap().events,
-            Kind::OtlpMetrics(e) => otlp::decode_metrics(body, e, now).unwrap().events,
+            Kind::NativeJson => native::parse(body, native::Format::Json, now, limits),
+            Kind::NativeNdJson => native::parse(body, native::Format::NdJson, now, limits),
+            Kind::OtlpLogs(e) => otlp::decode_logs(body, e, now, limits).map(|m| m.events),
+            Kind::OtlpTraces(e) => otlp::decode_traces(body, e, now, limits).map(|m| m.events),
+            Kind::OtlpMetrics(e) => otlp::decode_metrics(body, e, now, limits).map(|m| m.events),
         }
     }
+}
+
+/// What the server does with a fixture sent at the request-size limit.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Expect {
+    /// Stored: representative producer batches, and shapes that decode
+    /// within the per-request estimate.
+    Accepted,
+    /// Refused with 413 (`maxDecodedBytes`) while decoding, before it
+    /// passes the estimate: shapes that cost far more memory decoded than
+    /// on the wire.
+    Refused,
 }
 
 pub struct Fixture {
@@ -102,25 +123,28 @@ pub struct Fixture {
     /// Decoded (uncompressed) body.
     pub body: Vec<u8>,
     pub events: usize,
-    /// Expected to stay within the shared admission estimate. Fixtures
-    /// outside the supported event-density envelope are measured and
-    /// reported, but not held to it (see docs/configuration.md).
-    pub supported: bool,
+    pub expect: Expect,
 }
 
 /// Build `make(n)` with `n` as large as possible while the body stays at
 /// or under `target` bytes. `make` must grow monotonically with `n`.
+/// Doubles from a probe-based guess, then bisects, so fixtures whose fixed
+/// part (such as a large shared resource) dominates a small probe are still
+/// filled to the target.
 fn fit(target: usize, make: impl Fn(usize) -> Vec<u8>) -> (Vec<u8>, usize) {
     let probe = 64;
     let per = make(probe).len().div_ceil(probe).max(1);
-    let mut n = (target / per).max(1);
-    loop {
-        let body = make(n);
-        if body.len() <= target || n == 1 {
-            return (body, n);
-        }
-        n = n * 99 / 100;
+    let (mut lo, mut hi) = (1, (target / per).max(2));
+    while make(hi).len() <= target {
+        lo = hi;
+        hi *= 2;
     }
+    // make(lo) fits (or lo is 1), make(hi) does not.
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if make(mid).len() <= target { lo = mid } else { hi = mid }
+    }
+    (make(lo), lo)
 }
 
 // ---- native -------------------------------------------------------------
@@ -209,7 +233,7 @@ fn native(
     shape: &'static str,
     target: usize,
     event: fn(&mut Rng, usize) -> Json,
-    supported: bool,
+    expect: Expect,
 ) -> Fixture {
     let (body, events) = fit(target, |n| {
         let mut r = Rng::new(SEED);
@@ -219,7 +243,7 @@ fn native(
             _ => ndjson(items),
         }
     });
-    Fixture { name: name.into(), kind, shape, body, events, supported }
+    Fixture { name: name.into(), kind, shape, body, events, expect }
 }
 
 // ---- OTLP ---------------------------------------------------------------
@@ -538,7 +562,7 @@ fn otlp<T: prost::Message>(
     shape: &'static str,
     target: usize,
     // Per encoding: protobuf, JSON.
-    supported: [bool; 2],
+    expect: [Expect; 2],
     signal: fn(ingest::otlp::Encoding) -> Kind,
     build: impl Fn(usize) -> T,
     to_json: fn(&T) -> Vec<u8>,
@@ -546,15 +570,13 @@ fn otlp<T: prost::Message>(
 ) -> [Fixture; 2] {
     use ingest::otlp::Encoding;
     let mut out = Vec::new();
-    for ((enc, label), supported) in
-        [(Encoding::Protobuf, "protobuf"), (Encoding::Json, "JSON")].into_iter().zip(supported)
-    {
+    for ((enc, label), expect) in [(Encoding::Protobuf, "protobuf"), (Encoding::Json, "JSON")].into_iter().zip(expect) {
         let (body, n) = fit(target, |n| match enc {
             Encoding::Protobuf => build(n).encode_to_vec(),
             Encoding::Json => to_json(&build(n)),
         });
         let events = events_of(&build(n));
-        out.push(Fixture { name: format!("OTLP {label} {name}"), kind: signal(enc), shape, body, events, supported });
+        out.push(Fixture { name: format!("OTLP {label} {name}"), kind: signal(enc), shape, body, events, expect });
     }
     out.try_into().ok().unwrap()
 }
@@ -568,7 +590,7 @@ pub fn all(target: usize) -> Vec<Fixture> {
             "app event, 5 properties",
             target,
             representative_event,
-            true,
+            Expect::Accepted,
         ),
         native(
             "NDJSON representative",
@@ -576,16 +598,23 @@ pub fn all(target: usize) -> Vec<Fixture> {
             "app event, 5 properties",
             target,
             representative_event,
-            true,
+            Expect::Accepted,
         ),
-        native("CLEF representative", Kind::NativeNdJson, "Serilog request log, 10% with @x", target, clef_event, true),
+        native(
+            "CLEF representative",
+            Kind::NativeNdJson,
+            "Serilog request log, 10% with @x",
+            target,
+            clef_event,
+            Expect::Accepted,
+        ),
         native(
             "NDJSON nested properties",
             Kind::NativeNdJson,
             "6-level nesting, ~40 small values",
             target,
             nested_event,
-            false,
+            Expect::Refused,
         ),
         native(
             "native JSON nested properties",
@@ -593,7 +622,7 @@ pub fn all(target: usize) -> Vec<Fixture> {
             "6-level nesting, ~40 small values",
             target,
             nested_event,
-            false,
+            Expect::Refused,
         ),
         native(
             "NDJSON string-heavy",
@@ -601,7 +630,7 @@ pub fn all(target: usize) -> Vec<Fixture> {
             "12 KB of strings per event",
             target,
             string_heavy_event,
-            true,
+            Expect::Accepted,
         ),
         native(
             "NDJSON many small events",
@@ -609,7 +638,7 @@ pub fn all(target: usize) -> Vec<Fixture> {
             "{\"message\":\"…\"} (~30 B)",
             target,
             |r, i| json!({ "message": format!("{}{i}", r.word(4)) }),
-            false,
+            Expect::Accepted,
         ),
         native(
             "native JSON many small events",
@@ -617,9 +646,17 @@ pub fn all(target: usize) -> Vec<Fixture> {
             "{\"message\":\"…\"} (~30 B)",
             target,
             |r, i| json!({ "message": format!("{}{i}", r.word(4)) }),
-            false,
+            Expect::Accepted,
         ),
-        native("NDJSON empty objects", Kind::NativeNdJson, "{} (3 B)", target, |_, _| json!({}), false),
+        native("NDJSON empty objects", Kind::NativeNdJson, "{} (3 B)", target, |_, _| json!({}), Expect::Refused),
+        native(
+            "NDJSON wide arrays",
+            Kind::NativeNdJson,
+            "500 one-digit numbers in one property",
+            target,
+            |r, _| json!({ "message": "wide", "properties": { "v": (0..500).map(|_| r.below(10)).collect::<Vec<_>>() } }),
+            Expect::Refused,
+        ),
     ];
     let logs_events = |r: &ExportLogsServiceRequest| {
         r.resource_logs.iter().flat_map(|x| &x.scope_logs).map(|x| x.log_records.len()).sum()
@@ -628,7 +665,7 @@ pub fn all(target: usize) -> Vec<Fixture> {
         "logs representative",
         "SDK resource, 4 attributes",
         target,
-        [true, true],
+        [Expect::Accepted, Expect::Accepted],
         Kind::OtlpLogs,
         |n| {
             let mut r = Rng::new(SEED);
@@ -642,7 +679,7 @@ pub fn all(target: usize) -> Vec<Fixture> {
         "logs many small records",
         "body only (~20 B)",
         target,
-        [false, true],
+        [Expect::Refused, Expect::Accepted],
         Kind::OtlpLogs,
         |n| {
             let mut r = Rng::new(SEED);
@@ -657,7 +694,7 @@ pub fn all(target: usize) -> Vec<Fixture> {
         "logs large shared resource",
         "200-attribute resource, tiny records",
         target,
-        [false, false],
+        [Expect::Refused, Expect::Accepted],
         Kind::OtlpLogs,
         |n| {
             let mut r = Rng::new(SEED);
@@ -669,10 +706,43 @@ pub fn all(target: usize) -> Vec<Fixture> {
         logs_events,
     ));
     v.extend(otlp(
+        "logs large resource, representative records",
+        "200-attribute resource shared by SDK-like records",
+        target,
+        [Expect::Accepted, Expect::Accepted],
+        Kind::OtlpLogs,
+        |n| {
+            let mut r = Rng::new(SEED);
+            let res = Resource { attributes: (0..200).map(|k| kv(&format!("attr.{k}"), s(r.word(24)))).collect() };
+            logs_request(vec![(res, (0..n).map(|i| log_record(&mut r, i)).collect())])
+        },
+        logs_json,
+        logs_events,
+    ));
+    v.extend(otlp(
+        "logs empty array values",
+        "1,000 empty AnyValues in one attribute",
+        target,
+        [Expect::Refused, Expect::Refused],
+        Kind::OtlpLogs,
+        |n| {
+            let mut r = Rng::new(SEED);
+            let res = sdk_resource(&mut r);
+            let list = || AnyValue {
+                value: Some(any_value::Value::ArrayValue(ArrayValue { values: vec![AnyValue::default(); 1000] })),
+            };
+            let records =
+                (0..n).map(|_| LogRecord { attributes: vec![kv("list", Some(list()))], ..Default::default() });
+            logs_request(vec![(res, records.collect())])
+        },
+        logs_json,
+        logs_events,
+    ));
+    v.extend(otlp(
         "traces representative",
         "SDK resource, 5 attributes, 1 in 8 with an event",
         target,
-        [true, true],
+        [Expect::Accepted, Expect::Accepted],
         Kind::OtlpTraces,
         |n| {
             let mut r = Rng::new(SEED);
@@ -686,7 +756,7 @@ pub fn all(target: usize) -> Vec<Fixture> {
         "metrics representative",
         "gauge/sum (2 points), histogram (11 buckets)",
         target,
-        [true, true],
+        [Expect::Accepted, Expect::Accepted],
         Kind::OtlpMetrics,
         |n| {
             let mut r = Rng::new(SEED);

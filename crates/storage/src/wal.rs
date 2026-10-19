@@ -20,10 +20,11 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use telemetry::Signal;
+use telemetry::{Signal, TelemetryEvent};
 
+use crate::encoding::Writer;
 use crate::error::{IoContext, Result};
-use crate::{fault, fsutil};
+use crate::{codec, fault, fsutil};
 
 pub const WAL_MAGIC: &[u8; 8] = b"VYRTWAL1";
 /// The WAL magic of Observer 0.1.0, Vyrtel's first release under its
@@ -36,6 +37,8 @@ const RECORD_OVERHEAD: usize = 1 + 4 + 4;
 /// Upper bound for one record. Anything larger is treated as corruption
 /// rather than an instruction to allocate gigabytes.
 pub const MAX_RECORD_LEN: u32 = 256 * 1024 * 1024;
+/// A record is written in pieces of about this size as it is encoded.
+const WRITE_CHUNK: usize = 64 << 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WalHeader {
@@ -97,6 +100,36 @@ pub fn encode_record(payload: &[u8]) -> Vec<u8> {
     let crc = crc32fast::hash(&rec);
     rec.extend_from_slice(&crc.to_le_bytes());
     rec
+}
+
+/// A record on its way to the file: hashed as it is produced, written in
+/// [`WRITE_CHUNK`] pieces. With an injected fault, only `budget` bytes reach
+/// the file before the fault's error is returned.
+struct RecordOut<'f> {
+    file: &'f mut File,
+    buf: Vec<u8>,
+    crc: crc32fast::Hasher,
+    budget: usize,
+    fault: Option<io::Error>,
+}
+
+impl RecordOut<'_> {
+    fn put(&mut self, b: &[u8]) -> io::Result<()> {
+        self.crc.update(b);
+        self.buf.extend_from_slice(b);
+        if self.buf.len() >= WRITE_CHUNK { self.flush() } else { Ok(()) }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let n = self.buf.len().min(self.budget);
+        self.file.write_all(&self.buf[..n])?;
+        self.budget -= n;
+        if n < self.buf.len() {
+            return Err(self.fault.take().unwrap_or_else(|| io::Error::other("record longer than announced")));
+        }
+        self.buf.clear();
+        Ok(())
+    }
 }
 
 pub fn wal_file_name(id: u64) -> String {
@@ -217,6 +250,54 @@ impl WalWriter {
         }
         self.len += rec.len() as u64;
         self.unsynced += rec.len() as u64;
+        Ok(())
+    }
+
+    /// Append one batch as a record, encoding it as it is written. The
+    /// bytes are exactly those of `append(&codec::encode_batch(events))`,
+    /// but neither the batch nor the record is ever held whole: only one
+    /// event's encoding and a [`WRITE_CHUNK`] buffer. That matters when the
+    /// encoding is far larger than the events in memory, as when many
+    /// events share one large OTLP resource, which the codec writes out
+    /// with each of them. The length is taken by a first encoding pass, so
+    /// a batch over [`MAX_RECORD_LEN`] is refused before anything is
+    /// written. A failure part-way is handled like a failed `append`.
+    pub fn append_batch(&mut self, events: &[TelemetryEvent]) -> Result<()> {
+        if self.poisoned {
+            self.recover_from_partial_write()?;
+        }
+        let mut scratch = Writer::new();
+        let len = codec::encoded_batch_len(events, &mut scratch);
+        if len > MAX_RECORD_LEN as usize {
+            return Err(crate::StorageError::BatchTooLarge(len));
+        }
+        let total = len + RECORD_OVERHEAD;
+        let mut out = RecordOut {
+            file: &mut self.file,
+            buf: Vec::with_capacity(WRITE_CHUNK.min(total)),
+            crc: crc32fast::Hasher::new(),
+            budget: total,
+            fault: None,
+        };
+        if let Some((n, e)) = fault::check_write("wal.append", &self.path, total) {
+            (out.budget, out.fault) = (n, Some(e));
+        }
+        let result = (|| {
+            out.put(&[RECORD_VERSION])?;
+            out.put(&(len as u32).to_le_bytes())?;
+            codec::encode_batch_with(events, &mut scratch, |b| out.put(b))?;
+            let crc = out.crc.clone().finalize();
+            out.buf.extend_from_slice(&crc.to_le_bytes());
+            out.flush()
+        })();
+        if let Err(e) = result {
+            // As in `append`: cut off whatever was written.
+            self.poisoned = true;
+            let _ = self.recover_from_partial_write();
+            return Err(e).ctx(&self.path);
+        }
+        self.len += total as u64;
+        self.unsynced += total as u64;
         Ok(())
     }
 
@@ -531,6 +612,66 @@ mod tests {
         })
         .unwrap();
         (out, rep)
+    }
+
+    /// Events whose encoding is far larger than they are in memory: each
+    /// carries the same 100-attribute resource.
+    fn shared_resource_events(n: usize) -> Vec<TelemetryEvent> {
+        use std::sync::Arc;
+        use telemetry::*;
+        let resource: Arc<Fields> =
+            Arc::new((0..100).map(|k| (format!("attr.{k}"), Value::from("x".repeat(24)))).collect());
+        (0..n)
+            .map(|i| TelemetryEvent {
+                id: EventId(i as u64 + 1),
+                timestamp: Timestamp(i as i64),
+                observed_timestamp: Timestamp(i as i64),
+                service: Some("api".into()),
+                environment: None,
+                trace_id: None,
+                span_id: None,
+                resource: resource.clone(),
+                attributes: Fields::new(),
+                payload: TelemetryPayload::Log(LogEvent {
+                    level: Level::Information,
+                    message: format!("event {i}"),
+                    message_template: None,
+                    exception: None,
+                }),
+            })
+            .collect()
+    }
+
+    // Streaming a batch into the WAL writes byte for byte what encoding it
+    // whole did, over any number of write chunks, and replays to the same
+    // events.
+    #[test]
+    fn append_batch_writes_the_same_bytes_as_append() {
+        for n in [0, 1, 7, 200] {
+            let events = shared_resource_events(n);
+            let (_d, dir, tmp) = setup();
+            let mut whole = WalWriter::create(&dir, &tmp, header(1)).unwrap();
+            whole.append(&codec::encode_batch(&events)).unwrap();
+            let mut streamed = WalWriter::create(&dir, &tmp, header(2)).unwrap();
+            streamed.append_batch(&events).unwrap();
+            streamed.append_batch(&events).unwrap();
+            let (a, b) = (std::fs::read(whole.path()).unwrap(), std::fs::read(streamed.path()).unwrap());
+            let record = &a[HEADER_LEN as usize..];
+            assert_eq!(&b[HEADER_LEN as usize..], [record, record].concat(), "{n} events");
+            assert_eq!(streamed.len(), HEADER_LEN + 2 * record.len() as u64);
+            if n == 200 {
+                assert!(record.len() > 4 * WRITE_CHUNK, "spans several chunks: {}", record.len());
+            }
+            let (payloads, _) = collect(streamed.path());
+            assert_eq!(payloads.len(), 2);
+            assert_eq!(codec::decode_batch(&payloads[1]).unwrap(), events);
+        }
+    }
+
+    #[test]
+    fn encoded_batch_len_matches_the_encoding() {
+        let events = shared_resource_events(50);
+        assert_eq!(codec::encoded_batch_len(&events, &mut Writer::new()), codec::encode_batch(&events).len());
     }
 
     #[test]

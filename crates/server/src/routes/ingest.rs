@@ -1,8 +1,10 @@
 //! Ingestion endpoints: native JSON/NDJSON and OTLP/HTTP.
 //!
 //! Path: admission permit → HTTP body (gzip-decoded, size-limited before
-//! and after decoding) → parse on the blocking pool → bounded storage
-//! queue → WAL (+fsync in strict mode) → response. The permit is held for
+//! and after decoding) → parse on the blocking pool, within the decoding
+//! limits (`Config::ingest_limits`: events, decoded bytes and nesting,
+//! enforced while parsing) → bounded storage queue → WAL (+fsync in strict
+//! mode) → response. The permit is held for
 //! that whole lifecycle, so `ingest.max_concurrent` bounds bodies, decoded
 //! events and requests waiting for their acknowledgement alike. With no
 //! permit free the request gets 429 with `Retry-After` before its body is
@@ -235,7 +237,7 @@ pub async fn read_body(
                 state.config.ingest.max_request_size
             ),
         )
-        .with_details(json!({ "limitBytes": limit })),
+        .with_details(json!({ "limit": "maxRequestSize", "limitBytes": limit })),
         Err(ReadError::Decode(e)) => ApiError::new(
             StatusCode::BAD_REQUEST,
             "invalid_encoding",
@@ -337,8 +339,8 @@ pub async fn native_events(State(state): State<SharedState>, headers: HeaderMap,
     let encoding = BodyEncoding::from_headers(&headers)?;
     let (permit, body) = admit(&state, body)?;
     let bytes = read_body(&state, &permit, encoding, &headers, body).await?;
-    let now = Timestamp::now();
-    let events = parse(&permit, move || native::parse(&bytes, format, now)).await?;
+    let (now, limits) = (Timestamp::now(), state.config.ingest_limits());
+    let events = parse(&permit, move || native::parse(&bytes, format, now, limits)).await?;
     let n = events.len();
     submit(&state, Signal::Logs, events).await?;
     Ok((StatusCode::OK, Json(json!({ "accepted": n }))).into_response())
@@ -349,14 +351,14 @@ async fn otlp_export(
     headers: HeaderMap,
     body: Body,
     signal: Signal,
-    decode: fn(&[u8], otlp::Encoding, Timestamp) -> Result<otlp::Mapped, IngestError>,
+    decode: fn(&[u8], otlp::Encoding, Timestamp, ingest::Limits) -> Result<otlp::Mapped, IngestError>,
 ) -> ApiResult<Response> {
     let enc = otlp::Encoding::from_content_type(content_type(&headers))?;
     let encoding = BodyEncoding::from_headers(&headers)?;
     let (permit, body) = admit(&state, body)?;
     let bytes = read_body(&state, &permit, encoding, &headers, body).await?;
-    let now = Timestamp::now();
-    let mapped = parse(&permit, move || decode(&bytes, enc, now)).await?;
+    let (now, limits) = (Timestamp::now(), state.config.ingest_limits());
+    let mapped = parse(&permit, move || decode(&bytes, enc, now, limits)).await?;
     if !mapped.events.is_empty() {
         submit(&state, signal, mapped.events).await?;
     }

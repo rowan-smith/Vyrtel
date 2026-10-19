@@ -123,7 +123,13 @@ async fn sustained_overload_stays_within_memory_budget() {
     // Decoding alone, then one request end to end (body, decoded events,
     // WAL record and the copy kept in the active segment).
     let base = reset_peak();
-    let events = ingest::native::parse(&plain, ingest::native::Format::NdJson, telemetry::Timestamp::now()).unwrap();
+    let events = ingest::native::parse(
+        &plain,
+        ingest::native::Format::NdJson,
+        telemetry::Timestamp::now(),
+        s.config.ingest_limits(),
+    )
+    .unwrap();
     let parse_peak = PEAK.load(Ordering::Relaxed) - base;
     drop(events);
     let base = reset_peak();

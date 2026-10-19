@@ -90,7 +90,7 @@ by up to one segment's time span.
 | Key                | Default | Env                                | Description                                                                                                      |
 |--------------------|---------|------------------------------------|------------------------------------------------------------------------------------------------------------------|
 | `max_request_size` | `1MB`   | `VYRTEL_INGEST_MAX_REQUEST_SIZE` | Maximum ingest body size, both after gzip decoding and on the wire (inclusive). Larger requests get 413; see [request size and encoding](api.md#request-size-and-encoding). Was `16MB` before 0.1.2. |
-| `queue_capacity`   | `10000` | `VYRTEL_INGEST_QUEUE_CAPACITY`   | Events waiting to be written, per signal. When full, requests get 429. A single batch larger than this gets 413. |
+| `queue_capacity`   | `10000` | `VYRTEL_INGEST_QUEUE_CAPACITY`   | Events waiting to be written, per signal. When full, requests get 429. Also the most events (OTLP: log records, spans or metric data points) one request may carry: a larger batch gets 413 as soon as the count is known, before it is decoded ([decoding limits](#decoding-limits)). |
 | `ack_timeout`      | `30s`   | –                                  | Give up waiting for a write acknowledgement (503).                                                               |
 | `max_concurrent`   | `0`     | `VYRTEL_INGEST_MAX_CONCURRENT`   | Ingest requests in progress at once, from reading the body until the write is acknowledged. More get 429 without their body being read. `0` derives it from the memory budget ([ingest memory](#ingest-memory)); an explicit value is always honoured. |
 
@@ -137,32 +137,67 @@ Those are bounded separately, by `server.max_connections` and
 `server.connection_buffer`
 ([connections and transport limits](#connections-and-transport-limits)).
 
-**Where 20× comes from.** The `amplification` test measures each format's
-peak heap per byte of decoded body
+**Why 20× holds.** Decoding is limited so that no request goes past it,
+whatever its shape ([decoding limits](#decoding-limits)): the decoders
+may hold at most 17 × `max_request_size` of decoded data, and the rest
+covers the body itself (held twice while a body read in parts is joined)
+and what their accounting does not see. The `amplification` test measures
+every fixture's peak heap per byte of decoded body and asserts it is
+within 20×, with no exemptions
 ([details and full table](testing.md#ingest-amplification-and-derived-admission)).
-Representative batches of native JSON, NDJSON and CLEF peak at 7.0–9.4×;
-OTLP/JSON and OTLP/protobuf logs, traces and metrics at 12.5–16.0×; gzip
-makes no measurable difference. The highest supported fixture, OTLP/JSON
-logs of ~20-byte records, peaks at 17.0×.
+Representative batches of native JSON, NDJSON and CLEF peak at 3.8–4.4×,
+OTLP/JSON and OTLP/protobuf logs, traces and metrics at 8.4–11.9×, and the
+highest accepted fixture (native events of ~24 bytes) at 15.6×; gzip makes
+no measurable difference. Shapes that would decode past the limit are
+refused part-way, at no more than 18.1×.
 
-**Limitations.** This is an estimate from finite fixtures, not a hard
-memory bound. Event shapes that amplify more than 20× are outside it:
-very small native events (~32× for `{"message":"…"}` lines), deeply
-nested properties (~30×), very small OTLP/protobuf records (~92×), OTLP
-batches that share a large resource across many tiny records (the resource
-is copied into every event; over 100×), and empty objects (`{}`, ~210×).
-Rerun with 1 MB fixtures, the new default request size, every figure is
-within 3% of these.
+#### Decoding limits
 
-Such payloads are valid and **are accepted**: nothing limits a request's
-event count or nesting before it is parsed, and the queue's batch limit
-(`queue_capacity`) is checked only after parsing. One 1 MB request of
-empty objects was measured at a 213 MB peak, more than ten times its
-20 MB share, so a few at once can exceed `max_memory`. Until decoding
-enforces such limits, do not expose ingestion to untrusted producers
-without a limit in front of it. If your own producers send such batches,
-keep `max_request_size` well below what you would otherwise use, or set
-`max_concurrent` explicitly from your own measurements.
+Every ingest request is decoded within three limits, enforced while it is
+parsed and never after: what the request has decoded so far is the only
+memory at stake when a limit is reached.
+
+| Limit                   | Value                                   | Over it                                                       |
+|-------------------------|-----------------------------------------|---------------------------------------------------------------|
+| Events per request      | `queue_capacity` (default 10,000)       | `413 payload_too_large`, `"limit": "maxEvents"`               |
+| Decoded data per request | 17 × `max_request_size` (default 17 MB) | `413 payload_too_large`, `"limit": "maxDecodedBytes"`         |
+| Nesting of values       | 32 levels                               | `400 invalid_payload`, `"limit": "maxDepth"`                  |
+
+* **Events** are native events, OTLP log records, spans or metric data
+  points. The count is taken before anything is built: native bodies are
+  counted by a scan of their lines or array elements, OTLP/protobuf bodies
+  by a scan of the wire format, and OTLP/JSON records as they are reached.
+  A batch the queue could never hold is refused at once instead of after
+  it has been parsed.
+* **Decoded data** is the decoders' own estimate of the heap they hold:
+  the parsed JSON tree or OTLP structures, and the events built from them,
+  each charged before or as it is allocated and credited back once freed.
+  OTLP/protobuf bodies are measured by the same wire scan before `prost`
+  decodes anything. It is what tells shapes apart that cost far more than
+  their size: a 1 MB body of empty objects (`{}`), of tiny OTLP/protobuf
+  log records, of properties nested several levels deep or of arrays of
+  small numbers is refused, while ordinary batches use a fraction of it.
+* **Nesting** counts objects and arrays inside one native event (the event
+  is level 0), or levels of OTLP `arrayValue` / `kvlistValue` inside one
+  attribute or body. OTLP key/value lists cost several levels each of the
+  JSON parser's (128) or protobuf decoder's (100) own nesting limits, which
+  are reached at about 30 levels and reported the same way.
+
+OTLP resources are shared by all of their records, so a large resource
+costs memory once per request rather than once per record.
+
+A refused request stores nothing: native batches are all-or-nothing as
+always, and an OTLP request over a limit is refused as a whole; it never
+gets a partial success response, which stays for records that cannot be
+represented. Its admission slot is released at once. The response names
+the limit and how to split the batch
+([API reference](api.md#ingest-limits-and-retries)); retrying the same
+request cannot succeed.
+
+Both 413 limits scale with your settings: raising `queue_capacity` admits
+larger batches by count, and raising `max_request_size` raises the decoded
+data allowance with it (and the per-request estimate, so fewer requests
+are admitted at once from the same budget).
 
 **Too little memory for one request.** If not even one maximum-size request
 fits, Vyrtel refuses to start rather than admit more than the budget. For
@@ -230,6 +265,17 @@ MB of ingest heap against the 76.8 MB budget
   setting `max_concurrent` explicitly (which also restores the old
   behaviour exactly, with a startup warning if it is over budget).
 * Explicit `max_concurrent` values behave exactly as before.
+* Requests are now decoded within [decoding limits](#decoding-limits).
+  Batches with more events than `queue_capacity` were already refused with
+  413; they are now refused before they are parsed, and the error names
+  the limit (`"limit": "maxEvents"`). Bodies that would decode into more
+  than 17 × `max_request_size` (for example tens of thousands of empty or
+  near-empty events, or deeply nested values) get `413` with
+  `"limit": "maxDecodedBytes"`, and values nested more than 32 levels deep
+  get `400` with `"limit": "maxDepth"`; both used to be accepted. Ordinary
+  application, Serilog/CLEF and OpenTelemetry SDK and Collector batches are
+  unaffected. The earlier advice to keep producers that might send such
+  batches behind a limit in front of ingestion no longer applies.
 
 ### `[query]`
 
