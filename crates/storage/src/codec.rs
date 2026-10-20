@@ -6,12 +6,14 @@
 //! column chunks. Both use the functions in this module, so there is exactly
 //! one definition of how an event becomes bytes.
 //!
-//! A WAL batch in codec 2 holds each distinct resource once, in a table at
-//! its start, and its events refer to it by index; segment bodies (and
-//! codec 1 batches, still read) carry the resource inline.
+//! A WAL batch holds each distinct resource once, in a table at its start,
+//! and its events refer to it by index; segment bodies carry the resource
+//! inline.
 //!
-//! The layout is documented in `docs/storage-format.md`. Any change must bump
-//! [`CODEC_VERSION`] and keep a decoder for older versions.
+//! The layout is documented in `docs/storage-format.md`. There is one
+//! layout per [`telemetry::LAYOUT`]: a change before 1.0 sets a new layout
+//! identity and resets [`CODEC_VERSION`] to 1, with no decoder for the old
+//! bytes (see docs/releasing.md).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,8 +24,8 @@ use crate::encoding::{Reader, Writer};
 use crate::error::DecodeError;
 
 /// Version of the event codec, written at the start of every WAL record.
-/// Version 1 (no resource table) is still read.
-pub const CODEC_VERSION: u8 = 2;
+/// The only version of layout [`telemetry::LAYOUT`].
+pub const CODEC_VERSION: u8 = 1;
 
 /// Maximum nesting of structured values accepted when decoding.
 pub const MAX_DEPTH: usize = 64;
@@ -363,12 +365,6 @@ fn decode_body_as(head: Head, r: &mut Reader, table: Option<&[Arc<Fields>]>) -> 
     })
 }
 
-/// Self-contained event encoding, resource inline (codec 1 batches).
-pub fn encode_event(w: &mut Writer, e: &TelemetryEvent) {
-    encode_head(w, e);
-    encode_body(w, e);
-}
-
 fn encode_head(w: &mut Writer, e: &TelemetryEvent) {
     w.varint(e.id.0);
     w.i64(e.timestamp.0);
@@ -379,11 +375,6 @@ fn encode_head(w: &mut Writer, e: &TelemetryEvent) {
     w.opt_str(e.trace_id.as_ref().map(TraceId::as_str));
     w.opt_str(e.span_id.as_ref().map(SpanId::as_str));
     w.str(e.message());
-}
-
-pub fn decode_event(r: &mut Reader) -> Result<TelemetryEvent, DecodeError> {
-    let head = decode_head(r)?;
-    decode_with_body(head, r)
 }
 
 fn decode_head(r: &mut Reader) -> Result<Head, DecodeError> {
@@ -490,41 +481,23 @@ pub fn encoded_batch_len(events: &[TelemetryEvent], plan: &BatchPlan, scratch: &
     n
 }
 
-/// A batch in codec 1, as releases before 0.1.2 wrote it (every resource
-/// inline, no table). For tests of data written by those releases.
-#[doc(hidden)]
-pub fn encode_batch_v1(events: &[TelemetryEvent]) -> Vec<u8> {
-    let mut w = Writer::with_capacity(events.len() * 256);
-    w.u8(1);
-    w.varint(events.len() as u64);
-    for e in events {
-        encode_event(&mut w, e);
-    }
-    w.into_inner()
-}
-
-/// Decode a batch in codec 1 or 2. Events of one resource table entry
-/// share it.
+/// Decode a batch. Events of one resource table entry share it.
 pub fn decode_batch(bytes: &[u8]) -> Result<Vec<TelemetryEvent>, DecodeError> {
     let mut r = Reader::new(bytes);
-    let version = r.u8()?;
-    let table = match version {
-        1 => None,
-        2 => {
-            let n = r.len()?;
-            let mut table = Vec::with_capacity(n);
-            for _ in 0..n {
-                table.push(shared(decode_fields(&mut r)?));
-            }
-            Some(table)
-        }
+    match r.u8()? {
+        CODEC_VERSION => {}
         v => return Err(DecodeError::UnsupportedVersion(v as u16)),
-    };
+    }
+    let n = r.len()?;
+    let mut table = Vec::with_capacity(n);
+    for _ in 0..n {
+        table.push(shared(decode_fields(&mut r)?));
+    }
     let n = r.len()?;
     let mut events = Vec::with_capacity(n);
     for _ in 0..n {
         let head = decode_head(&mut r)?;
-        events.push(decode_body_as(head, &mut r, table.as_deref())?);
+        events.push(decode_body_as(head, &mut r, Some(&table))?);
     }
     if !r.is_empty() {
         return Err(DecodeError::Invalid("trailing bytes after batch"));
@@ -541,23 +514,24 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(512))]
 
-        /// encode(event) → decode() == event
-        #[test]
-        fn event_round_trip(e in any_event()) {
-            let mut w = Writer::new();
-            encode_event(&mut w, &e);
-            let mut r = Reader::new(&w.buf);
-            let back = decode_event(&mut r).unwrap();
-            prop_assert!(r.is_empty());
-            prop_assert_eq!(back, e);
-        }
-
+        /// encode(events) → decode() == events
         #[test]
         fn batch_round_trip(events in proptest::collection::vec(any_event(), 0..8)) {
             let bytes = encode_batch(&events);
-            prop_assert_eq!(&decode_batch(&bytes).unwrap(), &events);
-            // Batches written before 0.1.2 still read the same.
-            prop_assert_eq!(decode_batch(&encode_batch_v1(&events)).unwrap(), events);
+            prop_assert_eq!(decode_batch(&bytes).unwrap(), events);
+        }
+
+        /// A segment's body column: head and body stored apart.
+        #[test]
+        fn body_round_trip(e in any_event()) {
+            let mut w = Writer::new();
+            encode_head(&mut w, &e);
+            encode_body(&mut w, &e);
+            let mut r = Reader::new(&w.buf);
+            let head = decode_head(&mut r).unwrap();
+            let back = decode_with_body(head, &mut r).unwrap();
+            prop_assert!(r.is_empty());
+            prop_assert_eq!(back, e);
         }
 
         /// Arbitrary garbage must produce an error, never a panic.
@@ -599,8 +573,8 @@ mod tests {
         (0..50).map(|k| (format!("attr.{k}"), Value::from(format!("{tag}-{k:020}")))).collect()
     }
 
-    // Codec 2 stores each distinct resource once per batch, whether events
-    // share it or carry equal copies, and decoded events share it again.
+    // A batch stores each distinct resource once, whether events share it
+    // or carry equal copies, and decoded events share it again.
     #[test]
     fn resources_are_stored_once_per_batch() {
         let a = Arc::new(big_resource("a"));
@@ -613,10 +587,10 @@ mod tests {
             .collect();
         let plan = plan_batch(&events);
         assert_eq!(plan.resources, 2);
-        let v2 = encode_batch(&events);
-        let v1 = encode_batch_v1(&events);
-        assert!(v2.len() * 10 < v1.len(), "codec 2: {} bytes, codec 1: {}", v2.len(), v1.len());
-        let back = decode_batch(&v2).unwrap();
+        let bytes = encode_batch(&events);
+        let inline: usize = events.iter().map(|e| fields_len(&e.resource)).sum();
+        assert!(bytes.len() * 10 < inline, "batch: {} bytes, its resources inline: {inline}", bytes.len());
+        let back = decode_batch(&bytes).unwrap();
         assert_eq!(back, events);
         assert!(Arc::ptr_eq(&back[0].resource, &back[1].resource));
         assert!(Arc::ptr_eq(&back[2].resource, &back[6].resource));
@@ -648,12 +622,19 @@ mod tests {
         assert_eq!(decode_value(&mut Reader::new(&w.buf), 0), Err(DecodeError::DepthExceeded));
     }
 
+    fn fields_len(f: &Fields) -> usize {
+        let mut w = Writer::new();
+        encode_fields(&mut w, f);
+        w.buf.len()
+    }
+
     #[test]
     fn version_checked() {
         let mut bytes = encode_batch(&[]);
-        bytes[0] = 99;
-        assert_eq!(decode_batch(&bytes), Err(DecodeError::UnsupportedVersion(99)));
-        bytes[0] = 3;
-        assert_eq!(decode_batch(&bytes), Err(DecodeError::UnsupportedVersion(3)));
+        assert_eq!(bytes[0], 1, "the only codec version of this layout");
+        for v in [0, 2, 99] {
+            bytes[0] = v;
+            assert_eq!(decode_batch(&bytes), Err(DecodeError::UnsupportedVersion(v.into())));
+        }
     }
 }

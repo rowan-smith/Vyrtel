@@ -16,6 +16,10 @@ pub enum DecodeError {
     InvalidTag(u8),
     #[error("unsupported version {0}")]
     UnsupportedVersion(u16),
+    /// A header or footer with the right magic bytes but another layout
+    /// identity (as [`telemetry::layout::describe_tag`] puts it).
+    #[error("{0}")]
+    ForeignLayout(String),
     #[error("nesting too deep")]
     DepthExceeded,
     #[error("checksum mismatch")]
@@ -42,24 +46,27 @@ pub enum StorageError {
     },
     #[error("compression error: {0}")]
     Compression(io::Error),
-    /// A file is in a format version this build cannot read, typically
-    /// because a newer Vyrtel wrote it. Not evidence of damage: recovery
-    /// stops instead of quarantining it, and leaves the file as it is.
+    /// A file of this build's layout declares a format version this build
+    /// cannot read. Within one [`telemetry::LAYOUT`] every version is 1, so
+    /// this is a file from a newer build or one edited by hand. Not
+    /// evidence of damage: recovery stops instead of quarantining it, and
+    /// leaves the file as it is.
     #[error(
-        "{} uses {what} version {found}, but this Vyrtel reads versions up to {supported}",
+        "{} uses {what} version {found}, but this Vyrtel reads version {supported} only",
         path.display()
     )]
     UnsupportedFormat { path: PathBuf, what: &'static str, found: u16, supported: u16 },
-    /// A file written by Observer 0.1.0, Vyrtel's first release under its
-    /// earlier name, recognised by Observer's magic bytes (`OBSVWAL1`,
-    /// `OBSVSEG1`). This build does not read it. Not damage: recovery stops
-    /// instead of quarantining it, and leaves the file as it is.
+    /// A WAL or segment file carries another layout identity than
+    /// [`telemetry::LAYOUT`], or none (every release before 0.1.2), or one
+    /// cut short. This build does not read it and never guesses at its
+    /// layout. Not damage: recovery stops instead of quarantining it, and
+    /// leaves the file as it is.
     #[error(
-        "{} was written by Observer 0.1.0 (Vyrtel's first release, under its earlier name), which this Vyrtel \
-         cannot read",
-        path.display()
+        "{} is a {what} file with {found}, but this Vyrtel reads layout {} only",
+        path.display(),
+        telemetry::LAYOUT
     )]
-    ObserverFormat { path: PathBuf },
+    ForeignLayout { path: PathBuf, what: &'static str, found: String },
     /// The ingest queue is full. Callers should retry later (HTTP 429).
     #[error("ingest queue is full")]
     QueueFull,

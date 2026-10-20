@@ -11,6 +11,8 @@
 //   node scripts/release/release.mjs pretag --tag v0.1.2 [--evidence <dir>] [--create]
 //   node scripts/release/release.mjs check-performance --tag v0.1.2 --sha <commit> --evidence <dir>
 //                                    [--tag-date <iso>] [--artifacts <dir>]
+//   node scripts/release/release.mjs check-compat --tag v0.1.2 --sha <commit> --evidence <dir>
+//                                    [--tag-date <iso>] [--artifacts <dir>]
 //
 // Every command exits non-zero with a "release gate:" message when a check fails, so the
 // workflow stops before anything is published. --version defaults to the workspace version.
@@ -365,8 +367,21 @@ ${flags.tag} may be tagged on ${r.sha}; rerun with --create to create the tag`);
       if (flags.artifacts) perf.checkArtifactsMatchApproval(r.records, flags.artifacts).forEach((l) => console.log(l));
       return;
     }
+    case 'check-compat': {
+      const perf = await import('./performance.mjs');
+      const compat = await import('./compat.mjs');
+      if (!flags.sha || !flags.evidence) fail('check-compat needs --sha and --evidence');
+      const tagDate = 'tag-date' in flags ? (flags['tag-date'] === true ? '' : flags['tag-date']) : undefined;
+      const evidence = { dir: flags.evidence };
+      // Cleanup before performance: the review must predate every measurement of the candidate.
+      const { records } = perf.checkPerformance({ tag: flags.tag, sha: flags.sha, evidence, tagDate });
+      const r = compat.checkCompat({ tag: flags.tag, sha: flags.sha, evidence, tagDate, performance: records });
+      console.log(compat.compatTagLine(r));
+      if (flags.artifacts) perf.checkArtifactsMatchApproval([r.record], flags.artifacts).forEach((l) => console.log(l));
+      return;
+    }
     default:
-      fail(`unknown command "${command}"; use plan, verify-artifacts, verify-binary, verify-server, verify-image, verify-pushed-image, pretag or check-performance`);
+      fail(`unknown command "${command}"; use plan, verify-artifacts, verify-binary, verify-server, verify-image, verify-pushed-image, pretag, check-performance or check-compat`);
   }
 }
 

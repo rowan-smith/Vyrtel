@@ -10,6 +10,8 @@ The released baseline is one binary and one data directory: native JSON/NDJSON a
 
 The backlog includes verification and hardening of existing behaviour as well as new capabilities. A planned story does not mean every part of its feature is absent today. Closing an issue does not by itself publish a release.
 
+**Compatibility before 1.0.** Pre-1.0 releases may break compatibility ([policy](../CONTRIBUTING.md#compatibility-policy-before-10)). A release reads only data directories of its own layout and refuses others unchanged ([upgrading between pre-1.0 releases](configuration.md#upgrading-between-pre-10-releases)); there is no promise of in-place upgrades, downgrades, rollbacks or mixed-version operation between releases. Where a planned item below mentions a migration, a legacy setting or a versioned format, it means an actionable refusal or an explicitly chosen, bounded and tested step, never a permanent old reader, and never one that weakens access control or loses acknowledged data. Every tagged release passes a [compatibility gate](releasing.md#pre-tag-compatibility-sign-off) before its performance sign-off. The policy is reassessed before 1.0.
+
 ## Planned milestone sequence
 
 | Release | Workstream | Position |
@@ -31,7 +33,7 @@ The backlog includes verification and hardening of existing behaviour as well as
 Harden the single-node foundation before expanding everyday workflows.
 
 * Crash recovery and acknowledgement verification, bounded ingest concurrency, decoded-payload limits, predictable storage failures and graceful shutdown.
-* Complete stopped-server backup/restore, safe upgrades, recovery health, reproducible performance baselines and query execution budgets/cancellation.
+* Complete stopped-server backup/restore, refusal of incompatible data before any change, recovery health, reproducible performance baselines and query execution budgets/cancellation.
 * Validation-gated releases, persistent multi-architecture Docker smoke tests and trusted signed Windows executables. Signing needs a maintainer-provisioned signing identity/service.
 
 [Recovery verification #2](https://github.com/rowan-smith/Vyrtel/issues/2) is completed; [ingest admission #3](https://github.com/rowan-smith/Vyrtel/issues/3) is in progress at this snapshot. See [Current Milestone](https://github.com/users/rowan-smith/projects/2/views/1) for live status and pickup priority.
@@ -41,7 +43,7 @@ Harden the single-node foundation before expanding everyday workflows.
 * Stable pagination and on-demand history loading while live tail is paused; clear empty/loading/error states; log/trace links, shareable URLs, saved queries, accessible keyboard workflows and fullscreen logs.
 * A consistent square UI, one shared accessible search-bar component and a right-hand property drawer with selected/pinned log columns. Hide performance and memory diagnostics unless enabled in Profile.
 * Mandatory UI login, local accounts, session invalidation, password changes and administrator account management; professional application settings and user profiles; per-signal retention controls.
-* One global **all-API gate**, scoped keys, settings controls, stream reauthorization and safe legacy migration. Fresh installs default to gate **Off**, making **every application API ungated**. Gate **On** applies the same credential mechanism with operation scopes across all application APIs. UI login stays mandatory in both modes; when the gate is Off, UI login is not an API access boundary.
+* One global **all-API gate**, scoped keys, settings controls, stream reauthorization, and legacy account and gate settings either refused actionably or moved by one bounded, tested step that never widens access. Fresh installs default to gate **Off**, making **every application API ungated**. Gate **On** applies the same credential mechanism with operation scopes across all application APIs. UI login stays mandatory in both modes; when the gate is Off, UI login is not an API access boundary.
 * Validate the existing operator-selected local/mounted storage directory; stage restart-based path changes in settings; verify and document complete stopped-server relocation. No live S3/MinIO backend or hot migration is included.
 * Verify dashboard/alert workflows, expose metric aggregation limitations, and publish tested .NET/Serilog and OpenTelemetry Collector quickstarts using existing integrations.
 
@@ -112,7 +114,7 @@ See [the node foundation milestone](https://github.com/rowan-smith/Vyrtel/milest
 ## 0.3.1 — Multi-node operational hardening
 
 * Role-aware health and forwarding diagnostics.
-* Static multi-Ingest deployments and safe rolling upgrades.
+* Static multi-Ingest deployments and rolling restarts of one release (no mixed-version guarantee before 1.0).
 * Release artifacts gated on role compatibility and supported topology checks.
 
 See [the multi-node operations milestone](https://github.com/rowan-smith/Vyrtel/milestone/9).

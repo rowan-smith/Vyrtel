@@ -55,9 +55,10 @@ enum Command {
     /// Print the effective configuration as TOML and exit.
     Config,
     /// Check, reading only, whether this version can start the data
-    /// directory, what starting it would migrate, and which releases can
-    /// read it afterwards. Exit 0 if it can start, 1 (with the reason) if not.
-    /// Run the new version's binary on the stopped directory before upgrading.
+    /// directory (its layout identity, formats and completeness) and what
+    /// starting it would change. Exit 0 if it can start, 1 (with the reason)
+    /// if not. Run the new version's binary on the stopped directory before
+    /// switching versions.
     CheckDataDir,
 }
 
@@ -69,6 +70,8 @@ fn load_config(cli: &Cli) -> anyhow::Result<Config> {
             if default.exists() { Config::load_file(&default).map_err(anyhow::Error::msg)? } else { Config::default() }
         }
     };
+    server::config::check_env_names(std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()))
+        .map_err(anyhow::Error::msg)?;
     config.apply_env(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     if let Some(d) = &cli.data_dir {
         config.storage.path = d.clone();

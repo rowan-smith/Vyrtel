@@ -1,8 +1,9 @@
 # Storage format
 
 This document is the reference for every byte Vyrtel writes to disk. If you
-change the format, update this file in the same commit and bump the relevant
-version number. Code lives in `crates/storage`.
+change a format, update this file in the same commit; before 1.0 that also
+sets a new [layout identity](#versioning) and resets the format's version
+to 1. Code lives in `crates/storage`.
 
 * All fixed-width integers are **little-endian**.
 * `varint` is unsigned LEB128 (max 10 bytes; overflow is a decode error).
@@ -36,6 +37,7 @@ the segment sealed from it share the same id.
 ```json
 {
   "format": 1,
+  "layout": "0.1.2",
   "writtenBy": "0.1.2",
   "inventory": {
     "files": {
@@ -46,12 +48,15 @@ the segment sealed from it share the same id.
 }
 ```
 
-`format` is the data-directory format: it names every format version
-below that the directory may contain. Format 2 (0.1.2) is WAL file format
-1, WAL record version 1, event codec 2 (batches in codec 1 may remain from
-format 1 and are read), segment format 1 and metadata schema version 1.
-Format 1 (0.1.1) is the same with event codec 1 only. `writtenBy` is the
-Vyrtel version that last wrote the file. Unknown keys are ignored.
+`layout` is the [layout identity](#versioning) (`telemetry::LAYOUT`) and
+is read first: a manifest with another layout, or none (every 0.1.2 build
+before the layout reset wrote `format` 1 or 2 without one), is refused
+before anything else in it is believed. `format` is the data-directory
+format of the layout; layout `0.1.2` has only format 1: WAL file format 1,
+WAL record version 1, event codec 1, segment format 1 and metadata schema
+version 1. `writtenBy` is the Vyrtel version that last wrote the file. An
+unknown key makes the manifest unusable (it could carry a layout this build
+does not know).
 
 `inventory` exists only while the directory is stopped after a clean
 shutdown. It lists every `wal/<signal>/*.wal` and
@@ -70,12 +75,13 @@ listed: SQLite may still change its files as the connection closes.
 
 The manifest is replaced atomically (`vyrtel.json.tmp` written and
 fsynced, renamed over it, directory fsynced): on a start once the metadata
-database is migrated and every stream directory exists, and before storage
-recovery changes any telemetry file (see [Migrations](#migrations)); with
+database has its schema and every stream directory exists, and before storage
+recovery changes any telemetry file (see [Layout changes](#layout-changes)); with
 the inventory at a clean shutdown; and without it when a start removes it.
-Directories from before 0.1.2 have none and get one on their next start.
-A leftover `vyrtel.json.tmp` from an interrupted write is ignored and
-replaced.
+A first start writes it after the metadata database has its schema and
+before the first WAL file exists. A directory without one is refused
+unless nothing in it needs one (see below). A leftover `vyrtel.json.tmp`
+from an interrupted write is ignored and replaced.
 
 ### Startup check
 
@@ -88,29 +94,37 @@ Vyrtel's top-level entries (`vyrtel.json`, `.lock`, `metadata`, `wal`,
 `segments`, `quarantine`, `indexes`, `tmp`) is new. Otherwise startup is
 refused, with nothing changed, when:
 
-* `vyrtel.json` is unreadable, has `format` 0 or a `format` above the one
-  this build writes, or its inventory names anything but WAL and segment
-  files;
+* `vyrtel.json` is unreadable, has an unknown key, has another `layout`
+  or none, has a `format` other than 1, or its inventory names anything but
+  WAL and segment files;
+* `metadata/metadata.db` is not of this layout (see
+  [Metadata database](#metadata-database)): another layout, another schema
+  version, or no identity (every database before 0.1.2);
+* there is no `vyrtel.json`, WAL or segment files exist, and no metadata
+  database of this layout identifies them (data from before 0.1.2, or a
+  copy of only `wal/` and `segments/`). Without a manifest, a directory is
+  started only when it is a first start of this build that stopped early:
+  no telemetry, and a metadata database that is absent, empty or of this
+  layout;
 * *incomplete*: a file in the inventory is missing or has another size;
 * *incomplete*, with a manifest: `metadata/metadata.db`, `wal/<signal>/` or
   `segments/<signal>/` is missing for any signal;
-* *incomplete*, without one: WAL or segment files exist but
-  `metadata/metadata.db` does not, or the database exists but a stream
-  directory does not (a first start creates the stream directories, then
-  the database, then WAL files, so an interrupted first start is never
-  refused);
+* *incomplete*, without one: the database exists but a stream directory
+  does not (a first start creates the stream directories, then the
+  database, then the manifest, then WAL files, so an interrupted first start
+  is never refused), or WAL or segment files and a metadata database of
+  this layout exist but `vyrtel.json` does not (a restore that left it out);
 * *incomplete*: `metadata/metadata.db` has no schema (an empty file) while
-  a manifest or WAL or segment files exist. Every start migrates the
-  database before it writes either, so such a database was truncated or
-  replaced;
-* a `*.seg` or `*.wal` file declares a format version this build does not
-  read (`storage::check_formats`: a segment's header, footer and
-  checksummed summary; a WAL's header, and the record version and batch
-  codec version of every checksummed record; see [Versioning](#versioning));
-* `metadata/metadata.db` is not an SQLite database, or its
-  `schema_migrations` holds a version above the newest migration. It is
-  opened read-only and, when there is no `-wal` file, with SQLite's
-  `immutable` flag, so no journal or lock file is created.
+  a manifest exists. Every start creates the schema before it writes one,
+  so such a database was truncated or replaced;
+* a `*.seg` or `*.wal` file has another layout identity, none, or one cut
+  short, or declares a format version this build does not read
+  (`storage::check_formats`: a segment's header, footer and checksummed
+  summary; a WAL's header, and the record version and batch codec version
+  of every checksummed record; see [Versioning](#versioning));
+* `metadata/metadata.db` is not an SQLite database. It is opened read-only
+  and, when there is no `-wal` file, with SQLite's `immutable` flag, so no
+  journal or lock file is created.
 
 The *incomplete* cases are accepted when the server is started with
 `--accept-incomplete-restore` (`StartOptions::accept_incomplete_restore`);
@@ -119,11 +133,9 @@ each is then logged as a warning. The others never are.
 Operator-facing messages are in
 [configuration → backup and restore](configuration.md#what-startup-checks).
 
-## Event codec (version 2)
+## Event codec (version 1)
 
-Shared by the WAL and segments (`crates/storage/src/codec.rs`). Version 2
-changed only the [batch](#batch): segments store event bodies as below in
-both versions.
+Shared by the WAL and segments (`crates/storage/src/codec.rs`).
 
 ### Values
 
@@ -179,10 +191,10 @@ Payload by kind:
 
 ### Batch
 
-A WAL record's payload. Version 2 (written since 0.1.2):
+A WAL record's payload:
 
 ```
-batch     := u8 codec_version (= 2)
+batch     := u8 codec_version (= 1)
              varint n_resources | fields resource × n_resources
              varint count | event2 × count
 event2    := head | body2
@@ -197,26 +209,22 @@ first event appears. Events that share one in memory (an OTLP resource and
 its records) are found by pointer, and others by their encoding (native
 events with identical resources), so equal resources are never stored
 twice in a batch. Decoding builds each table entry once and its events
-share it. An index past the table is a decode error.
-
-Version 1 (0.1.1), still read:
-
-```
-batch := u8 codec_version (= 1) | varint count | event*
-```
-
-with every event's resource inline in its body. In both versions trailing
-bytes after the last event are a decode error, and any other codec version
-is a [newer format](#versioning).
+share it. An index past the table is a decode error, and so are trailing
+bytes after the last event. Any other codec version is an
+[unsupported format](#versioning). (Layouts before `0.1.2` wrote other
+batches, also labelled codec 1 in 0.1.1; their WALs have no layout
+identity and are refused before a record is read.)
 
 ## Write-ahead log
 
 ```
 file   := header record*
-header := "VYRTWAL1" (8) | u16 format (=1) | u8 signal | 5 × reserved | u64 wal_id   (24 bytes)
+header := "VYRTWAL1" (8) | layout (8) | u16 format (=1) | u8 signal | 5 × reserved | u64 wal_id   (32 bytes)
 record := u8 record_version (=1) | u32 length | payload[length] | u32 crc32
 ```
 
+* `layout` is the [layout identity](#versioning): `0.1.2` in ASCII, padded
+  with zeros.
 * `crc32` covers `record_version`, `length` and `payload`.
 * Each record's payload is one encoded **batch**, i.e. one ingest request.
   A batch is therefore recovered entirely or not at all.
@@ -333,7 +341,7 @@ Limitations:
 
 ```
 ┌──────────────────────────────┐ 0
-│ Header (32 bytes)            │
+│ Header (40 bytes)            │
 ├──────────────────────────────┤
 │ Block 0: 6 column chunks     │ each chunk independently zstd-compressed
 │ Block 1: 6 column chunks     │
@@ -343,7 +351,7 @@ Limitations:
 ├──────────────────────────────┤
 │ Summary region (zstd)        │ loaded at open, kept in memory
 ├──────────────────────────────┤
-│ Footer (56 bytes)            │
+│ Footer (64 bytes)            │
 └──────────────────────────────┘
 ```
 
@@ -352,11 +360,12 @@ Limitations:
 | Offset | Size | Field                                |
 |-------:|-----:|--------------------------------------|
 |      0 |    8 | magic `VYRTSEG1`                     |
-|      8 |    2 | format version (1)                   |
-|     10 |    1 | signal (1 logs, 2 traces, 3 metrics) |
-|     11 |    5 | reserved (0)                         |
-|     16 |    8 | segment id                           |
-|     24 |    8 | created at (ns)                      |
+|      8 |    8 | layout identity (`0.1.2`, zero-padded) |
+|     16 |    2 | format version (1)                   |
+|     18 |    1 | signal (1 logs, 2 traces, 3 metrics) |
+|     19 |    5 | reserved (0)                         |
+|     24 |    8 | segment id                           |
+|     32 |    8 | created at (ns)                      |
 
 ### Footer
 
@@ -366,8 +375,9 @@ Limitations:
 |     20 |   20 | index chunk ref                                               |
 |     40 |    2 | format version (1)                                            |
 |     42 |    2 | reserved                                                      |
-|     44 |    4 | CRC-32 of bytes 0..44                                         |
-|     48 |    8 | magic `VYRTSEND`                                              |
+|     44 |    8 | layout identity (as in the header)                            |
+|     52 |    4 | CRC-32 of bytes 0..52                                         |
+|     56 |    8 | magic `VYRTSEND`                                              |
 
 ### Blocks and columns
 
@@ -486,9 +496,10 @@ retention period: remove from the catalog first, then unlink.
 On startup, per stream (`crates/storage/src/recovery.rs`):
 
 1. Delete everything in `tmp/` (never committed).
-2. Open every `*.seg`. A segment that fails validation (magic, version,
-   footer CRC, summary CRC, bounds, id/signal mismatch) is moved to
-   `quarantine/<signal>/` and logged.
+2. Open every `*.seg`. A segment that fails validation (magic, footer CRC,
+   summary CRC, bounds, id/signal mismatch, a header layout or version the
+   checksummed footer contradicts) is moved to `quarantine/<signal>/` and
+   logged.
 3. Segments listed in another segment's `replaces` are deleted (a
    compaction committed but its cleanup was interrupted).
 4. For each WAL file in id order:
@@ -508,10 +519,10 @@ Recovery quarantines only on **proof of damage** (bad checksum, bad
 framing, truncation, undecodable content). Any other I/O error while reading
 a segment or WAL — permission denied, a failing device — stops startup with
 the error instead: moving a readable file aside would hide acknowledged
-telemetry. Fix the cause and start again. A file in a format version this
-build cannot read is not damage either: startup stops with
-`StorageError::UnsupportedFormat` naming the file and leaves it as it is
-(see [Versioning](#versioning)).
+telemetry. Fix the cause and start again. A file of another layout, or in a
+format version this build cannot read, is not damage either: startup stops
+with `StorageError::ForeignLayout` or `StorageError::UnsupportedFormat`
+naming the file and leaves it as it is (see [Versioning](#versioning)).
 
 Every recovery is idempotent: crashing during recovery (for example after
 sealing an old WAL but before deleting it) and recovering again gives the
@@ -565,34 +576,64 @@ much space they use.
 
 ## Versioning
 
-* WAL file format, WAL record version, codec version and segment format
-  version are independent. Readers reject unknown versions explicitly.
-* A future format change adds a new version number and keeps the old
-  decoder, so existing data directories stay readable. Rust struct layout is
-  never written to disk.
-* Any change to these versions, the metadata schema or the directory layout
-  also raises the manifest `format`, so an older build refuses a whole
-  directory from a newer one before reading any data file.
-* Observer 0.1.0, Vyrtel's first release under its earlier name, wrote
-  the same layouts with the magic bytes `OBSVWAL1` (WAL), `OBSVSEG1` and
-  `OBSVSEND` (segment). Such a file is not read and not quarantined:
-  `check_formats` and recovery stop with `StorageError::ObserverFormat`.
-* An unknown version is a reason to stop, never to quarantine. Where a
-  version is not covered by a checksum, it is believed only when nothing
-  checksummed contradicts it:
+Every file Vyrtel persists carries the **layout identity**,
+`telemetry::LAYOUT` (`crates/telemetry/src/layout.rs`): `0.1.2` for this
+layout, the release that introduced it. It is in `vyrtel.json`
+(`"layout"`), in each WAL header and each segment header and footer (8
+ASCII bytes, zero-padded, straight after the magic), and in the metadata
+database ([below](#metadata-database)). Within one layout every format has
+exactly one version, and it is 1:
 
-  | Where                          | Unknown version means                                                                                         |
-  |--------------------------------|----------------------------------------------------------------------------------------------------------------|
-  | Segment footer or summary      | newer format (both are checked before their version is read)                                                  |
-  | Segment header                 | newer format, unless the footer's checksum holds and says version 1: then the header is damaged (quarantined) |
-  | WAL header (has the WAL magic) | newer format                                                                                                    |
-  | WAL record version byte        | newer format if the record's CRC holds; otherwise a corrupt tail, as before                                  |
-  | Batch codec version            | newer format (the record's CRC held)                                                                           |
+| Format                    | Where                                  | Version | Before the 0.1.2 reset (0.1.1 and 0.1.2 builds) |
+|---------------------------|----------------------------------------|--------:|-------------------------------------------------|
+| Layout identity           | manifest, WAL/segment headers, footer, metadata | `0.1.2` | none                                   |
+| Data-directory format     | `vyrtel.json` `format`                 | 1       | no manifest (0.1.1); `format` 1 or 2, no `layout` (0.1.2 builds) |
+| WAL file format           | WAL header                             | 1       | 1 (24-byte header, no identity)                 |
+| WAL record version        | each WAL record                        | 1       | 1                                               |
+| Event codec               | first byte of each WAL batch           | 1       | 1 (resources inline, 0.1.1), 2 (resource table) |
+| Segment format            | segment header, footer, summary        | 1       | 1 (32-byte header, 56-byte footer, no identity) |
+| Metadata schema           | `vyrtel_layout.schema_version`         | 1       | 1 in `schema_migrations`, no identity           |
+| Quarantine, `tmp/`, `.lock`, `indexes/` | not versioned: never read as data | –  | –                                               |
 
-  All of these are checked before startup changes anything, so a newer
-  file in one signal stops startup before any signal is recovered or the
-  metadata is migrated. The check holds at most 64 KiB of any file in
-  memory and decodes no event, column or index:
+Readers are an exact match, never an ordering:
+
+* The identity is checked **first**, before any version or any other byte
+  of a file is believed. Version numbers alone identify nothing: before 1.0
+  every layout change resets them to 1, so files 0.1.1 wrote (WAL format 1,
+  record version 1, codec 1, segment format 1) look like this build's by
+  number but are laid out differently.
+* A file with this build's magic but another identity, no identity, or one
+  cut short (a file that ends inside it) is **refused, never quarantined**:
+  startup stops with `StorageError::ForeignLayout` (or
+  `DataDirError::ForeignLayout`) naming the file, and nothing in the
+  directory changes. No reader guesses a layout, reinterprets old bytes,
+  skips the file, or rewrites an identity to bless it.
+* Within this layout, any version other than 1 stops startup the same way
+  (`StorageError::UnsupportedFormat`): it can only come from a newer build
+  of the layout or a hand edit.
+* Where a value is not covered by a checksum, it is believed only when
+  nothing checksummed contradicts it:
+
+  | Where                          | Another identity or unknown version means                                                                     |
+  |--------------------------------|-----------------------------------------------------------------------------------------------------------------|
+  | Segment footer or summary      | refused (both are checked before their identity and version are read)                                         |
+  | Segment header                 | refused, unless the footer's checksum holds and says this layout and version 1: then the header is damaged (quarantined) |
+  | WAL header (has the WAL magic) | refused                                                                                                         |
+  | WAL record version byte        | refused if the record's CRC holds; otherwise a corrupt tail, as before                                        |
+  | Batch codec version            | refused (the record's CRC held)                                                                                 |
+
+  A file without Vyrtel's magic (`VYRTWAL1`, `VYRTSEG1`), such as one
+  Observer 0.1.0 wrote (`OBSVWAL1`, `OBSVSEG1`), carries no identity to
+  check. In a directory whose manifest or metadata database identifies
+  this layout it is damage like any other unreadable file and is
+  [quarantined](#quarantine), moved and never deleted; a directory of such
+  files alone has neither and is refused as a whole (see
+  [Startup check](#startup-check)).
+
+  All of these are checked before startup changes anything, so a foreign
+  or newer file in one signal stops startup before any signal is recovered
+  or the metadata database is opened for writing. The check holds at most
+  64 KiB of any file in memory and decodes no event, column or index:
 
   * segment: header and footer, then the summary's checksum, streamed in
     64 KiB pieces, and only if it holds, the first 11 decompressed bytes
@@ -606,37 +647,60 @@ much space they use.
 
   The check runs twice per start, before and after taking the
   data-directory lock, then recovery reads the WALs in full. Recovery
-  checks the versions again while replaying, before a WAL is truncated or
-  sealed.
+  checks identities and versions again while replaying, before a WAL is
+  truncated or sealed.
 
-### Migrations
+Rust struct layout is never written to disk.
 
-A start migrates a data directory in this order, after the read-only
-startup check passed and the lock is held (`App::build`; the steps are
-`datadir::plan`, and `vyrtel check-data-dir` prints them without running
-them):
+### Metadata database
 
-1. Metadata schema migrations (`crates/metadata/src/migrations.rs`), each
-   in its own SQLite transaction together with its `schema_migrations` row.
-   A failure or crash rolls back only the migration in progress; the next
-   open continues from the last committed version. A failure is
-   `MetadataError::Migration { version, at }`.
-2. `vyrtel.json` records the current `format` and `writtenBy`.
-3. Storage recovery and normal operation.
+`metadata/metadata.db` is SQLite. Its identity is SQLite's
+`application_id` (`0x56595254`, "VYRT", `metadata::APPLICATION_ID`) and
+the one-row table `vyrtel_layout (id = 1, layout, schema_version,
+created_at)`. A new (empty) database gets its whole schema
+(`crates/metadata/src/schema.rs`), the identity row and the
+`application_id` in **one transaction**: an interrupted creation leaves an
+empty database, which the next start creates again. A database with
+another `application_id`, without `vyrtel_layout` (every database before
+0.1.2, which had a `schema_migrations` table instead), with another
+`layout` or another `schema_version` is refused before anything is written
+to it, not even its journal mode (`MetadataError::ForeignLayout`). There
+is no migration chain.
 
-Rules for future format changes, so that every step stays safe to
-interrupt and an older build never misreads the result:
+### Layout changes
 
-* Raise the manifest `format` and add a [`datadir::RELEASES`](../crates/server/src/datadir.rs)
-  row with the release. The format is recorded (step 2) before any
-  telemetry file is written in the new format, so after an interrupted
-  upgrade a build that reads only the old format refuses the directory.
-* Keep the decoder for every older version, so existing files never have
-  to be rewritten. A change that must rewrite files does it after step 2,
-  one file at a time through `tmp/` and an atomic rename, so a restart
-  finds each file either old or new and continues.
-* Append metadata migrations; never edit an applied one. A migration that
-  older releases cannot read is a format change for downgrade purposes:
-  `check-data-dir` reports which releases can read the result.
-* Add a fixture of the release's data directory
-  (`tests/fixtures/datadir/`), so every later build is tested against it.
+A start changes a data directory in this order, after the read-only
+startup check passed and the lock is held (`App::build`):
+
+1. A new directory: each signal's `wal/` and `segments/` directories.
+2. The metadata database's schema and identity, if it has none
+   ([above](#metadata-database)).
+3. `vyrtel.json` with this layout and format, before any telemetry file
+   is written. An interruption before this leaves a directory the check
+   accepts as an interrupted first start.
+4. Storage recovery and normal operation.
+
+Rules for a change to any persisted format before 1.0 (the release gate
+checks them, see [releasing](releasing.md#pre-tag-compatibility-sign-off)):
+
+* Change the layout's code and this document, set `telemetry::LAYOUT` to
+  the version of the release that ships the change, and keep every format
+  version at 1. Delete the old layout's readers, writers, version dispatch
+  and fixtures that only served them: one current layout per format, and
+  no historical layout kept under another branch of version 1.
+* Never write a new layout under an existing identity. Two releases share
+  an identity only if they write byte-for-byte the same layouts.
+* A release with a new layout does not read older data directories. It
+  refuses them, unchanged, with what to do instead
+  ([configuration](configuration.md#upgrading-between-pre-10-releases)).
+  A bounded migration is allowed only when a release explicitly chooses
+  one; it must run after the check, through `tmp/` and atomic renames, and
+  stamp the new identity only once every file is converted.
+* The application version, external protocol versions (OTLP), event ids,
+  segment and WAL ids, sequence numbers and checksums are not format
+  versions and are never reset.
+* Add a fixture of each release's data directory (`tests/fixtures/datadir/`):
+  a later build of the same layout must read it, and one of another layout
+  must refuse it unchanged (`tests/integration/layouts.rs`).
+* Reassess this policy before 1.0: a stable release may promise to read
+  older layouts, and then needs migrations or old readers again.

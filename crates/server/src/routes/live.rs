@@ -64,7 +64,7 @@ pub async fn live(
 ) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let signal = match p.signal.as_deref().unwrap_or("logs") {
         "logs" => Signal::Logs,
-        "traces" | "spans" => Signal::Traces,
+        "traces" => Signal::Traces,
         "metrics" => Signal::Metrics,
         _ => return Err(ApiError::bad_request("signal must be logs, traces or metrics")),
     };

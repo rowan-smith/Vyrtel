@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! file   := header record*
-//! header := magic "VYRTWAL1" (8) | format u16 | signal u8 | reserved [u8; 5] | wal id u64
+//! header := magic "VYRTWAL1" (8) | layout [u8; 8] | format u16 | signal u8 | reserved [u8; 5] | wal id u64
 //! record := version u8 | length u32 | payload [length] | crc32 u32
 //! ```
 //!
@@ -15,11 +15,17 @@
 //! Each record holds one encoded batch (see [`crate::codec`]), so a batch is
 //! either entirely recovered or entirely absent — a request is never
 //! half-applied.
+//!
+//! The layout identity ([`telemetry::LAYOUT_TAG`]) follows the magic and is
+//! checked before anything else in the file is believed: a WAL with the
+//! magic but another identity, or none, is never replayed or quarantined
+//! (see `docs/storage-format.md`).
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use telemetry::layout::{LAYOUT_TAG, LAYOUT_TAG_LEN, describe_tag};
 use telemetry::{Signal, TelemetryEvent};
 
 use crate::encoding::Writer;
@@ -27,12 +33,12 @@ use crate::error::{IoContext, Result};
 use crate::{codec, fault, fsutil};
 
 pub const WAL_MAGIC: &[u8; 8] = b"VYRTWAL1";
-/// The WAL magic of Observer 0.1.0, Vyrtel's first release under its
-/// earlier name. Otherwise the same layout; not read by this build.
-pub const OBSERVER_WAL_MAGIC: &[u8; 8] = b"OBSVWAL1";
 pub const WAL_FORMAT_VERSION: u16 = 1;
 pub const RECORD_VERSION: u8 = 1;
-pub const HEADER_LEN: u64 = 24;
+pub const HEADER_LEN: u64 = 32;
+/// Where the layout identity and the format version are in the header.
+const LAYOUT_AT: usize = 8;
+const FORMAT_AT: usize = LAYOUT_AT + LAYOUT_TAG_LEN;
 const RECORD_OVERHEAD: usize = 1 + 4 + 4;
 /// Upper bound for one record. Anything larger is treated as corruption
 /// rather than an instruction to allocate gigabytes.
@@ -48,48 +54,81 @@ pub struct WalHeader {
 
 fn encode_header(h: WalHeader) -> [u8; HEADER_LEN as usize] {
     let mut b = [0u8; HEADER_LEN as usize];
-    b[..8].copy_from_slice(WAL_MAGIC);
-    b[8..10].copy_from_slice(&WAL_FORMAT_VERSION.to_le_bytes());
-    b[10] = h.signal.code();
-    b[16..24].copy_from_slice(&h.wal_id.to_le_bytes());
+    b[..LAYOUT_AT].copy_from_slice(WAL_MAGIC);
+    b[LAYOUT_AT..FORMAT_AT].copy_from_slice(&LAYOUT_TAG);
+    b[FORMAT_AT..FORMAT_AT + 2].copy_from_slice(&WAL_FORMAT_VERSION.to_le_bytes());
+    b[FORMAT_AT + 2] = h.signal.code();
+    b[24..32].copy_from_slice(&h.wal_id.to_le_bytes());
     b
 }
 
-/// The format version a WAL header declares, if `b` starts with the WAL
-/// magic. Lets callers tell a WAL from a newer Vyrtel from a damaged one.
-pub fn header_version(b: &[u8]) -> Option<u16> {
-    (b.len() >= 10 && &b[..8] == WAL_MAGIC).then(|| u16::from_le_bytes([b[8], b[9]]))
+/// What the start of a WAL file (up to [`HEADER_LEN`] bytes of it) says
+/// before anything else in it is believed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeaderIdentity {
+    /// No WAL magic: not a WAL, or a damaged one (replay judges it).
+    NotWal,
+    /// The WAL magic, but another layout identity, none, or one cut short
+    /// (described as [`describe_tag`] does).
+    Foreign(String),
+    /// This build's layout, declaring this file format version, or `None`
+    /// if the header is cut short before it (a damaged header).
+    Current(Option<u16>),
 }
 
-/// Fail with [`StorageError::UnsupportedFormat`](crate::StorageError) if
-/// the WAL at `path` declares a file format this build cannot read. Reads
-/// only the header; a missing or damaged header passes (replay judges it).
+/// Identify a WAL header: magic, then layout identity, then version.
+pub fn identify_header(b: &[u8]) -> HeaderIdentity {
+    if b.len() < LAYOUT_AT || &b[..LAYOUT_AT] != WAL_MAGIC {
+        return HeaderIdentity::NotWal;
+    }
+    let tag = &b[LAYOUT_AT..b.len().min(FORMAT_AT)];
+    if tag != LAYOUT_TAG {
+        return HeaderIdentity::Foreign(describe_tag(tag));
+    }
+    HeaderIdentity::Current(b.get(FORMAT_AT..FORMAT_AT + 2).map(|v| u16::from_le_bytes([v[0], v[1]])))
+}
+
+/// Fail with [`StorageError::ForeignLayout`](crate::StorageError) if the
+/// WAL at `path` has another layout identity, or with
+/// [`StorageError::UnsupportedFormat`](crate::StorageError) if it declares
+/// a file format this build cannot read. Reads only the header; a missing
+/// or damaged header passes (replay judges it).
 pub fn check_wal_format(path: &Path) -> Result<()> {
     let mut hb = Vec::with_capacity(HEADER_LEN as usize);
     File::open(path).and_then(|f| f.take(HEADER_LEN).read_to_end(&mut hb)).ctx(path)?;
-    if hb.starts_with(OBSERVER_WAL_MAGIC) {
-        return Err(crate::StorageError::ObserverFormat { path: path.to_path_buf() });
-    }
-    match header_version(&hb) {
-        Some(found) if found != WAL_FORMAT_VERSION => Err(crate::StorageError::UnsupportedFormat {
-            path: path.to_path_buf(),
-            what: "WAL file format",
-            found,
-            supported: WAL_FORMAT_VERSION,
-        }),
+    match check_header(&hb) {
+        Err(ReplayError::ForeignLayout(found)) => {
+            Err(crate::StorageError::ForeignLayout { path: path.to_path_buf(), what: "WAL", found })
+        }
+        Err(ReplayError::Unsupported { what, found, supported }) => {
+            Err(crate::StorageError::UnsupportedFormat { path: path.to_path_buf(), what, found, supported })
+        }
         _ => Ok(()),
     }
 }
 
 fn decode_header(b: &[u8]) -> Option<WalHeader> {
-    if b.len() < HEADER_LEN as usize || &b[..8] != WAL_MAGIC {
+    if b.len() < HEADER_LEN as usize || identify_header(b) != HeaderIdentity::Current(Some(WAL_FORMAT_VERSION)) {
         return None;
     }
-    let version = u16::from_le_bytes([b[8], b[9]]);
-    if version != WAL_FORMAT_VERSION {
-        return None;
+    Some(WalHeader {
+        signal: Signal::from_code(b[FORMAT_AT + 2])?,
+        wal_id: u64::from_le_bytes(b[24..32].try_into().ok()?),
+    })
+}
+
+/// [`ReplayError::ForeignLayout`] or [`ReplayError::Unsupported`] if the
+/// header (or as much of it as the file has) is not this build's, before
+/// any record is looked at. An identity cut short is refused too, never
+/// taken for damage.
+fn check_header(hb: &[u8]) -> std::result::Result<(), ReplayError> {
+    match identify_header(hb) {
+        HeaderIdentity::Foreign(found) => Err(ReplayError::ForeignLayout(found)),
+        HeaderIdentity::Current(Some(found)) if found != WAL_FORMAT_VERSION => {
+            Err(ReplayError::Unsupported { what: "WAL file format", found, supported: WAL_FORMAT_VERSION })
+        }
+        _ => Ok(()),
     }
-    Some(WalHeader { signal: Signal::from_code(b[10])?, wal_id: u64::from_le_bytes(b[16..24].try_into().ok()?) })
 }
 
 pub fn encode_record(payload: &[u8]) -> Vec<u8> {
@@ -390,8 +429,9 @@ pub struct WalReplay {
 pub enum ReplayError {
     Io(io::Error),
     BadHeader,
-    /// Observer 0.1.0 wrote this WAL ([`OBSERVER_WAL_MAGIC`]). Not damage.
-    Observer,
+    /// The WAL magic with another layout identity than this build's, or
+    /// none (every release before 0.1.2). Not damage: nothing is replayed.
+    ForeignLayout(String),
     /// The header or a checksummed record declares a version this build
     /// cannot read (`what` names which). Not damage: nothing is replayed.
     Unsupported {
@@ -412,16 +452,10 @@ pub fn replay(
     let mut r = BufReader::with_capacity(1 << 20, file);
 
     let mut hb = [0u8; HEADER_LEN as usize];
-    if read_full(&mut r, &mut hb).map_err(ReplayError::Io)? < hb.len() {
+    let got = read_full(&mut r, &mut hb).map_err(ReplayError::Io)?;
+    check_header(&hb[..got])?;
+    if got < hb.len() {
         return Err(ReplayError::BadHeader);
-    }
-    if hb.starts_with(OBSERVER_WAL_MAGIC) {
-        return Err(ReplayError::Observer);
-    }
-    if let Some(found) = header_version(&hb)
-        && found != WAL_FORMAT_VERSION
-    {
-        return Err(ReplayError::Unsupported { what: "WAL file format", found, supported: WAL_FORMAT_VERSION });
     }
     let header = decode_header(&hb).ok_or(ReplayError::BadHeader)?;
 
@@ -501,18 +535,9 @@ pub fn check_record_formats(path: &Path, codec_version: u8) -> std::result::Resu
     let file_len = file.metadata().map_err(ReplayError::Io)?.len();
     let mut r = BufReader::with_capacity(CHUNK, file);
     let mut hb = [0u8; HEADER_LEN as usize];
-    if read_full(&mut r, &mut hb).map_err(ReplayError::Io)? < hb.len() {
-        return Ok(());
-    }
-    if hb.starts_with(OBSERVER_WAL_MAGIC) {
-        return Err(ReplayError::Observer);
-    }
-    if let Some(found) = header_version(&hb)
-        && found != WAL_FORMAT_VERSION
-    {
-        return Err(ReplayError::Unsupported { what: "WAL file format", found, supported: WAL_FORMAT_VERSION });
-    }
-    if decode_header(&hb).is_none() {
+    let got = read_full(&mut r, &mut hb).map_err(ReplayError::Io)?;
+    check_header(&hb[..got])?;
+    if got < hb.len() || decode_header(&hb).is_none() {
         return Ok(());
     }
     let mut offset = HEADER_LEN;
@@ -529,7 +554,7 @@ pub fn check_record_formats(path: &Path, codec_version: u8) -> std::result::Resu
         let mut first = [0u8; 1];
         let got_first = if len > 0 { read_full(&mut r, &mut first).map_err(ReplayError::Io)? } else { 0 };
         let known = prefix[0] == RECORD_VERSION;
-        if known && got_first == 1 && (1..=codec_version).contains(&first[0]) {
+        if known && got_first == 1 && first[0] == codec_version {
             r.seek_relative(len as i64 - 1 + 4).map_err(ReplayError::Io)?;
             offset += (RECORD_OVERHEAD + len as usize) as u64;
             continue;
@@ -771,7 +796,7 @@ mod tests {
         let path = WalWriter::create(&wal, &tmp, header(1)).unwrap().path().to_path_buf();
         check_wal_format(&path).unwrap();
         let mut b = std::fs::read(&path).unwrap();
-        b[8..10].copy_from_slice(&2u16.to_le_bytes());
+        b[FORMAT_AT..FORMAT_AT + 2].copy_from_slice(&2u16.to_le_bytes());
         std::fs::write(&path, &b).unwrap();
         assert!(matches!(
             replay(&path, |_| Ok(())),
@@ -781,6 +806,58 @@ mod tests {
             check_wal_format(&path),
             Err(crate::StorageError::UnsupportedFormat { found: 2, supported: 1, .. })
         ));
+    }
+
+    /// FR-AC3: a WAL with the magic is believed only with this build's
+    /// layout identity. A header from before 0.1.2 (format 1 straight after
+    /// the magic), another identity, or one cut short is refused, never
+    /// replayed or taken for damage, even though it says version 1.
+    #[test]
+    fn foreign_layout_identity_is_refused_not_bad() {
+        let (_d, wal, tmp) = setup();
+        let mut w = WalWriter::create(&wal, &tmp, header(1)).unwrap();
+        w.append(b"one").unwrap();
+        let path = w.path().to_path_buf();
+        drop(w);
+        let current = std::fs::read(&path).unwrap();
+        assert_eq!(&current[LAYOUT_AT..FORMAT_AT], &LAYOUT_TAG);
+
+        // As 0.1.1 wrote it: magic | u16 1 | signal | reserved | id, record.
+        let mut old = WAL_MAGIC.to_vec();
+        old.extend_from_slice(&1u16.to_le_bytes());
+        old.extend_from_slice(&[1, 0, 0, 0, 0, 0]);
+        old.extend_from_slice(&1u64.to_le_bytes());
+        old.extend_from_slice(&encode_record(&[1, 0]));
+        let mut other = current.clone();
+        other[LAYOUT_AT..FORMAT_AT].copy_from_slice(b"0.1.9\0\0\0");
+        let cases: [(&[u8], &str); 4] = [
+            (&old, "no layout identity (bytes 0100010000000000)"),
+            (&other, "layout 0.1.9"),
+            (&current[..LAYOUT_AT + 3], "no layout identity"),
+            (&current[..LAYOUT_AT + 3].iter().chain(b"xxxxx").copied().collect::<Vec<_>>(), "layout 0.1xxxxx"),
+        ];
+        for (bytes, expected) in cases {
+            std::fs::write(&path, bytes).unwrap();
+            match replay(&path, |_| Ok(())) {
+                Err(ReplayError::ForeignLayout(found)) => assert!(found.starts_with(expected), "{found}"),
+                other => panic!("{expected}: expected ForeignLayout, got {other:?}"),
+            }
+            assert!(matches!(check_record_formats(&path, codec::CODEC_VERSION), Err(ReplayError::ForeignLayout(_))));
+            let e = check_wal_format(&path).unwrap_err();
+            assert!(matches!(&e, crate::StorageError::ForeignLayout { what: "WAL", .. }), "{e:?}");
+            assert!(e.to_string().ends_with(&format!(", but this Vyrtel reads layout {} only", telemetry::LAYOUT)));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "nothing changed");
+        }
+
+        // The magic alone is an identity cut short; less is not a WAL.
+        std::fs::write(&path, WAL_MAGIC).unwrap();
+        assert!(matches!(replay(&path, |_| Ok(())), Err(ReplayError::ForeignLayout(_))));
+        std::fs::write(&path, &WAL_MAGIC[..5]).unwrap();
+        assert!(matches!(replay(&path, |_| Ok(())), Err(ReplayError::BadHeader)));
+        // This build's identity with the header cut short: damage.
+        std::fs::write(&path, &current[..FORMAT_AT + 1]).unwrap();
+        assert!(matches!(replay(&path, |_| Ok(())), Err(ReplayError::BadHeader)));
+        check_wal_format(&path).unwrap();
     }
 
     #[test]

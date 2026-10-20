@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! ┌──────────────────────────────┐ 0
-//! │ Header (32 bytes)            │ magic, format, signal, segment id, created
+//! │ Header (40 bytes)            │ magic, layout, format, signal, id, created
 //! ├──────────────────────────────┤
 //! │ Block 0 column chunks        │ ts | ids | meta | trace | msg | body
 //! │ Block 1 column chunks        │ each chunk independently zstd-compressed
@@ -14,13 +14,16 @@
 //! │ Summary region (zstd)        │ time range, counts, dictionaries,
 //! │                              │ bitmap indexes, block directory
 //! ├──────────────────────────────┤
-//! │ Footer (56 bytes)            │ region offsets + CRCs, magic
+//! │ Footer (64 bytes)            │ region offsets + CRCs, layout, magic
 //! └──────────────────────────────┘
 //! ```
 //!
 //! Every chunk records its CRC32 in the block directory; the summary and
 //! index regions have CRCs in the footer, and the footer has its own CRC.
+//! Header and footer both carry the layout identity
+//! ([`telemetry::LAYOUT_TAG`]), the footer under its checksum.
 
+use telemetry::layout::{LAYOUT_TAG, LAYOUT_TAG_LEN, describe_tag};
 use telemetry::{Signal, Timestamp};
 
 use crate::encoding::{Reader, Writer};
@@ -28,13 +31,15 @@ use crate::error::DecodeError;
 use crate::index::{Bitmap, Bloom, Hll};
 
 pub const SEGMENT_MAGIC: &[u8; 8] = b"VYRTSEG1";
-/// The segment magic of Observer 0.1.0, Vyrtel's first release under its
-/// earlier name. Otherwise the same layout; not read by this build.
-pub const OBSERVER_SEGMENT_MAGIC: &[u8; 8] = b"OBSVSEG1";
 pub const FOOTER_MAGIC: &[u8; 8] = b"VYRTSEND";
 pub const FORMAT_VERSION: u16 = 1;
-pub const HEADER_LEN: usize = 32;
-pub const FOOTER_LEN: usize = 56;
+pub const HEADER_LEN: usize = 40;
+pub const FOOTER_LEN: usize = 64;
+/// Where the layout identity is in the header.
+pub const HEADER_LAYOUT_AT: usize = 8;
+const HEADER_FORMAT_AT: usize = HEADER_LAYOUT_AT + LAYOUT_TAG_LEN;
+/// The footer bytes its CRC covers.
+const FOOTER_BODY_LEN: usize = FOOTER_LEN - 12;
 /// Hard limit on a decompressed chunk; anything larger is corruption.
 pub const MAX_CHUNK_RAW: u32 = 512 * 1024 * 1024;
 
@@ -456,26 +461,37 @@ pub struct Header {
 impl Header {
     pub fn encode(&self) -> [u8; HEADER_LEN] {
         let mut b = [0u8; HEADER_LEN];
-        b[..8].copy_from_slice(SEGMENT_MAGIC);
-        b[8..10].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
-        b[10] = self.signal.code();
-        b[16..24].copy_from_slice(&self.segment_id.to_le_bytes());
-        b[24..32].copy_from_slice(&self.created_at.0.to_le_bytes());
+        b[..HEADER_LAYOUT_AT].copy_from_slice(SEGMENT_MAGIC);
+        b[HEADER_LAYOUT_AT..HEADER_FORMAT_AT].copy_from_slice(&LAYOUT_TAG);
+        b[HEADER_FORMAT_AT..HEADER_FORMAT_AT + 2].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+        b[HEADER_FORMAT_AT + 2] = self.signal.code();
+        b[24..32].copy_from_slice(&self.segment_id.to_le_bytes());
+        b[32..40].copy_from_slice(&self.created_at.0.to_le_bytes());
         b
     }
 
+    /// Magic, then layout identity, then version, then the rest. `b` may
+    /// be shorter than a header: an identity cut short is
+    /// [`DecodeError::ForeignLayout`], the rest cut short a damaged header.
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
-        if b.len() < HEADER_LEN || &b[..8] != SEGMENT_MAGIC {
+        if b.len() < HEADER_LAYOUT_AT || &b[..HEADER_LAYOUT_AT] != SEGMENT_MAGIC {
             return Err(DecodeError::Invalid("segment magic"));
         }
-        let v = u16::from_le_bytes([b[8], b[9]]);
+        let tag = &b[HEADER_LAYOUT_AT..b.len().min(HEADER_FORMAT_AT)];
+        if tag != LAYOUT_TAG {
+            return Err(DecodeError::ForeignLayout(describe_tag(tag)));
+        }
+        if b.len() < HEADER_LEN {
+            return Err(DecodeError::UnexpectedEof);
+        }
+        let v = u16::from_le_bytes([b[HEADER_FORMAT_AT], b[HEADER_FORMAT_AT + 1]]);
         if v != FORMAT_VERSION {
             return Err(DecodeError::UnsupportedVersion(v));
         }
         Ok(Self {
-            signal: Signal::from_code(b[10]).ok_or(DecodeError::Invalid("signal"))?,
-            segment_id: u64::from_le_bytes(b[16..24].try_into().unwrap()),
-            created_at: Timestamp(i64::from_le_bytes(b[24..32].try_into().unwrap())),
+            signal: Signal::from_code(b[HEADER_FORMAT_AT + 2]).ok_or(DecodeError::Invalid("signal"))?,
+            segment_id: u64::from_le_bytes(b[24..32].try_into().unwrap()),
+            created_at: Timestamp(i64::from_le_bytes(b[32..40].try_into().unwrap())),
         })
     }
 }
@@ -497,6 +513,7 @@ impl Footer {
         }
         w.u16(FORMAT_VERSION);
         w.u16(0);
+        w.raw(&LAYOUT_TAG);
         let crc = crc32fast::hash(&w.buf);
         w.u32(crc);
         w.raw(FOOTER_MAGIC);
@@ -505,12 +522,14 @@ impl Footer {
         out
     }
 
+    /// Magic, checksum, then layout identity and version: both are
+    /// believed only once the checksum holds.
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         if b.len() != FOOTER_LEN || &b[FOOTER_LEN - 8..] != FOOTER_MAGIC {
             return Err(DecodeError::Invalid("footer magic"));
         }
-        let body = &b[..FOOTER_LEN - 12];
-        let crc = u32::from_le_bytes(b[FOOTER_LEN - 12..FOOTER_LEN - 8].try_into().unwrap());
+        let body = &b[..FOOTER_BODY_LEN];
+        let crc = u32::from_le_bytes(b[FOOTER_BODY_LEN..FOOTER_LEN - 8].try_into().unwrap());
         if crc32fast::hash(body) != crc {
             return Err(DecodeError::Checksum);
         }
@@ -521,6 +540,11 @@ impl Footer {
         let summary = chunk()?;
         let index = chunk()?;
         let v = r.u16()?;
+        let _reserved = r.u16()?;
+        let tag = &body[FOOTER_BODY_LEN - LAYOUT_TAG_LEN..];
+        if tag != LAYOUT_TAG {
+            return Err(DecodeError::ForeignLayout(describe_tag(tag)));
+        }
         if v != FORMAT_VERSION {
             return Err(DecodeError::UnsupportedVersion(v));
         }
@@ -558,6 +582,31 @@ mod tests {
         let mut bad = bytes;
         bad[3] ^= 1;
         assert_eq!(Footer::decode(&bad), Err(DecodeError::Checksum));
+    }
+
+    /// FR-AC3: version 1 alone is not enough; the identity comes first.
+    #[test]
+    fn layout_identity_is_checked_before_the_version() {
+        let h = Header { signal: Signal::Logs, segment_id: 1, created_at: Timestamp(5) }.encode();
+        assert_eq!(&h[HEADER_LAYOUT_AT..HEADER_FORMAT_AT], &LAYOUT_TAG);
+        // A 0.1.1 header: magic | u16 1 | signal | reserved | id | created.
+        let mut old = SEGMENT_MAGIC.to_vec();
+        old.extend_from_slice(&[1, 0, 1, 0, 0, 0, 0, 0]);
+        old.extend_from_slice(&[0; 16]);
+        assert!(
+            matches!(Header::decode(&old), Err(DecodeError::ForeignLayout(f)) if f.starts_with("no layout identity"))
+        );
+        assert!(matches!(Header::decode(&h[..12]), Err(DecodeError::ForeignLayout(f)) if f == "no layout identity"));
+        assert_eq!(Header::decode(&h[..HEADER_FORMAT_AT + 1]), Err(DecodeError::UnexpectedEof));
+        assert_eq!(Header::decode(&h[..5]), Err(DecodeError::Invalid("segment magic")));
+
+        // A footer from another layout, under a valid checksum.
+        let f = Footer { summary: ChunkRef { offset: 1, len: 2, raw_len: 3, crc: 4 }, index: ChunkRef::default() };
+        let mut other = f.encode();
+        other[FOOTER_BODY_LEN - LAYOUT_TAG_LEN..FOOTER_BODY_LEN].copy_from_slice(b"0.1.9\0\0\0");
+        let crc = crc32fast::hash(&other[..FOOTER_BODY_LEN]);
+        other[FOOTER_BODY_LEN..FOOTER_LEN - 8].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(Footer::decode(&other), Err(DecodeError::ForeignLayout("layout 0.1.9".into())));
     }
 
     #[test]

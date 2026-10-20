@@ -3,6 +3,7 @@ name: Release
 # Publishes a release only after it has been validated (docs/releasing.md):
 #
 #   preflight ─┬─ performance ────────────┐
+#              ├─ compat ─────────────────┤
 #              ├─ ci (the full CI suite) ─┤
 #              └──────────────────────────┴─ binaries ─ verify ─ image-smoke ─ image ─ release
 #
@@ -11,11 +12,15 @@ name: Release
 #   commit on the release-evidence branch, signed off before the tag was created. The
 #   sign-off itself happens before tagging (scripts/release/release.mjs pretag); this job
 #   refuses to publish a tag that bypassed it.
+# - compat: the version's COMPAT-GATE (every release, prereleases included) has a reviewer PASS
+#   for this exact commit and the layout identity it writes, reviewed before the tag and before
+#   any performance measurement of the same candidate (cleanup first).
 # - ci: every required CI check, run against the tagged commit.
 # - binaries: built with the UI that CI tested; each one's --version and embedded UI are
 #   checked on its own runner before it is uploaded.
 # - verify: the full artifact set and SHA256SUMS, plus the Linux binary as shipped, and the
-#   built artifacts match the hashes the performance gates approved (or documented equivalence).
+#   built artifacts match the hashes the performance and compatibility gates approved (or
+#   documented equivalence).
 # - image-smoke: on native amd64 and arm64 runners, each image is checked as an operator runs it:
 #   non-root user and version label, readiness and the embedded UI, events surviving a recreated
 #   container on a named volume, and the uid hint on an unwritable bind mount. Only then is it
@@ -97,6 +102,35 @@ jobs:
           path: evidence/performance
           if-no-files-found: ignore
 
+  compat:
+    name: Pre-tag compatibility sign-off
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch approval records
+        # A missing branch leaves evidence/ empty, which fails the check below as missing evidence.
+        run: |
+          mkdir -p evidence
+          if git fetch --depth=1 origin release-evidence; then git archive FETCH_HEAD | tar -x -C evidence; fi
+      - name: Check sign-off for this commit
+        run: |
+          args=()
+          if [ "$PUBLISH" = "true" ]; then
+            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+            # Empty for a lightweight tag, which the check rejects.
+            args=(--tag-date "$(git for-each-ref "refs/tags/$TAG" --format='%(taggerdate:iso-strict)')")
+          fi
+          node scripts/release/release.mjs check-compat --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compat-evidence
+          path: evidence/compat
+          if-no-files-found: ignore
+
   ci:
     name: Required checks
     needs: preflight
@@ -107,7 +141,7 @@ jobs:
 
   binaries:
     name: Build and check ${{ matrix.name }}
-    needs: [preflight, performance, ci]
+    needs: [preflight, performance, compat, ci]
     strategy:
       fail-fast: true
       matrix:
@@ -161,7 +195,7 @@ jobs:
 
   verify:
     name: Verify release artifacts
-    needs: [preflight, performance, binaries]
+    needs: [preflight, performance, compat, binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -177,6 +211,11 @@ jobs:
         with:
           name: performance-evidence
           path: evidence/performance
+        continue-on-error: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: compat-evidence
+          path: evidence/compat
         continue-on-error: true
       - name: Combined checksums
         run: |
@@ -194,6 +233,7 @@ jobs:
         run: |
           mkdir -p evidence
           node scripts/release/release.mjs check-performance --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence --artifacts artifacts
+          node scripts/release/release.mjs check-compat --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence --artifacts artifacts
       - uses: actions/upload-artifact@v4
         with:
           name: release-artifacts

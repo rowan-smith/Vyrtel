@@ -1,0 +1,50 @@
+name: Release compatibility gate
+description: The COMPAT-GATE every tagged release needs (stable, patch or prerelease) before it can be tagged.
+title: '[COMPAT-GATE-<version>] Remove obsolete compatibility debt before tagging'
+labels:
+- type:story
+- release-blocker
+- area:release
+body:
+- type: markdown
+  attributes:
+    value: |
+      One gate per release version, shared by all of its milestones and prereleases. The procedure, owner and evidence
+      location are in docs/releasing.md#pre-tag-compatibility-sign-off; 0.1.2's audit (docs/compatibility/0.1.2.md) is
+      the worked example. Declare this issue in `scripts/release/compat-gates.json` (`COMPAT-GATE-<version>` and its
+      issue number) in a reviewed pull request; until then no build of the version can be tagged.
+
+      **Order:** inventory → removals and contract changes → correctness/recovery tests → reviewer PASS on the final
+      candidate → final performance profiling (PERF-GATE) on the same commit → tag. Any later artifact-affecting change
+      invalidates both sign-offs.
+- type: input
+  id: version
+  attributes:
+    label: Release version
+    description: The base version (prereleases of it share this gate).
+    placeholder: 0.1.3
+  validations:
+    required: true
+- type: textarea
+  id: checklist
+  attributes:
+    label: Checklist
+    description: Each item becomes a `checklist` entry of the approval record with `pass` or `na` and its evidence.
+    value: |
+      - [ ] **inventory** — every compatibility path found: path/symbol, old contract, callers, removal or replacement, data/security impact, PR. Areas with nothing to remove are listed as N/A with evidence (API/ingest/query, config/CLI/env, WAL/segments/manifest/metadata/backups, auth, persisted UI state, integrations, dependencies).
+      - [ ] **removals** — every obsolete compatibility-only branch and dependency removed, duplicates consolidated, callers/tests/docs updated. Retained paths reclassified as current interoperability or safety with evidence. Exceptions only with Rowan's approval, an owner, a removal release and an issue.
+      - [ ] **contract** — supported version/input matrix and breaking-change notes published; removed endpoints/flags/keys/formats fail actionably, never with a silent default, an auth bypass or a destructive write.
+      - [ ] **roadmap** — upgrade, rollback, restore, migration and codec promises in the roadmap and open issues reconciled with the pre-1.0 policy.
+      - [ ] **tests** — supported workflows (fresh install, config/CLI, ingest, query/UI, accounts, restart/recovery, backup/restore, release artifact smoke) and removal negatives pass; refusal before mutation is shown with directory hashes; changed persistence ordering is crash/fault tested.
+      - [ ] **format-reset** — every Vyrtel-owned persisted format version is 1 for the release's layout, superseded readers/writers/migrations/fixtures deleted (before/after constants recorded). Skip only when no format changed since the last release, and say so.
+      - [ ] **layout-identity** — `telemetry::LAYOUT` names this layout (a new value if any format changed); foreign, missing, truncated and mixed identities are refused unchanged, including backups and the metadata database.
+      - [ ] **docs** — release runbook, contributing/architecture policy, API/config/CLI examples, supported versions and upgrade/backup notes updated.
+  validations:
+    required: true
+- type: textarea
+  id: evidence
+  attributes:
+    label: Evidence
+    description: Candidate SHA, artifact hashes, inventory link, removal PRs, test runs, binary-size delta. Recorded at `compat/<version>/COMPAT-GATE-<version>.json` on the release-evidence branch.
+  validations:
+    required: false

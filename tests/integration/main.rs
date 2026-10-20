@@ -12,6 +12,7 @@ mod crash;
 mod data_dir_access;
 mod decode_limits;
 mod ingest_limits;
+mod layouts;
 mod live;
 mod query_budgets;
 mod recovery_health;
@@ -19,7 +20,6 @@ mod shutdown;
 mod signals;
 mod storage_flows;
 mod transport;
-mod upgrade;
 // Needs `--features fault-injection` (CI runs `--all-features`).
 #[cfg(feature = "fault-injection")]
 mod storage_faults;

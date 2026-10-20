@@ -15,7 +15,7 @@ fn alert() -> AlertInput {
 }
 
 #[test]
-fn migrations_are_idempotent_and_persistent() {
+fn reopening_keeps_everything() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("metadata").join("metadata.db");
     {
@@ -39,7 +39,7 @@ fn files(dir: &std::path::Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
 }
 
 #[test]
-fn inspect_reads_the_schema_version_without_changing_anything() {
+fn inspect_reads_the_identity_without_changing_anything() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("metadata.db");
     {
@@ -47,38 +47,82 @@ fn inspect_reads_the_schema_version_without_changing_anything() {
         m.create_dashboard("Prod", None).unwrap();
     }
     let before = files(d.path());
-    assert_eq!(Metadata::inspect(&path).unwrap(), SCHEMA_VERSION);
+    assert_eq!(Metadata::inspect(&path).unwrap(), Identity::Current);
     assert_eq!(files(d.path()), before, "no -wal, -shm or journal file appears");
 
-    // An empty file is an empty database, version 0.
+    // An empty file is an empty database.
     std::fs::write(&path, b"").unwrap();
-    assert_eq!(Metadata::inspect(&path).unwrap(), 0);
+    assert_eq!(Metadata::inspect(&path).unwrap(), Identity::Empty);
     // Paths with URI metacharacters still name the file (`?` is not allowed
     // in Windows file names).
     let odd = d.path().join(if cfg!(windows) { "a #b%c.db" } else { "a #b?c%d.db" });
     drop(Metadata::open(&odd).unwrap());
-    assert_eq!(Metadata::inspect(&odd).unwrap(), SCHEMA_VERSION);
+    assert_eq!(Metadata::inspect(&odd).unwrap(), Identity::Current);
     assert!(Metadata::inspect(&d.path().join("absent.db")).is_err(), "a missing file is not created");
     assert!(!d.path().join("absent.db").exists());
 }
 
+/// Open must refuse `path` as `ForeignLayout`, naming `found`, with every
+/// byte of the database as it was.
+fn assert_refused_unchanged(dir: &std::path::Path, path: &std::path::Path, found: &str) {
+    let before = files(dir);
+    match Metadata::inspect(path).unwrap() {
+        Identity::Foreign(f) => assert!(f.starts_with(found), "{f}"),
+        other => panic!("expected Foreign, got {other:?}"),
+    }
+    match Metadata::open(path) {
+        Err(e @ MetadataError::ForeignLayout { .. }) => {
+            let text = e.to_string();
+            assert!(text.starts_with(&format!("the metadata database has {found}")), "{text}");
+            assert!(
+                text.ends_with(&format!(
+                    ", but this Vyrtel reads layout {} (schema version 1) only",
+                    telemetry::LAYOUT
+                )),
+                "{text}"
+            );
+        }
+        Err(e) => panic!("expected ForeignLayout, got {e}"),
+        Ok(_) => panic!("a database of another layout must not be opened"),
+    }
+    assert_eq!(files(dir), before, "nothing written, not even a journal mode");
+}
+
+/// FR-AC3: a database of another layout, or without an identity, is
+/// refused before anything is written.
 #[test]
-fn newer_schema_is_refused_before_anything_is_written() {
+fn other_layouts_are_refused_before_anything_is_written() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("metadata.db");
-    drop(Metadata::open(&path).unwrap());
+
+    // As 0.1.1 left it: schema version 1 in schema_migrations, no identity.
     {
         let c = rusqlite::Connection::open(&path).unwrap();
-        c.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?1, 0)", [SCHEMA_VERSION + 1]).unwrap();
+        c.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+             INSERT INTO schema_migrations VALUES (1, 0);
+             CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);",
+        )
+        .unwrap();
     }
-    assert_eq!(Metadata::inspect(&path).unwrap(), SCHEMA_VERSION + 1);
-    match Metadata::open(&path) {
-        Err(MetadataError::NewerSchema { found, supported }) => {
-            assert_eq!((found, supported), (SCHEMA_VERSION + 1, SCHEMA_VERSION))
-        }
-        Err(e) => panic!("expected NewerSchema, got {e}"),
-        Ok(_) => panic!("a newer schema must not be opened"),
-    }
+    assert_refused_unchanged(d.path(), &path, "no layout identity (it has schema_migrations");
+
+    // Some other SQLite database.
+    std::fs::remove_file(&path).unwrap();
+    rusqlite::Connection::open(&path).unwrap().execute_batch("CREATE TABLE notes (body TEXT);").unwrap();
+    assert_refused_unchanged(d.path(), &path, "no layout identity (it is not a Vyrtel metadata database)");
+
+    // A database of another layout, and one of this layout but another
+    // schema version.
+    std::fs::remove_file(&path).unwrap();
+    drop(Metadata::open(&path).unwrap());
+    let set = |sql: &str| rusqlite::Connection::open(&path).unwrap().execute_batch(sql).unwrap();
+    set("UPDATE vyrtel_layout SET layout = '0.1.9'");
+    assert_refused_unchanged(d.path(), &path, "layout 0.1.9");
+    set(&format!("UPDATE vyrtel_layout SET layout = '{}', schema_version = 2", telemetry::LAYOUT));
+    assert_refused_unchanged(d.path(), &path, &format!("layout {} schema version 2", telemetry::LAYOUT));
+    set("DELETE FROM vyrtel_layout");
+    assert_refused_unchanged(d.path(), &path, "no layout identity (vyrtel_layout is empty)");
 }
 
 #[test]

@@ -1,0 +1,7 @@
+{
+  "$comment": "The compatibility-cleanup gate every tagged release needs, stable, patch or prerelease (docs/releasing.md#pre-tag-compatibility-sign-off). One COMPAT-GATE-<version> issue per release version, opened from the 'Release compatibility gate' issue template, and shared by every milestone and prerelease of that version. A version with no entry cannot be tagged: add it when a delivery milestone is assigned the version. Only exceptionApprover may approve a temporary compatibility exception.",
+  "exceptionApprover": "rowan-smith",
+  "versions": {
+    "0.1.2": { "gate": { "id": "COMPAT-GATE-0.1.2", "issue": 229, "milestone": "0.1.2 — Reliability and release confidence" } }
+  }
+}

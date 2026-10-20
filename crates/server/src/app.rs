@@ -109,30 +109,22 @@ impl App {
             tracing::warn!(problem = %problem, "starting without part of the data directory (--accept-incomplete-restore)");
         }
         let layout = checked.layout.clone();
-        if matches!(&layout, Layout::Unversioned | Layout::Versioned(Manifest { inventory: None, .. })) {
+        if matches!(&layout, Layout::Unrecorded | Layout::Current(Manifest { inventory: None, .. })) {
             tracing::info!(
                 "data directory has no inventory from a clean shutdown; missing WAL or segment files cannot be detected"
             );
         }
-        let steps = crate::datadir::plan(&checked);
-        for step in steps.iter().filter(|s| **s != crate::datadir::Step::Create) {
-            tracing::info!(step = %step, "upgrading the data directory");
-        }
         crate::datadir::begin(dir, &checked).context("updating the data directory manifest")?;
         crate::datadir::prepare(dir).context("creating data directory")?;
 
-        let metadata = Arc::new(Metadata::open(&dir.join(crate::datadir::METADATA_DB)).map_err(|e| {
-            let hint = if matches!(e, metadata::MetadataError::Migration { .. }) {
-                ". Starting again retries the migration; to go back to the version you upgraded from, restore \
-                 the backup taken before the upgrade (see docs/configuration.md#upgrades-and-data-migrations)"
-            } else {
-                ""
-            };
-            anyhow::anyhow!("opening metadata store: {e}{hint}")
-        })?);
-        // Record the format before storage recovery changes any telemetry
-        // file: a version that cannot read this format then refuses the
-        // directory even if this start is interrupted from here on.
+        // The check refused a database of another layout: this one has
+        // this layout's identity, or no schema yet and gets it.
+        let metadata = Arc::new(
+            Metadata::open(&dir.join(crate::datadir::METADATA_DB))
+                .map_err(|e| anyhow::anyhow!("opening metadata store: {e}"))?,
+        );
+        // Record the layout before storage recovery changes any telemetry
+        // file, and before a new directory gets its first one.
         crate::datadir::record(dir, &layout).context("writing the data directory manifest")?;
 
         let (live_tx, _) = broadcast::channel::<LiveBatch>(LIVE_CHANNEL_CAPACITY);
@@ -145,9 +137,6 @@ impl App {
         });
         let storage =
             Arc::new(Storage::open_locked(storage_config(&config), Some(hook), lock).context("opening storage")?);
-        if steps.iter().any(|s| *s != crate::datadir::Step::Create) {
-            tracing::info!(format = crate::datadir::FORMAT, "data directory upgraded");
-        }
         let engine = Arc::new(Engine::new(
             storage.clone(),
             QueryLimits {

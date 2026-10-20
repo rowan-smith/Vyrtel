@@ -36,7 +36,6 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/v1/query/{signal}/count", post(query::count))
         .route("/api/v1/query/{signal}/facets", post(query::facets))
         .route("/api/v1/live/logs", get(live::live))
-        .route("/api/v1/live", get(live::live))
         .route("/api/v1/traces", get(query::trace_search_get))
         .route("/api/v1/traces/{trace_id}", get(query::trace_get))
         .route("/api/v1/metrics", get(query::metric_names))
