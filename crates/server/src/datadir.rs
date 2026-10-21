@@ -8,10 +8,14 @@
 //! damage. Now [`check`] refuses such a directory with an explanation, and
 //! leaves every file in it as it was.
 //!
-//! A complete directory carries a manifest, [`MANIFEST`], whose `format`
-//! names the layout and file formats the directory uses. Any change to an
-//! on-disk format bumps [`FORMAT`], so a backup taken by a newer Vyrtel is
-//! refused by an older one before it reads a single data file.
+//! A complete directory carries a manifest, [`MANIFEST`], with the layout
+//! identity ([`telemetry::LAYOUT`]) and the data-directory [`FORMAT`]. Every
+//! file in it carries the identity too: each WAL and segment header and the
+//! metadata database. Before 1.0 a release reads only directories of its
+//! own layout: one written by another release, or by any release before
+//! 0.1.2 (which wrote no identity), is refused before a single data file is
+//! read, never migrated or guessed at (COMPAT-GATE-0.1.2; see
+//! docs/configuration.md#upgrading-between-pre-10-releases).
 //!
 //! A clean shutdown adds an [`Inventory`] to the manifest: every WAL and
 //! segment file with its size, as they are while the server is stopped. A
@@ -22,31 +26,26 @@
 //! (`accept_incomplete`, the `--accept-incomplete-restore` flag), never
 //! because a file or directory happens to exist empty.
 //!
-//! Upgrades (REL-07): [`plan`] lists what a start would migrate in a
-//! directory that passed the check, and [`RELEASES`] which released
-//! versions can read it before and after, so `vyrtel check-data-dir` can
-//! tell an operator, before upgrading and without changing anything,
-//! whether this build reads their data and what going back would take.
+//! [`report`] tells an operator, before starting and without changing
+//! anything, whether this build reads a directory (`vyrtel check-data-dir`).
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use metadata::Identity;
 use serde::{Deserialize, Serialize};
 use storage::StorageError;
-use telemetry::Signal;
+use telemetry::{LAYOUT, Signal};
 
 /// Manifest file name, at the top of the data directory.
 pub const MANIFEST: &str = "vyrtel.json";
 
-/// The data-directory format this build reads and writes: WAL file format
-/// 1, WAL record version 1, event codec 2 (WAL batches with a resource
-/// table; codec 1 is still read), segment format 1, metadata schema up to
-/// [`metadata::SCHEMA_VERSION`]. Format 1 (0.1.1) differs only in the event
-/// codec, so a format 1 directory is read as it is and new WAL records are
-/// written in codec 2.
-pub const FORMAT: u32 = 2;
+/// The data-directory format of layout [`LAYOUT`]: WAL file format 1, WAL
+/// record version 1, event codec 1, segment format 1 and metadata schema
+/// [`metadata::SCHEMA_VERSION`] (1). The only format of the layout.
+pub const FORMAT: u32 = 1;
 
 /// Where the metadata database lives, relative to the data directory.
 pub const METADATA_DB: &str = "metadata/metadata.db";
@@ -59,9 +58,12 @@ const OWN_ENTRIES: &[&str] = &[MANIFEST, ".lock", "metadata", "wal", "segments",
 const LISTED: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Manifest {
     pub format: u32,
+    /// The layout identity: [`LAYOUT`] for every directory this build
+    /// reads.
+    pub layout: String,
     /// The Vyrtel version that last wrote the manifest.
     pub written_by: String,
     /// Present only while the directory is stopped after a clean shutdown.
@@ -71,6 +73,7 @@ pub struct Manifest {
 
 /// The telemetry files of a cleanly stopped data directory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Inventory {
     /// Path relative to the data directory (`wal/logs/000000000003.wal`)
     /// → size in bytes.
@@ -79,7 +82,12 @@ pub struct Inventory {
 
 impl Manifest {
     pub fn current() -> Manifest {
-        Manifest { format: FORMAT, written_by: env!("CARGO_PKG_VERSION").to_string(), inventory: None }
+        Manifest {
+            format: FORMAT,
+            layout: LAYOUT.to_string(),
+            written_by: env!("CARGO_PKG_VERSION").to_string(),
+            inventory: None,
+        }
     }
 }
 
@@ -88,11 +96,14 @@ impl Manifest {
 pub enum Layout {
     /// No data directory yet, or none of Vyrtel's entries in it.
     New,
-    /// Vyrtel data from before manifests (0.1.1 and earlier), or a first
-    /// start that stopped before writing one. Usable; gets a manifest.
-    Unversioned,
-    /// A directory with a manifest this build reads.
-    Versioned(Manifest),
+    /// No manifest yet, and nothing of another layout: a first start of
+    /// this build that stopped before writing one (no telemetry, and a
+    /// metadata database that is absent, empty or of this layout). Gets
+    /// one. Also a directory whose only missing part is the manifest,
+    /// accepted with `accept_incomplete`.
+    Unrecorded,
+    /// A directory with a manifest of this layout.
+    Current(Manifest),
 }
 
 /// The result of a successful [`check`].
@@ -102,148 +113,53 @@ pub struct Checked {
     /// Problems that would have refused the start, accepted on request
     /// (`accept_incomplete`). Empty otherwise.
     pub accepted: Vec<String>,
-    /// The metadata schema version found: 0 without a database, or for an
-    /// empty one.
-    pub schema: i64,
-}
-
-/// A released Vyrtel version and the newest data-directory format and
-/// metadata schema it reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Release {
-    pub version: &'static str,
-    pub format: u32,
-    pub schema: i64,
-}
-
-/// Every Vyrtel release, oldest first. Add a row when cutting a release
-/// (see docs/releasing.md). 0.1.1 does not check formats: it would misread
-/// a directory in a newer format instead of refusing it. 0.1.0 was released
-/// as Observer, whose files Vyrtel does not read and which does not read
-/// Vyrtel's, so it is not listed.
-pub const RELEASES: &[Release] = &[Release { version: "0.1.1", format: 1, schema: 1 }];
-
-/// The oldest release that reads a directory in `format` with metadata
-/// `schema`; `None` if no release does (a format not released yet).
-pub fn readable_since(format: u32, schema: i64) -> Option<&'static str> {
-    RELEASES.iter().find(|r| r.format >= format && r.schema >= schema).map(|r| r.version)
-}
-
-/// One change a start makes to the formats in a data directory that
-/// passed [`check`], in the order it makes them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Step {
-    /// A new directory is created in the current format.
-    Create,
-    /// A directory from before manifests gets one.
-    RecordFormat,
-    /// A directory in an older format is recorded in this one. Its files
-    /// are read as they are; what is written from then on is in this format.
-    UpgradeFormat { from: u32 },
-    /// The metadata database is migrated, one transaction per version.
-    MigrateSchema { from: i64, to: i64 },
-}
-
-impl fmt::Display for Step {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Step::Create => write!(f, "create a new data directory in format {FORMAT}"),
-            Step::RecordFormat => {
-                write!(f, "record data-directory format {FORMAT} in {MANIFEST} (it has none: written before 0.1.2)")
-            }
-            Step::UpgradeFormat { from } => write!(
-                f,
-                "record data-directory format {FORMAT} in {MANIFEST} (it has {from}); files already written are read \
-                 as they are, and WAL batches are written in event codec 2 from then on"
-            ),
-            Step::MigrateSchema { from: 0, to } => write!(f, "create the schema of {METADATA_DB} (version {to})"),
-            Step::MigrateSchema { from, to } => write!(f, "migrate {METADATA_DB} from schema version {from} to {to}"),
-        }
-    }
-}
-
-/// What starting a directory that passed [`check`] changes in its formats.
-/// Every step is safe to interrupt: the manifest is replaced atomically and
-/// each schema migration is one SQLite transaction, so a start after an
-/// interruption redoes what was left. Telemetry files are not rewritten.
-pub fn plan(checked: &Checked) -> Vec<Step> {
-    let mut steps = Vec::new();
-    match &checked.layout {
-        Layout::New => return vec![Step::Create],
-        Layout::Unversioned => steps.push(Step::RecordFormat),
-        Layout::Versioned(m) if m.format < FORMAT => steps.push(Step::UpgradeFormat { from: m.format }),
-        Layout::Versioned(_) => {}
-    }
-    if checked.schema < metadata::SCHEMA_VERSION {
-        steps.push(Step::MigrateSchema { from: checked.schema, to: metadata::SCHEMA_VERSION });
-    }
-    steps
+    /// The metadata database found: `None` without one, else
+    /// [`Identity::Empty`] or [`Identity::Current`] (anything else is
+    /// refused).
+    pub metadata: Option<Identity>,
 }
 
 /// The `vyrtel check-data-dir` report for a directory that passed [`check`]:
-/// what it holds, what starting this build would change, and which
-/// releases can read it before and after.
+/// what it holds and what starting this build would change.
 pub fn report(dir: &Path, checked: &Checked) -> String {
     let this = env!("CARGO_PKG_VERSION");
     let schema = metadata::SCHEMA_VERSION;
     let mut out = format!("data directory {}\n", dir.display());
-    let format = match &checked.layout {
-        Layout::New => None,
-        Layout::Unversioned => {
-            out.push_str(&format!("  {MANIFEST}: none (written before 0.1.2, or a first start that stopped early)\n"));
-            Some(1)
+    match &checked.layout {
+        Layout::New => out.push_str("  new: none of Vyrtel's files yet\n"),
+        Layout::Unrecorded => {
+            out.push_str(&format!("  {MANIFEST}: none (a first start of this layout stopped before writing it)\n"))
         }
-        Layout::Versioned(m) => {
-            out.push_str(&format!("  {MANIFEST}: format {}, last written by Vyrtel {}\n", m.format, m.written_by));
+        Layout::Current(m) => {
+            out.push_str(&format!(
+                "  {MANIFEST}: layout {}, format {}, last written by Vyrtel {}\n",
+                m.layout, m.format, m.written_by
+            ));
             out.push_str(match m.inventory {
                 Some(_) => "  clean-shutdown inventory: every WAL and segment file is present with its size\n",
                 None => "  clean-shutdown inventory: none, so missing WAL or segment files cannot be detected\n",
             });
-            Some(m.format)
         }
-    };
-    match (format, checked.schema) {
-        (None, _) => out.push_str("  new: none of Vyrtel's files yet\n"),
-        (Some(_), 0) => out.push_str(&format!("  {METADATA_DB}: no schema yet\n")),
-        (Some(_), v) => out.push_str(&format!("  {METADATA_DB}: schema version {v}\n")),
+    }
+    if checked.layout != Layout::New {
+        out.push_str(&match checked.metadata {
+            None => format!("  {METADATA_DB}: none\n"),
+            Some(Identity::Empty) => format!("  {METADATA_DB}: no schema yet\n"),
+            Some(_) => format!("  {METADATA_DB}: layout {LAYOUT}, schema version {schema}\n"),
+        });
     }
     for problem in &checked.accepted {
         out.push_str(&format!("  accepted with --accept-incomplete-restore: {problem}\n"));
     }
 
-    out.push_str(&format!("Vyrtel {this} (format {FORMAT}, metadata schema up to {schema}) can start it.\n"));
-    let steps = plan(checked);
-    let Some(format) = format else {
-        out.push_str(&format!("Starting it will {}.\n", Step::Create));
-        return out;
-    };
-    if steps.is_empty() {
-        out.push_str("Starting it migrates nothing.\n");
-    } else {
-        out.push_str("Starting it will:\n");
-        for step in &steps {
-            out.push_str(&format!("  - {step}\n"));
-        }
-    }
-    let (before, after) = (readable_since(format, checked.schema), readable_since(FORMAT, schema));
-    match (before, after) {
-        (_, None) => out.push_str(
-            "Afterwards no released Vyrtel version can read it, only this build and later ones. To go back, \
-             restore the backup taken before the upgrade.\n",
-        ),
-        (Some(before), Some(after)) if before == after => out.push_str(&format!(
-            "Afterwards every release that reads it now (Vyrtel {after} and later) can still read it.\n"
-        )),
-        (_, Some(after)) => out.push_str(&format!(
-            "Afterwards only Vyrtel {after} and later can read it. To go back to an older version, restore the \
-             backup taken before the upgrade.\n"
-        )),
-    }
-    if !steps.is_empty() && before != after {
-        out.push_str(
-            "Back up the stopped data directory first (see docs/configuration.md#upgrades-and-data-migrations).\n",
-        );
-    }
+    out.push_str(&format!(
+        "Vyrtel {this} (layout {LAYOUT}, data-directory format {FORMAT}, metadata schema {schema}) can start it.\n"
+    ));
+    out.push_str(match checked.layout {
+        Layout::New => "Starting it will create a new data directory in this layout.\n",
+        Layout::Unrecorded => "Starting it will finish setting it up and record the layout in vyrtel.json.\n",
+        Layout::Current(_) => "Starting it changes no file formats.\n",
+    });
     out
 }
 
@@ -257,15 +173,13 @@ pub enum DataDirError {
     Incomplete { dir: PathBuf, problems: Vec<String> },
     /// The manifest is there but cannot be used.
     BadManifest { dir: PathBuf, reason: String },
-    /// A newer Vyrtel wrote this directory.
-    NewerFormat { dir: PathBuf, found: u32, written_by: String },
-    /// A data file is in a format this build cannot read.
-    UnsupportedFile { dir: PathBuf, file: String, what: &'static str, found: u16, supported: u16 },
-    /// Observer 0.1.0 (Vyrtel's first release, under its earlier name)
-    /// wrote the telemetry files, in a format no Vyrtel release reads.
-    Observer { dir: PathBuf, file: String },
-    /// The metadata database was migrated by a newer Vyrtel.
-    NewerMetadata { dir: PathBuf, found: i64 },
+    /// The directory, or a file in it, is not of this build's layout:
+    /// another layout identity, or none (written before 0.1.2). `what`
+    /// names the file and what it has instead.
+    ForeignLayout { dir: PathBuf, what: String },
+    /// A file of this layout declares a format version this build does not
+    /// read (a newer build of the layout, or edited by hand).
+    UnsupportedFile { dir: PathBuf, file: String, what: &'static str, found: u32, supported: u32 },
     /// The metadata database cannot be read (not SQLite, damaged).
     BadMetadata { dir: PathBuf, reason: String },
     /// The directory could not be examined (permissions, I/O errors).
@@ -274,6 +188,7 @@ pub enum DataDirError {
 
 const NOTHING_CHANGED: &str = "Vyrtel did not start and changed nothing in it";
 const SEE: &str = "see docs/configuration.md#backup-and-restore";
+const SEE_LAYOUTS: &str = "see docs/configuration.md#upgrading-between-pre-10-releases";
 
 impl fmt::Display for DataDirError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -293,34 +208,20 @@ impl fmt::Display for DataDirError {
                  from the same backup as the rest of the directory ({SEE})",
                 dir.display()
             ),
-            DataDirError::NewerFormat { dir, found, written_by } => write!(
+            DataDirError::ForeignLayout { dir, what } => write!(
                 f,
-                "data directory {} has format {found} (written by Vyrtel {written_by}), but Vyrtel {this} reads \
-                 only format {FORMAT}. {NOTHING_CHANGED}. Start it with Vyrtel {written_by} or newer ({SEE})",
+                "data directory {} is not in the layout Vyrtel {this} reads: {what}. Vyrtel {this} reads layout \
+                 {LAYOUT} only, and before 1.0 a release reads no data directory of another layout. \
+                 {NOTHING_CHANGED}. Keep running the Vyrtel version that wrote it, or start Vyrtel {this} on a \
+                 new, empty data directory ({SEE_LAYOUTS})",
                 dir.display()
             ),
             DataDirError::UnsupportedFile { dir, file, what, found, supported } => write!(
                 f,
                 "data directory {} cannot be read by Vyrtel {this}: {file} uses {what} version {found}, and this \
-                 version reads versions up to {supported}. {NOTHING_CHANGED}. Start it with the Vyrtel version that wrote \
-                 it, or newer ({SEE})",
+                 version reads version {supported} of layout {LAYOUT} only. {NOTHING_CHANGED}. Start it with the \
+                 Vyrtel build that wrote it ({SEE_LAYOUTS})",
                 dir.display()
-            ),
-            DataDirError::Observer { dir, file } => write!(
-                f,
-                "data directory {} was written by Observer 0.1.0, Vyrtel's first release under its earlier name \
-                 ({file} is in Observer's file format), and Vyrtel {this} cannot read its telemetry. \
-                 {NOTHING_CHANGED}. Keep running Observer 0.1.0 on it, or start Vyrtel on a new data directory \
-                 (see docs/configuration.md#upgrades-and-data-migrations)",
-                dir.display()
-            ),
-            DataDirError::NewerMetadata { dir, found } => write!(
-                f,
-                "data directory {} cannot be read by Vyrtel {this}: {METADATA_DB} has schema version {found}, and \
-                 this version knows schema versions up to {}. {NOTHING_CHANGED}. Start it with the Vyrtel version \
-                 that wrote it, or newer ({SEE})",
-                dir.display(),
-                metadata::SCHEMA_VERSION
             ),
             DataDirError::BadMetadata { dir, reason } => write!(
                 f,
@@ -360,17 +261,22 @@ fn required() -> Vec<String> {
 /// Decide whether `dir` can be started, reading only. Runs before the data
 /// directory is created or locked, so on `Err` nothing in it has changed.
 ///
+/// Always refused: an unreadable manifest; a manifest, metadata database,
+/// WAL or segment file of another layout or without a layout identity;
+/// WAL or segment files with neither a manifest nor a metadata database of
+/// this layout to identify them; a file of this layout in a format version
+/// this build does not read; a metadata database that cannot be read.
+///
 /// Refused as incomplete, unless `accept_incomplete` (then the problems are
 /// returned in [`Checked::accepted`]): a missing required entry, a file in
-/// the inventory that is missing or has another size, and a metadata
-/// database without a schema where one must exist. Always refused: an
-/// unreadable or newer manifest, a segment or WAL file in a newer format, a
-/// metadata database that cannot be read or has a newer schema. Damaged
-/// segments and WAL tails are not refused; recovery quarantines them as
-/// after a crash.
+/// the inventory that is missing or has another size, a metadata database
+/// without a schema where one must exist, and a missing manifest next to
+/// telemetry and a metadata database of this layout. Damaged segments and
+/// WAL tails are not refused; recovery quarantines them as after a crash.
 pub fn check(dir: &Path, accept_incomplete: bool) -> Result<Checked, DataDirError> {
     let unreadable = |e: std::io::Error| DataDirError::Unreadable { dir: dir.to_path_buf(), reason: e.to_string() };
-    let new = Checked { layout: Layout::New, accepted: Vec::new(), schema: 0 };
+    let foreign = |what: String| DataDirError::ForeignLayout { dir: dir.to_path_buf(), what };
+    let new = Checked { layout: Layout::New, accepted: Vec::new(), metadata: None };
     if !dir.exists() {
         return Ok(new);
     }
@@ -386,86 +292,136 @@ pub fn check(dir: &Path, accept_incomplete: bool) -> Result<Checked, DataDirErro
         return Ok(new);
     }
 
-    let layout = match std::fs::read(dir.join(MANIFEST)) {
-        Ok(bytes) => Layout::Versioned(read_manifest(dir, &bytes)?),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Layout::Unversioned,
+    let manifest = match std::fs::read(dir.join(MANIFEST)) {
+        Ok(bytes) => Some(read_manifest(dir, &bytes)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(unreadable(e)),
     };
+    let db = dir.join(METADATA_DB);
+    let metadata = if db.exists() {
+        match metadata::Metadata::inspect(&db) {
+            Ok(Identity::Foreign(found)) if manifest.is_none() => {
+                return Err(foreign(format!("there is no {MANIFEST}, and {METADATA_DB} has {found}")));
+            }
+            Ok(Identity::Foreign(found)) => return Err(foreign(format!("{METADATA_DB} has {found}"))),
+            Ok(identity) => Some(identity),
+            Err(e) => return Err(DataDirError::BadMetadata { dir: dir.to_path_buf(), reason: e.to_string() }),
+        }
+    } else {
+        None
+    };
+    let telemetry = has_telemetry(dir).map_err(unreadable)?;
 
     let present = |rel: &str| dir.join(rel).exists();
     let missing = |rel: String| format!("{rel} is missing");
-    let mut problems: Vec<String> = match &layout {
-        // A manifest is written only once every required entry exists.
-        Layout::Versioned(_) => required().into_iter().filter(|r| !present(r)).map(missing).collect(),
-        // Without one, refuse what would quietly lose data: telemetry
-        // without its metadata, or metadata without telemetry directories.
-        // Neither happens on a first start that stopped early, which
-        // creates the signal directories, then the database, then data.
-        _ => {
-            let db = present(METADATA_DB);
-            if !db && has_telemetry(dir).map_err(unreadable)? {
-                vec![missing(METADATA_DB.to_string())]
-            } else if db {
-                required().into_iter().skip(1).filter(|r| !present(r)).map(missing).collect()
-            } else {
-                Vec::new()
+    let mut problems = Vec::new();
+    let layout = match manifest {
+        Some(m) => {
+            // A manifest is written only once every required entry exists.
+            problems.extend(required().into_iter().filter(|r| !present(r)).map(missing));
+            for (rel, &expected) in m.inventory.iter().flat_map(|i| &i.files) {
+                match std::fs::metadata(dir.join(rel)) {
+                    Ok(f) if f.len() == expected => {}
+                    Ok(f) => {
+                        problems.push(format!("{rel} has {} bytes, {expected} at the last clean shutdown", f.len()))
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => problems.push(missing(rel.clone())),
+                    Err(e) => return Err(unreadable(e)),
+                }
             }
+            // Every start creates the database's schema before it writes a
+            // manifest, so an empty one next to it was truncated or
+            // replaced: its dashboards, alerts, users and keys are gone.
+            if metadata == Some(Identity::Empty) {
+                problems.push(format!("{METADATA_DB} is empty (it has no schema)"));
+            }
+            Layout::Current(m)
+        }
+        None => {
+            // A first start records the manifest before it writes any
+            // telemetry, so telemetry without one is identified only by a
+            // metadata database of this layout (a restore that left out the
+            // manifest). Without either, it is from before 0.1.2, or cannot
+            // be told apart from it: never guessed at.
+            let current_db = metadata == Some(Identity::Current);
+            if telemetry && !current_db {
+                return Err(foreign(format!(
+                    "there is no {MANIFEST} and no metadata database of this layout, but there are WAL or segment \
+                     files (Vyrtel 0.1.1 and earlier wrote no {MANIFEST})"
+                )));
+            }
+            if telemetry {
+                problems.push(missing(MANIFEST.to_string()));
+            }
+            // A first start creates the signal directories, then the
+            // database, so one interrupted in between is not refused.
+            if metadata.is_some() {
+                problems.extend(required().into_iter().skip(1).filter(|r| !present(r)).map(missing));
+            }
+            Layout::Unrecorded
         }
     };
-    if let Layout::Versioned(Manifest { inventory: Some(inventory), .. }) = &layout {
-        for (rel, &expected) in &inventory.files {
-            match std::fs::metadata(dir.join(rel)) {
-                Ok(m) if m.len() == expected => {}
-                Ok(m) => problems.push(format!("{rel} has {} bytes, {expected} at the last clean shutdown", m.len())),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => problems.push(missing(rel.clone())),
-                Err(e) => return Err(unreadable(e)),
-            }
-        }
-    }
 
     storage::check_formats(dir).map_err(|e| match e {
-        StorageError::UnsupportedFormat { path, what, found, supported } => {
-            DataDirError::UnsupportedFile { dir: dir.to_path_buf(), file: relative(dir, &path), what, found, supported }
+        StorageError::ForeignLayout { path, what, found } => {
+            foreign(format!("{} is a {what} file with {found}", relative(dir, &path)))
         }
-        StorageError::ObserverFormat { path } => {
-            DataDirError::Observer { dir: dir.to_path_buf(), file: relative(dir, &path) }
-        }
+        StorageError::UnsupportedFormat { path, what, found, supported } => DataDirError::UnsupportedFile {
+            dir: dir.to_path_buf(),
+            file: relative(dir, &path),
+            what,
+            found: found.into(),
+            supported: supported.into(),
+        },
         e => DataDirError::Unreadable { dir: dir.to_path_buf(), reason: e.to_string() },
     })?;
-
-    let db = dir.join(METADATA_DB);
-    let mut schema = 0;
-    if db.exists() {
-        schema = match metadata::Metadata::inspect(&db) {
-            Ok(found) if found > metadata::SCHEMA_VERSION => {
-                return Err(DataDirError::NewerMetadata { dir: dir.to_path_buf(), found });
-            }
-            // Every start migrates the database before it writes telemetry
-            // or a manifest, so an empty one next to either was truncated or
-            // replaced: its dashboards, alerts, users and keys are gone.
-            Ok(0) if matches!(layout, Layout::Versioned(_)) || has_telemetry(dir).map_err(unreadable)? => {
-                problems.push(format!("{METADATA_DB} is empty (it has no schema)"));
-                0
-            }
-            Ok(found) => found,
-            Err(e) => return Err(DataDirError::BadMetadata { dir: dir.to_path_buf(), reason: e.to_string() }),
-        };
-    }
 
     if !problems.is_empty() && !accept_incomplete {
         return Err(DataDirError::Incomplete { dir: dir.to_path_buf(), problems });
     }
-    Ok(Checked { layout, accepted: problems, schema })
+    Ok(Checked { layout, accepted: problems, metadata })
 }
 
+/// The manifest's layout identity first: only a manifest of this layout is
+/// read any further.
 fn read_manifest(dir: &Path, bytes: &[u8]) -> Result<Manifest, DataDirError> {
     let bad = |reason: String| DataDirError::BadManifest { dir: dir.to_path_buf(), reason };
-    let m: Manifest = serde_json::from_slice(bytes).map_err(|e| bad(format!("not a valid manifest ({e})")))?;
-    if m.format == 0 {
-        return Err(bad("format 0 does not exist".into()));
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| bad(format!("not a valid manifest ({e})")))?;
+    let Some(fields) = value.as_object() else { return Err(bad("not a valid manifest (not an object)".into())) };
+    let written_by = match fields.get("writtenBy").and_then(|w| w.as_str()) {
+        Some(w) => format!(", written by Vyrtel {w}"),
+        None => String::new(),
+    };
+    match fields.get("layout") {
+        Some(serde_json::Value::String(layout)) if layout == LAYOUT => {}
+        Some(serde_json::Value::String(layout)) => {
+            return Err(DataDirError::ForeignLayout {
+                dir: dir.to_path_buf(),
+                what: format!("{MANIFEST} has layout {layout}{written_by}"),
+            });
+        }
+        Some(_) => return Err(bad("its layout is not a string".into())),
+        // Manifests of 0.1.2 builds before the layout reset have a format
+        // but no layout.
+        None if fields.contains_key("format") => {
+            let format = fields.get("format").map(|f| f.to_string()).unwrap_or_default();
+            return Err(DataDirError::ForeignLayout {
+                dir: dir.to_path_buf(),
+                what: format!("{MANIFEST} has no layout identity (format {format}{written_by})"),
+            });
+        }
+        None => return Err(bad("it has no layout".into())),
     }
-    if m.format > FORMAT {
-        return Err(DataDirError::NewerFormat { dir: dir.to_path_buf(), found: m.format, written_by: m.written_by });
+    let m: Manifest = serde_json::from_value(value).map_err(|e| bad(format!("not a valid manifest ({e})")))?;
+    if m.format != FORMAT {
+        return Err(DataDirError::UnsupportedFile {
+            dir: dir.to_path_buf(),
+            file: MANIFEST.into(),
+            what: "data-directory format",
+            found: m.format,
+            supported: FORMAT,
+        });
     }
     for rel in m.inventory.iter().flat_map(|i| i.files.keys()) {
         if !is_telemetry_path(rel) {
@@ -516,7 +472,7 @@ fn relative(dir: &Path, path: &Path) -> String {
 /// describe them, and a crash later must not make the next start refuse
 /// the directory.
 pub fn begin(dir: &Path, checked: &Checked) -> std::io::Result<()> {
-    if let Layout::Versioned(m) = &checked.layout
+    if let Layout::Current(m) = &checked.layout
         && m.inventory.is_some()
     {
         write_manifest(dir, &Manifest::current())?;
@@ -546,9 +502,10 @@ pub fn record(dir: &Path, layout: &Layout) -> std::io::Result<()> {
     }
     write_manifest(dir, &current)?;
     match layout {
-        Layout::New => tracing::info!(format = FORMAT, "initialised data directory"),
-        Layout::Unversioned => tracing::info!(format = FORMAT, "recorded data directory format in {MANIFEST}"),
-        Layout::Versioned(_) => {}
+        Layout::New | Layout::Unrecorded => {
+            tracing::info!(layout = LAYOUT, format = FORMAT, "initialised data directory")
+        }
+        Layout::Current(_) => {}
     }
     Ok(())
 }
@@ -606,6 +563,11 @@ mod tests {
         std::fs::write(dir.join(MANIFEST), json).unwrap();
     }
 
+    /// A manifest of this layout, as JSON, with `extra` keys appended.
+    fn manifest_json(extra: &str) -> String {
+        format!(r#"{{"format": 1, "layout": "{LAYOUT}", "writtenBy": "0.1.2"{extra}}}"#)
+    }
+
     fn layout(dir: &Path) -> Layout {
         check(dir, false).unwrap().layout
     }
@@ -614,6 +576,27 @@ mod tests {
         match check(dir, false) {
             Err(DataDirError::Incomplete { problems, .. }) => problems,
             other => panic!("expected Incomplete, got {other:?}"),
+        }
+    }
+
+    fn foreign(dir: &Path) -> String {
+        match check(dir, true) {
+            Err(e @ DataDirError::ForeignLayout { .. }) => {
+                let DataDirError::ForeignLayout { what, .. } = &e else { unreachable!() };
+                let text = e.to_string();
+                assert!(
+                    text.ends_with(&format!(
+                        ". Vyrtel {this} reads layout {LAYOUT} only, and before 1.0 a release reads no data directory \
+                         of another layout. Vyrtel did not start and changed nothing in it. Keep running the Vyrtel \
+                         version that wrote it, or start Vyrtel {this} on a new, empty data directory (see \
+                         docs/configuration.md#upgrading-between-pre-10-releases)",
+                        this = env!("CARGO_PKG_VERSION")
+                    )),
+                    "{text}"
+                );
+                what.clone()
+            }
+            other => panic!("expected ForeignLayout (never accepted), got {other:?}"),
         }
     }
 
@@ -631,15 +614,15 @@ mod tests {
     fn complete_directory_with_and_without_manifest() {
         let d = tempfile::tempdir().unwrap();
         complete(d.path());
-        assert_eq!(layout(d.path()), Layout::Unversioned);
-        record(d.path(), &Layout::Unversioned).unwrap();
-        assert_eq!(layout(d.path()), Layout::Versioned(Manifest::current()));
+        assert_eq!(layout(d.path()), Layout::Unrecorded);
+        record(d.path(), &Layout::Unrecorded).unwrap();
+        assert_eq!(layout(d.path()), Layout::Current(Manifest::current()));
         let text = std::fs::read_to_string(d.path().join(MANIFEST)).unwrap();
-        assert!(text.contains(&format!("\"format\": {FORMAT}")), "{text}");
+        assert!(text.contains(&format!("\"layout\": \"{LAYOUT}\"")), "{text}");
+        assert!(text.contains("\"format\": 1"), "{text}");
         assert!(!d.path().join("vyrtel.json.tmp").exists());
-        // Unknown manifest keys from the same format are ignored.
-        write_raw_manifest(d.path(), &format!(r#"{{"format": {FORMAT}, "writtenBy": "0.1.9", "note": "x"}}"#));
-        assert!(matches!(layout(d.path()), Layout::Versioned(m) if m.written_by == "0.1.9"));
+        write_raw_manifest(d.path(), &manifest_json(""));
+        assert!(matches!(layout(d.path()), Layout::Current(m) if m.written_by == "0.1.2"));
     }
 
     #[test]
@@ -647,68 +630,90 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         // Signal directories created, metadata database not yet.
         prepare(d.path()).unwrap();
-        assert_eq!(layout(d.path()), Layout::Unversioned);
-        // Database file created but not yet migrated, no telemetry yet.
+        assert_eq!(layout(d.path()), Layout::Unrecorded);
+        // Database file created but its schema not yet committed.
         std::fs::create_dir_all(d.path().join("metadata")).unwrap();
         std::fs::write(d.path().join(METADATA_DB), b"").unwrap();
-        assert_eq!(layout(d.path()), Layout::Unversioned);
+        assert_eq!(layout(d.path()), Layout::Unrecorded);
+        // Schema committed, manifest not yet written.
+        drop(metadata::Metadata::open(&d.path().join(METADATA_DB)).unwrap());
+        assert_eq!(layout(d.path()), Layout::Unrecorded);
         // Only the lock file.
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join(".lock"), b"").unwrap();
-        assert_eq!(layout(d.path()), Layout::Unversioned);
+        assert_eq!(layout(d.path()), Layout::Unrecorded);
     }
 
     #[test]
     fn missing_parts_are_refused() {
         let d = tempfile::tempdir().unwrap();
         complete(d.path());
-        write_raw_manifest(d.path(), r#"{"format": 1, "writtenBy": "0.1.1"}"#);
+        write_raw_manifest(d.path(), &manifest_json(""));
         std::fs::remove_dir(d.path().join("wal/traces")).unwrap();
         std::fs::remove_dir(d.path().join("segments/metrics")).unwrap();
         assert_eq!(problems(d.path()), ["wal/traces is missing", "segments/metrics is missing"]);
         let text = check(d.path(), false).unwrap_err().to_string();
         assert!(text.contains("is incomplete: wal/traces is missing; segments/metrics is missing. "), "{text}");
 
-        // Telemetry without metadata, with or without a manifest.
-        for manifest in [true, false] {
-            let d = tempfile::tempdir().unwrap();
-            prepare(d.path()).unwrap();
-            std::fs::write(d.path().join("wal/logs/000000000001.wal"), b"").unwrap();
-            if manifest {
-                write_raw_manifest(d.path(), r#"{"format": 1, "writtenBy": "0.1.1"}"#);
-            }
-            let text = check(d.path(), false).unwrap_err().to_string();
-            assert!(
-                text.ends_with(
-                    " is incomplete: metadata/metadata.db is missing. Vyrtel did not start and changed nothing in \
-                     it. If it is a restored backup, restore the whole data directory again; to start without the \
-                     missing parts on purpose, start once with --accept-incomplete-restore (see \
-                     docs/configuration.md#backup-and-restore)"
-                ),
-                "{text}"
-            );
-        }
+        // Telemetry without metadata, with a manifest.
+        let d = tempfile::tempdir().unwrap();
+        prepare(d.path()).unwrap();
+        std::fs::write(d.path().join("wal/logs/000000000001.wal"), b"").unwrap();
+        write_raw_manifest(d.path(), &manifest_json(""));
+        let text = check(d.path(), false).unwrap_err().to_string();
+        assert!(
+            text.ends_with(
+                " is incomplete: metadata/metadata.db is missing. Vyrtel did not start and changed nothing in \
+                 it. If it is a restored backup, restore the whole data directory again; to start without the \
+                 missing parts on purpose, start once with --accept-incomplete-restore (see \
+                 docs/configuration.md#backup-and-restore)"
+            ),
+            "{text}"
+        );
 
         // Metadata without telemetry directories, without a manifest.
         let d = tempfile::tempdir().unwrap();
         metadata::Metadata::open(&d.path().join(METADATA_DB)).unwrap();
         assert_eq!(problems(d.path()).len(), 6);
+
+        // Telemetry and metadata of this layout, but no manifest: a restore
+        // that left it out.
+        let d = tempfile::tempdir().unwrap();
+        complete(d.path());
+        std::fs::write(d.path().join("segments/logs/000000000001.seg"), b"").unwrap();
+        assert_eq!(problems(d.path()), ["vyrtel.json is missing"]);
+        assert_eq!(check(d.path(), true).unwrap().layout, Layout::Unrecorded);
     }
 
     #[test]
     fn an_empty_metadata_database_is_not_consent() {
-        // With a manifest, or next to telemetry: a truncated or replaced
-        // database, not a first start.
-        for manifest in [true, false] {
+        // With a manifest: a truncated or replaced database, not a first start.
+        let d = tempfile::tempdir().unwrap();
+        prepare(d.path()).unwrap();
+        std::fs::write(d.path().join("segments/logs/000000000001.seg"), b"").unwrap();
+        std::fs::create_dir_all(d.path().join("metadata")).unwrap();
+        std::fs::write(d.path().join(METADATA_DB), b"").unwrap();
+        write_raw_manifest(d.path(), &manifest_json(""));
+        assert_eq!(problems(d.path()), ["metadata/metadata.db is empty (it has no schema)"]);
+    }
+
+    /// FR-AC3: telemetry that neither a manifest nor a metadata database of
+    /// this layout identifies is refused, never accepted as incomplete.
+    #[test]
+    fn unidentified_telemetry_is_refused() {
+        for db in [false, true] {
             let d = tempfile::tempdir().unwrap();
             prepare(d.path()).unwrap();
-            std::fs::write(d.path().join("segments/logs/000000000001.seg"), b"").unwrap();
-            std::fs::create_dir_all(d.path().join("metadata")).unwrap();
-            std::fs::write(d.path().join(METADATA_DB), b"").unwrap();
-            if manifest {
-                write_raw_manifest(d.path(), r#"{"format": 1, "writtenBy": "0.1.1"}"#);
+            std::fs::write(d.path().join("wal/logs/000000000001.wal"), b"").unwrap();
+            if db {
+                std::fs::create_dir_all(d.path().join("metadata")).unwrap();
+                std::fs::write(d.path().join(METADATA_DB), b"").unwrap();
             }
-            assert_eq!(problems(d.path()), ["metadata/metadata.db is empty (it has no schema)"], "{manifest}");
+            assert_eq!(
+                foreign(d.path()),
+                "there is no vyrtel.json and no metadata database of this layout, but there are WAL or segment \
+                 files (Vyrtel 0.1.1 and earlier wrote no vyrtel.json)"
+            );
         }
     }
 
@@ -720,7 +725,7 @@ mod tests {
         std::fs::write(d.path().join("segments/traces/000000000002.seg"), [0u8; 100]).unwrap();
         std::fs::write(d.path().join("segments/traces/notes.txt"), b"not telemetry").unwrap();
         record_stopped(d.path()).unwrap();
-        let Layout::Versioned(m) = layout(d.path()) else { panic!("manifest written") };
+        let Layout::Current(m) = layout(d.path()) else { panic!("manifest written") };
         let files: Vec<(&str, u64)> =
             m.inventory.as_ref().unwrap().files.iter().map(|(k, v)| (k.as_str(), *v)).collect();
         assert_eq!(files, [("segments/traces/000000000002.seg", 100), ("wal/logs/000000000003.wal", 40)]);
@@ -744,7 +749,7 @@ mod tests {
 
         // Starting drops it before anything changes.
         begin(d.path(), &checked).unwrap();
-        assert_eq!(layout(d.path()), Layout::Versioned(Manifest::current()));
+        assert_eq!(layout(d.path()), Layout::Current(Manifest::current()));
         std::fs::remove_file(d.path().join("wal/logs/000000000003.wal")).unwrap();
         check(d.path(), false).unwrap();
     }
@@ -760,9 +765,9 @@ mod tests {
         let checked = check(d.path(), true).unwrap();
         assert_eq!(checked.accepted, ["wal/metrics is missing", "wal/logs/000000000003.wal is missing"]);
         begin(d.path(), &checked).unwrap();
-        // Format problems are never accepted.
-        write_raw_manifest(d.path(), r#"{"format": 3, "writtenBy": "9.0.0"}"#);
-        assert!(matches!(check(d.path(), true), Err(DataDirError::NewerFormat { .. })));
+        // Layout problems are never accepted.
+        write_raw_manifest(d.path(), r#"{"format": 1, "layout": "9.0.0", "writtenBy": "9.0.0"}"#);
+        assert_eq!(foreign(d.path()), "vyrtel.json has layout 9.0.0, written by Vyrtel 9.0.0");
     }
 
     #[test]
@@ -771,188 +776,129 @@ mod tests {
         assert_eq!(list(&items), "p0; p1; p2; p3; p4; p5; p6; p7; p8; p9; and 3 more");
     }
 
+    /// FR-AC3: the manifest's identity decides before anything else in it,
+    /// and a version number alone identifies nothing.
     #[test]
-    fn manifest_problems_are_refused() {
+    fn manifests_of_other_layouts_are_refused() {
         let d = tempfile::tempdir().unwrap();
         complete(d.path());
-        write_raw_manifest(d.path(), r#"{"format": 3, "writtenBy": "0.3.0"}"#);
-        let e = check(d.path(), false).unwrap_err();
-        assert!(matches!(e, DataDirError::NewerFormat { found: 3, .. }), "{e:?}");
-        let text = e.to_string();
-        assert!(text.contains("has format 3 (written by Vyrtel 0.3.0)"), "{text}");
-        assert!(text.contains("Start it with Vyrtel 0.3.0 or newer"), "{text}");
+        // 0.1.2 builds before the layout reset wrote format 1 or 2 and no
+        // layout; their files are not this layout's.
+        for format in [1, 2] {
+            write_raw_manifest(d.path(), &format!(r#"{{"format": {format}, "writtenBy": "0.1.1"}}"#));
+            assert_eq!(
+                foreign(d.path()),
+                format!("vyrtel.json has no layout identity (format {format}, written by Vyrtel 0.1.1)")
+            );
+        }
+        write_raw_manifest(d.path(), r#"{"format": 1, "layout": "0.1.3", "writtenBy": "0.1.3"}"#);
+        assert_eq!(foreign(d.path()), "vyrtel.json has layout 0.1.3, written by Vyrtel 0.1.3");
+        write_raw_manifest(d.path(), r#"{"layout": "0.1.0"}"#);
+        assert_eq!(foreign(d.path()), "vyrtel.json has layout 0.1.0");
+
+        // This layout, but a format it never had.
+        write_raw_manifest(d.path(), &format!(r#"{{"format": 2, "layout": "{LAYOUT}", "writtenBy": "x"}}"#));
+        let e = check(d.path(), true).unwrap_err();
+        assert!(matches!(e, DataDirError::UnsupportedFile { found: 2, supported: 1, .. }), "{e:?}");
+        assert!(e.to_string().contains("vyrtel.json uses data-directory format version 2"), "{e}");
 
         for bad in [
-            "",
-            "{",
-            r#"{"format": "one"}"#,
-            r#"{"format": 0, "writtenBy": "x"}"#,
-            r#"{"writtenBy": "x"}"#,
-            r#"{"format": 1, "writtenBy": "x", "inventory": {"files": {"../outside": 1}}}"#,
-            r#"{"format": 1, "writtenBy": "x", "inventory": {"files": {"metadata/metadata.db": 1}}}"#,
+            "".to_string(),
+            "{".into(),
+            "[1]".into(),
+            r#"{"writtenBy": "x"}"#.into(),
+            r#"{"format": 1, "layout": 12, "writtenBy": "x"}"#.into(),
+            format!(r#"{{"layout": "{LAYOUT}", "writtenBy": "x"}}"#),
+            manifest_json(r#", "inventory": {"files": {"../outside": 1}}"#),
+            manifest_json(r#", "inventory": {"files": {"metadata/metadata.db": 1}}"#),
+            // Unknown keys could hide a layout this build does not know.
+            manifest_json(r#", "note": "x""#),
         ] {
-            write_raw_manifest(d.path(), bad);
-            assert!(matches!(check(d.path(), false), Err(DataDirError::BadManifest { .. })), "{bad:?}");
+            write_raw_manifest(d.path(), &bad);
+            assert!(matches!(check(d.path(), true), Err(DataDirError::BadManifest { .. })), "{bad:?}");
         }
     }
 
     #[test]
-    fn newer_metadata_schema_is_refused() {
+    fn metadata_of_other_layouts_is_refused() {
         let d = tempfile::tempdir().unwrap();
         complete(d.path());
+        record(d.path(), &Layout::Unrecorded).unwrap();
         rusqlite::Connection::open(d.path().join(METADATA_DB))
             .unwrap()
-            .execute("INSERT INTO schema_migrations (version, applied_at) VALUES (99, 0)", [])
+            .execute("UPDATE vyrtel_layout SET layout = '0.1.9'", [])
             .unwrap();
-        let e = check(d.path(), false).unwrap_err();
-        assert!(matches!(e, DataDirError::NewerMetadata { found: 99, .. }), "{e:?}");
-        assert!(e.to_string().contains("schema version 99"), "{e}");
+        assert_eq!(foreign(d.path()), "metadata/metadata.db has layout 0.1.9");
+
+        // Without a manifest, as 0.1.1 left it.
+        std::fs::remove_file(d.path().join(MANIFEST)).unwrap();
+        std::fs::remove_file(d.path().join(METADATA_DB)).unwrap();
+        rusqlite::Connection::open(d.path().join(METADATA_DB))
+            .unwrap()
+            .execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER);")
+            .unwrap();
+        assert!(
+            foreign(d.path()).starts_with("there is no vyrtel.json, and metadata/metadata.db has no layout identity")
+        );
 
         std::fs::write(d.path().join(METADATA_DB), b"definitely not sqlite, but long enough to look like a page")
             .unwrap();
         assert!(matches!(check(d.path(), false), Err(DataDirError::BadMetadata { .. })));
     }
 
+    /// A WAL or segment file of another layout in a directory of this one.
     #[test]
-    fn releases_are_listed_oldest_first_and_never_shrink() {
-        let key = |v: &str| v.split('.').map(|n| n.parse::<u64>().unwrap()).collect::<Vec<_>>();
-        for pair in RELEASES.windows(2) {
-            let (a, b) = (pair[0], pair[1]);
-            assert!(key(a.version) < key(b.version), "{a:?} before {b:?}");
-            assert!(a.format <= b.format && a.schema <= b.schema, "{a:?} reads more than {b:?}");
-        }
-        let last = RELEASES.last().unwrap();
-        assert!(last.format <= FORMAT && last.schema <= metadata::SCHEMA_VERSION, "{last:?}");
-        // The version bump of a release adds its row (docs/releasing.md), and
-        // the row says what that release reads. Between releases the build
-        // still carries the last release's version but may already read a
-        // newer format, so the row may claim less than the build, never more.
-        // Prereleases need none.
-        let this = env!("CARGO_PKG_VERSION");
-        if !this.contains('-') {
-            let r = RELEASES.iter().find(|r| r.version == this);
-            let r = r.unwrap_or_else(|| panic!("add Vyrtel {this} to datadir::RELEASES (see docs/releasing.md)"));
-            assert!(r.format <= FORMAT && r.schema <= metadata::SCHEMA_VERSION, "RELEASES row for {this}: {r:?}");
-        }
-        assert_eq!(readable_since(1, 1), Some("0.1.1"));
-        assert_eq!(readable_since(FORMAT + 1, 1), None);
-        assert_eq!(readable_since(1, metadata::SCHEMA_VERSION + 1), None);
-    }
-
-    fn checked(dir: &Path) -> Checked {
-        check(dir, false).unwrap()
-    }
-
-    #[test]
-    fn plans_name_every_migration_a_start_makes() {
+    fn telemetry_files_of_other_layouts_are_refused() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(plan(&checked(d.path())), [Step::Create]);
+        complete(d.path());
+        record(d.path(), &Layout::Unrecorded).unwrap();
+        // A 0.1.1 WAL header: format 1 straight after the magic.
+        let mut header = storage::wal::WAL_MAGIC.to_vec();
+        header.extend_from_slice(&[1, 0, 2, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+        std::fs::write(d.path().join("wal/traces/000000000001.wal"), header).unwrap();
+        assert_eq!(
+            foreign(d.path()),
+            "wal/traces/000000000001.wal is a WAL file with no layout identity (bytes 0100020000000000)"
+        );
+    }
 
-        // A first start interrupted before the database had a schema.
+    #[test]
+    fn the_report_says_what_starting_changes() {
+        let this = env!("CARGO_PKG_VERSION");
+        let can =
+            format!("Vyrtel {this} (layout {LAYOUT}, data-directory format 1, metadata schema 1) can start it.\n");
+        let d = tempfile::tempdir().unwrap();
+        let text = report(d.path(), &check(d.path(), false).unwrap());
+        assert_eq!(
+            text,
+            format!(
+                "data directory {}\n  new: none of Vyrtel's files yet\n{can}Starting it will create a new data \
+                 directory in this layout.\n",
+                d.path().display()
+            )
+        );
+
+        // A first start that stopped before the manifest.
         prepare(d.path()).unwrap();
-        let c = checked(d.path());
-        assert_eq!((c.layout.clone(), c.schema), (Layout::Unversioned, 0));
-        assert_eq!(plan(&c), [Step::RecordFormat, Step::MigrateSchema { from: 0, to: metadata::SCHEMA_VERSION }]);
-
-        // A directory from 0.1.1: only the manifest is new.
-        complete(d.path());
-        let c = checked(d.path());
-        assert_eq!(c.schema, metadata::SCHEMA_VERSION);
-        assert_eq!(plan(&c), [Step::RecordFormat]);
-        assert_eq!(
-            Step::RecordFormat.to_string(),
-            "record data-directory format 2 in vyrtel.json (it has none: written before 0.1.2)"
-        );
-
-        // A directory in format 1 (0.1.1 with a manifest, or an earlier build
-        // of 0.1.2): recorded in format 2, its files read as they are.
-        write_raw_manifest(d.path(), r#"{"format": 1, "writtenBy": "0.1.1"}"#);
-        assert_eq!(plan(&checked(d.path())), [Step::UpgradeFormat { from: 1 }]);
-        assert_eq!(
-            Step::UpgradeFormat { from: 1 }.to_string(),
-            "record data-directory format 2 in vyrtel.json (it has 1); files already written are read as they \
-             are, and WAL batches are written in event codec 2 from then on"
-        );
-
-        // A current directory: nothing to do.
-        record(d.path(), &Layout::Unversioned).unwrap();
-        assert!(plan(&checked(d.path())).is_empty());
-
-        // An older schema (not reachable with one migration, so built by hand).
-        let older = Checked { schema: 1, ..checked(d.path()) };
-        let step = Step::MigrateSchema { from: 1, to: 2 };
-        assert_eq!(step.to_string(), "migrate metadata/metadata.db from schema version 1 to 2");
-        assert_eq!(plan(&older).len(), usize::from(metadata::SCHEMA_VERSION > 1));
-    }
-
-    #[test]
-    fn the_report_says_what_changes_and_who_can_read_it_afterwards() {
-        let this = env!("CARGO_PKG_VERSION");
-        let d = tempfile::tempdir().unwrap();
-        let text = report(d.path(), &checked(d.path()));
-        assert!(text.contains("  new: none of Vyrtel's files yet\n"), "{text}");
-        assert!(
-            text.ends_with(&format!(
-                "Vyrtel {this} (format 2, metadata schema up to 1) can start it.\nStarting it will create a new data \
-             directory in format 2.\n"
-            )),
-            "{text}"
-        );
+        let text = report(d.path(), &check(d.path(), false).unwrap());
+        assert!(text.contains("  vyrtel.json: none (a first start of this layout stopped before writing it)\n"));
+        assert!(text.contains("  metadata/metadata.db: none\n"), "{text}");
+        assert!(text.ends_with("Starting it will finish setting it up and record the layout in vyrtel.json.\n"));
 
         complete(d.path());
-        let text = report(d.path(), &checked(d.path()));
-        let expected = format!(
-            "  vyrtel.json: none (written before 0.1.2, or a first start that stopped early)\n  \
-             metadata/metadata.db: schema version 1\nVyrtel {this} (format 2, metadata schema up to 1) can start \
-             it.\nStarting it will:\n  - record data-directory format 2 in vyrtel.json (it has none: written \
-             before 0.1.2)\nAfterwards no released Vyrtel version can read it, only this build and later ones. To \
-             go back, restore the backup taken before the upgrade.\nBack up the stopped data directory first (see \
-             docs/configuration.md#upgrades-and-data-migrations).\n"
-        );
-        assert!(text.ends_with(&expected), "{text}");
-
         std::fs::write(d.path().join("wal/logs/000000000003.wal"), [0u8; 40]).unwrap();
         record_stopped(d.path()).unwrap();
-        let text = report(d.path(), &checked(d.path()));
-        assert!(text.contains(&format!("  vyrtel.json: format 2, last written by Vyrtel {this}\n")), "{text}");
+        let text = report(d.path(), &check(d.path(), false).unwrap());
+        assert!(text.contains(&format!("  vyrtel.json: layout {LAYOUT}, format 1, last written by Vyrtel {this}\n")));
         assert!(text.contains("  clean-shutdown inventory: every WAL and segment file is present with its size\n"));
-        assert!(text.contains("Starting it migrates nothing.\n"), "{text}");
+        assert!(text.contains(&format!("  metadata/metadata.db: layout {LAYOUT}, schema version 1\n")), "{text}");
+        assert!(text.ends_with(&format!("{can}Starting it changes no file formats.\n")), "{text}");
 
         std::fs::remove_file(d.path().join("wal/logs/000000000003.wal")).unwrap();
-        let c = check(d.path(), true).unwrap();
-        let text = report(d.path(), &c);
+        let text = report(d.path(), &check(d.path(), true).unwrap());
         assert!(
             text.contains("  accepted with --accept-incomplete-restore: wal/logs/000000000003.wal is missing\n"),
             "{text}"
         );
-
-        // A schema migration asks for a backup first.
-        let d = tempfile::tempdir().unwrap();
-        prepare(d.path()).unwrap();
-        let text = report(d.path(), &checked(d.path()));
-        assert!(text.contains("  metadata/metadata.db: no schema yet\n"), "{text}");
-        assert!(text.contains("  - create the schema of metadata/metadata.db (version 1)\n"), "{text}");
-        assert!(text.ends_with(
-            "Back up the stopped data directory first (see docs/configuration.md#upgrades-and-data-migrations).\n"
-        ));
-    }
-
-    #[test]
-    fn observer_data_is_refused() {
-        let d = tempfile::tempdir().unwrap();
-        prepare(d.path()).unwrap();
-        std::fs::create_dir_all(d.path().join("metadata")).unwrap();
-        drop(metadata::Metadata::open(&d.path().join(METADATA_DB)).unwrap());
-        let mut header = storage::wal::OBSERVER_WAL_MAGIC.to_vec();
-        header.resize(storage::wal::HEADER_LEN as usize, 0);
-        std::fs::write(d.path().join("wal/traces/000000000001.wal"), header).unwrap();
-        let e = check(d.path(), true).unwrap_err();
-        assert!(matches!(&e, DataDirError::Observer { file, .. } if file == "wal/traces/000000000001.wal"), "{e:?}");
-        let text = e.to_string();
-        assert!(
-            text.contains(" was written by Observer 0.1.0, Vyrtel's first release under its earlier name"),
-            "{text}"
-        );
-        assert!(text.contains("Keep running Observer 0.1.0 on it, or start Vyrtel on a new data directory"), "{text}");
     }
 }

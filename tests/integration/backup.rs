@@ -187,7 +187,11 @@ fn assert_refused_unchanged(dir: &Path, expected: &str) -> String {
     };
     assert!(err.contains(expected), "{err}");
     assert!(err.contains("Vyrtel did not start and changed nothing in it"), "{err}");
-    assert!(err.contains("docs/configuration.md#backup-and-restore"), "{err}");
+    assert!(
+        err.contains("docs/configuration.md#backup-and-restore")
+            || err.contains("docs/configuration.md#upgrading-between-pre-10-releases"),
+        "{err}"
+    );
     assert_eq!(snapshot(dir), before, "the refused backup is unchanged");
     err
 }
@@ -219,11 +223,21 @@ async fn incomplete_backups_are_refused_without_changes() {
     assert_refused_unchanged(dir, "is incomplete: wal/metrics is missing");
     std::fs::rename(&parked, &wal).unwrap();
 
-    // Telemetry without metadata and without a manifest (an older backup,
-    // or a copy of only `wal/` and `segments/`).
+    // Telemetry without metadata and without a manifest (a copy of only
+    // `wal/` and `segments/`): nothing identifies its layout, so it is
+    // refused even with --accept-incomplete-restore.
     std::fs::remove_file(dir.join("vyrtel.json")).unwrap();
     std::fs::remove_dir_all(dir.join("metadata")).unwrap();
-    assert_refused_unchanged(dir, "is incomplete: metadata/metadata.db is missing");
+    assert_refused_unchanged(
+        dir,
+        &format!(
+            "is not in the layout Vyrtel {} reads: there is no vyrtel.json and no metadata database of this layout, \
+             but there are WAL or segment files",
+            env!("CARGO_PKG_VERSION")
+        ),
+    );
+    let options = server::app::StartOptions { accept_incomplete_restore: true };
+    assert!(App::build_with(secure(dir), options).is_err(), "never accepted");
 }
 
 /// The first `*.<ext>` file in `dir/<sub>`, relative to `dir`.
@@ -251,7 +265,7 @@ async fn backups_missing_single_files_or_an_emptied_database_are_refused() {
 
     // One populated WAL and one segment left out, every directory present.
     let (wal_bytes, seg_bytes) = (std::fs::read(dir.join(&wal)).unwrap(), std::fs::read(dir.join(&seg)).unwrap());
-    assert!(wal_bytes.len() > 24, "the WAL holds records");
+    assert!(wal_bytes.len() as u64 > storage::wal::HEADER_LEN, "the WAL holds records");
     std::fs::remove_file(dir.join(&wal)).unwrap();
     std::fs::remove_file(dir.join(&seg)).unwrap();
     let err = assert_refused_unchanged(dir, "is incomplete: ");
@@ -313,61 +327,72 @@ async fn missing_files_are_accepted_only_on_request() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn backups_from_a_newer_version_are_refused_without_changes() {
+async fn backups_of_another_layout_or_format_are_refused_without_changes() {
     let backup = stopped_backup().await;
     let dir = backup.path();
     let manifest = std::fs::read(dir.join("vyrtel.json")).unwrap();
 
-    // A newer data-directory format.
-    std::fs::write(dir.join("vyrtel.json"), r#"{"format": 3, "writtenBy": "9.0.0"}"#).unwrap();
-    assert_refused_unchanged(dir, "has format 3 (written by Vyrtel 9.0.0)");
+    // Another layout, and a manifest from before the layout identity.
+    std::fs::write(dir.join("vyrtel.json"), r#"{"format": 1, "layout": "9.0.0", "writtenBy": "9.0.0"}"#).unwrap();
+    assert_refused_unchanged(dir, "vyrtel.json has layout 9.0.0, written by Vyrtel 9.0.0");
+    std::fs::write(dir.join("vyrtel.json"), r#"{"format": 2, "writtenBy": "0.1.2"}"#).unwrap();
+    assert_refused_unchanged(dir, "vyrtel.json has no layout identity (format 2, written by Vyrtel 0.1.2)");
     std::fs::write(dir.join("vyrtel.json"), b"{ not json").unwrap();
     assert_refused_unchanged(dir, "has an unusable vyrtel.json");
     std::fs::write(dir.join("vyrtel.json"), &manifest).unwrap();
 
-    // A segment in a newer format (a consistent header and checksummed footer).
+    // A segment in a format this layout never had (a consistent header and
+    // checksummed footer).
     let seg = std::fs::read_dir(dir.join("segments").join("traces")).unwrap().flatten().next().unwrap().path();
     let original = std::fs::read(&seg).unwrap();
     let mut b = original.clone();
-    b[8..10].copy_from_slice(&2u16.to_le_bytes());
+    b[16..18].copy_from_slice(&2u16.to_le_bytes());
     let f = b.len() - storage::segment::FOOTER_LEN;
     b[f + 40..f + 42].copy_from_slice(&2u16.to_le_bytes());
-    let crc = crc32fast::hash(&b[f..f + 44]);
-    b[f + 44..f + 48].copy_from_slice(&crc.to_le_bytes());
+    let crc = crc32fast::hash(&b[f..f + 52]);
+    b[f + 52..f + 56].copy_from_slice(&crc.to_le_bytes());
     std::fs::write(&seg, &b).unwrap();
     let name = seg.file_name().unwrap().to_str().unwrap().to_string();
     assert_refused_unchanged(dir, &format!("segments/traces/{name} uses segment format version 2"));
     std::fs::write(&seg, &original).unwrap();
 
-    // A WAL in a newer format.
+    // A WAL in another format, and one of another layout.
     let wal = std::fs::read_dir(dir.join("wal").join("metrics")).unwrap().flatten().next().unwrap().path();
     let original = std::fs::read(&wal).unwrap();
     let mut b = original.clone();
-    b[8..10].copy_from_slice(&5u16.to_le_bytes());
+    b[16..18].copy_from_slice(&5u16.to_le_bytes());
     std::fs::write(&wal, &b).unwrap();
     assert_refused_unchanged(dir, "uses WAL file format version 5");
+    let mut b = original.clone();
+    b[8..16].copy_from_slice(b"9.0.0\0\0\0");
+    std::fs::write(&wal, &b).unwrap();
+    assert_refused_unchanged(dir, "is a WAL file with layout 9.0.0");
     std::fs::write(&wal, &original).unwrap();
 
-    // A metadata database migrated by a newer version.
+    // A metadata database of another schema version.
     let db = dir.join("metadata").join("metadata.db");
-    rusqlite::Connection::open(&db)
-        .unwrap()
-        .execute("INSERT INTO schema_migrations (version, applied_at) VALUES (99, 0)", [])
-        .unwrap();
-    assert_refused_unchanged(dir, "metadata/metadata.db has schema version 99");
+    rusqlite::Connection::open(&db).unwrap().execute("UPDATE vyrtel_layout SET schema_version = 99", []).unwrap();
+    assert_refused_unchanged(dir, &format!("metadata/metadata.db has layout {} schema version 99", telemetry::LAYOUT));
 }
 
+/// A backup that left out only `vyrtel.json`: its metadata database and
+/// telemetry identify the layout, so it is incomplete, not foreign, and
+/// starts on request.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_directory_from_before_manifests_is_started_and_recorded() {
+async fn a_backup_without_its_manifest_starts_only_on_request() {
     let backup = stopped_backup().await;
     let dir = backup.path().to_path_buf();
-    // Data directories written by 0.1.1 and earlier have no manifest.
     std::fs::remove_file(dir.join("vyrtel.json")).unwrap();
+    assert_refused_unchanged(&dir, "is incomplete: vyrtel.json is missing");
+
+    let options = server::app::StartOptions { accept_incomplete_restore: true };
+    let app = App::build_with(secure(&dir), options).expect("accepted");
+    app.shutdown().await.unwrap();
     let s = TestServer::launch(secure(&dir), Some(backup)).await;
     let a = Admin::login(&s, PASSWORD).await;
     assert_eq!(a.get("/api/v1/dashboards").await["dashboards"][0]["name"], "Checkout");
     let m: Value = serde_json::from_slice(&std::fs::read(dir.join("vyrtel.json")).unwrap()).unwrap();
-    assert_eq!(m, json!({"format": 2, "writtenBy": env!("CARGO_PKG_VERSION")}));
+    assert_eq!(m, json!({"format": 1, "layout": telemetry::LAYOUT, "writtenBy": env!("CARGO_PKG_VERSION")}));
     s.stop().await;
 }
 

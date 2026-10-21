@@ -3,8 +3,10 @@
 //   node --test scripts/release/*.test.mjs
 //
 // Each test builds a throwaway git repository holding a workspace at the release version,
-// the release scripts and performance-gates.json, plus an evidence directory laid out like
-// the release-evidence branch.
+// the release scripts, performance-gates.json and compat-gates.json, plus an evidence
+// directory laid out like the release-evidence branch. Tagging also needs the compatibility
+// gate (compat.test.mjs covers it); these tests give it a passing record for the same
+// candidate.
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -26,6 +28,7 @@ import { GateError, ROOT } from './release.mjs';
 
 const HERE = import.meta.dirname;
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(HERE, 'testdata/performance/0.1.2/PERF-GATE-1.json'), 'utf8'));
+const COMPAT = JSON.parse(fs.readFileSync(path.join(HERE, 'testdata/compat/0.1.2/COMPAT-GATE-0.1.2.json'), 'utf8'));
 const temps = [];
 const tmp = () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'vyrtel-perf-test-'));
@@ -59,9 +62,11 @@ function repo(version = '0.1.2') {
   fs.mkdirSync(path.join(root, 'web'));
   fs.writeFileSync(path.join(root, 'web/package.json'), JSON.stringify({ version }));
   fs.mkdirSync(path.join(root, 'scripts/release'), { recursive: true });
-  for (const f of ['release.mjs', 'performance.mjs', 'performance-gates.json']) {
+  for (const f of ['release.mjs', 'performance.mjs', 'performance-gates.json', 'compat.mjs', 'compat-gates.json']) {
     fs.copyFileSync(path.join(HERE, f), path.join(root, 'scripts/release', f));
   }
+  fs.mkdirSync(path.join(root, 'crates/telemetry/src'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'crates/telemetry/src/layout.rs'), 'pub const LAYOUT: &str = "0.1.2";\n');
   git(root, 'init', '--quiet', '--initial-branch=main');
   git(root, 'config', 'user.name', 'Release Test');
   git(root, 'config', 'user.email', 'release-test@example.invalid');
@@ -77,13 +82,20 @@ function record(sha, edit = (r) => r, base = FIXTURE) {
   return edit(r) ?? r;
 }
 
-/** An evidence directory laid out like the release-evidence branch. */
+/**
+ * An evidence directory laid out like the release-evidence branch: the performance records,
+ * and a passing compatibility record for the candidate of each 0.1.2 record.
+ */
 function evidence(records) {
   const dir = tmp();
-  for (const r of records) {
-    const d = path.join(dir, 'performance', r.version);
+  const write = (kind, r) => {
+    const d = path.join(dir, kind, r.version);
     fs.mkdirSync(d, { recursive: true });
     fs.writeFileSync(path.join(d, `${r.gate}.json`), JSON.stringify(r, null, 2));
+  };
+  for (const r of records) {
+    write('performance', r);
+    if (r.version === COMPAT.version) write('compat', { ...structuredClone(COMPAT), candidate: { ...COMPAT.candidate, sha: r.candidate.sha } });
   }
   return { dir };
 }
@@ -126,6 +138,8 @@ describe('TC-PERF-01: missing or failed evidence prevents tagging and publicatio
       [(r) => void (r.metrics[8].na = ' '), /N\/A needs a reason/],
       [(r) => void (r.reports = []), /no profiling report links/],
       [(r) => void (r.candidate.artifacts = []), /lists no profiled artifact hashes/],
+      [(r) => void (r.candidate.artifacts = r.candidate.artifacts.filter((a) => a.name !== 'vyrtel-macos-arm64')), /candidate\.artifacts: no profiled hash for vyrtel-macos-arm64; every published binary needs one/],
+      [(r) => void r.candidate.artifacts.push({ ...r.candidate.artifacts[0] }), /candidate\.artifacts: vyrtel-linux-x86_64 is listed more than once/],
       [(r) => void (r.baseline = {}), /baseline needs the prior approved release/],
       [(r) => void (r.budgetsDeclaredAt = '2026-10-02T10:00:00Z'), /budgets were declared after the candidate was measured/],
     ];
@@ -200,10 +214,18 @@ describe('TC-PERF-02: stale or mismatched evidence is rejected until revalidated
   test('released artifacts must match the approved hashes or document equivalence', () => {
     const dir = tmp();
     const approved = FIXTURE.candidate.artifacts[0].sha256;
-    const sums = (hex) => fs.writeFileSync(path.join(dir, 'SHA256SUMS'), `${hex}  vyrtel-linux-x86_64\n`);
+    // Every published binary as approved, except the Linux x86_64 one is `hex`.
+    const sums = (hex) =>
+      fs.writeFileSync(
+        path.join(dir, 'SHA256SUMS'),
+        FIXTURE.candidate.artifacts.map((a, i) => `${i === 0 ? hex : a.sha256}  ${a.name}\n`).join(''),
+      );
 
     sums(approved);
-    assert.deepEqual(checkArtifactsMatchApproval([FIXTURE], dir), ['PERF-GATE-1: vyrtel-linux-x86_64 matches the approved hash']);
+    assert.deepEqual(
+      checkArtifactsMatchApproval([FIXTURE], dir),
+      FIXTURE.candidate.artifacts.map((a) => `PERF-GATE-1: ${a.name} matches the approved hash`),
+    );
 
     sums('b'.repeat(64));
     assert.throws(() => checkArtifactsMatchApproval([FIXTURE], dir), gateError(/vyrtel-linux-x86_64 built as bbbbbbbbbbbb but aaaaaaaaaaaa was approved, and the record documents no reproducible equivalence/));
@@ -270,7 +292,7 @@ describe('release workflow wiring', () => {
   const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/release.yml'), 'utf8').replace(/\r\n/g, '\n');
 
   test('the performance job blocks the build and checks the tag was created after sign-off', () => {
-    assert.match(workflow, /\n {2}binaries:\n(?: {4}.*\n)*? {4}needs: \[preflight, performance, ci\]\n/);
+    assert.match(workflow, /\n {2}binaries:\n(?: {4}.*\n)*? {4}needs: \[preflight, performance, compat, ci\]\n/);
     assert.match(workflow, /check-performance --tag "\$TAG" --sha "\$GITHUB_SHA" --evidence evidence "\$\{args\[@\]\}"/);
     assert.match(workflow, /args=\(--tag-date "\$\(git for-each-ref "refs\/tags\/\$TAG" --format='%\(taggerdate:iso-strict\)'\)"\)/);
   });

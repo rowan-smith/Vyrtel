@@ -251,7 +251,9 @@ fn partial_segment_in_segment_dir_is_quarantined_and_rebuilt_from_wal() {
     }
     let wal_path = only_wal(d.path());
     let id = wal::parse_wal_file_name(wal_path.file_name().unwrap().to_str().unwrap()).unwrap();
-    std::fs::write(seg_dir(d.path()).join(segment_file_name(id)), b"VYRTSEG1 truncated").unwrap();
+    // This layout's magic and identity, then nothing usable: damage.
+    let damaged = [&b"VYRTSEG1"[..], &telemetry::LAYOUT_TAG, b" truncated"].concat();
+    std::fs::write(seg_dir(d.path()).join(segment_file_name(id)), damaged).unwrap();
 
     let s = Storage::open(config(d.path()), None).unwrap();
     assert_eq!(messages(&s), ["one", "two"]);
@@ -289,11 +291,10 @@ fn older_wals_are_sealed_on_startup() {
     assert!(d.path().join("wal/logs").join(wal_file_name(id + 1)).exists());
 }
 
-// A WAL written by 0.1.1 (event codec 1) is replayed, and the records a
-// later build appends to it in codec 2 sit next to the old ones: every start
-// reads both, and events of one resource come back sharing it.
+// Records appended across restarts all replay, and events of one resource
+// come back sharing it.
 #[test]
-fn wal_with_codec_1_and_codec_2_records_replays_both() {
+fn wal_records_from_every_start_replay_and_share_resources() {
     use std::sync::Arc;
     use telemetry::{Fields, Value};
     let d = tempfile::tempdir().unwrap();
@@ -301,24 +302,11 @@ fn wal_with_codec_1_and_codec_2_records_replays_both() {
         let s = Storage::open(config(d.path()), None).unwrap();
         submit(&s, vec![log(1, "first")]);
     }
-    let path = only_wal(d.path());
-    {
-        let mut w = wal::WalWriter::open_append(
-            &path,
-            wal::parse_wal_file_name(path.file_name().unwrap().to_str().unwrap()).unwrap(),
-            std::fs::metadata(&path).unwrap().len(),
-        )
-        .unwrap();
-        let mut e = log(2, "old codec");
-        e.id = EventId(2);
-        w.append(&storage::codec::encode_batch_v1(&[e])).unwrap();
-        w.sync().unwrap();
-    }
     let resource: Arc<Fields> = Arc::new([("host.name".to_string(), Value::from("web-1"))].into_iter().collect());
     {
         let s = Storage::open(config(d.path()), None).unwrap();
-        assert_eq!(messages(&s), ["first", "old codec"]);
-        let shared: Vec<_> = (3..5)
+        assert_eq!(messages(&s), ["first"]);
+        let shared: Vec<_> = (2..4)
             .map(|i| {
                 let mut e = log(i, &format!("shared {i}"));
                 e.resource = resource.clone();
@@ -328,10 +316,10 @@ fn wal_with_codec_1_and_codec_2_records_replays_both() {
         submit(&s, shared);
     }
     let s = Storage::open(config(d.path()), None).unwrap();
-    assert_eq!(messages(&s), ["first", "old codec", "shared 3", "shared 4"]);
+    assert_eq!(messages(&s), ["first", "shared 2", "shared 3"]);
     let events = all_events(&s);
-    assert_eq!(*events[2].resource, *resource);
-    assert!(Arc::ptr_eq(&events[2].resource, &events[3].resource), "replayed events share their resource");
+    assert_eq!(*events[1].resource, *resource);
+    assert!(Arc::ptr_eq(&events[1].resource, &events[2].resource), "replayed events share their resource");
 }
 
 #[test]
@@ -506,7 +494,8 @@ fn torn_final_record_is_preserved_byte_for_byte() {
     f.set_len(cut as u64).unwrap();
     drop(f);
     // Where the torn record starts: header + first record.
-    let first_len = u32::from_le_bytes(original[25..29].try_into().unwrap()) as usize;
+    let at = wal::HEADER_LEN as usize + 1;
+    let first_len = u32::from_le_bytes(original[at..at + 4].try_into().unwrap()) as usize;
     let valid = wal::HEADER_LEN as usize + 9 + first_len;
 
     let s = Storage::open(config(d.path()), None).unwrap();
@@ -563,7 +552,7 @@ fn damaged_segment_is_quarantined_whole_under_its_signal() {
     drop(Storage::open(config(d.path()), None).unwrap());
     // A traces segment with no WAL behind it: its events cannot be rebuilt,
     // so the evidence must be kept and the signal named.
-    let garbage = b"VYRTSEG1 this is not a complete segment file at all".to_vec();
+    let garbage = [&b"VYRTSEG1"[..], &telemetry::LAYOUT_TAG, b" this is not a complete segment file at all"].concat();
     let seg = d.path().join("segments").join("traces").join(segment_file_name(7));
     std::fs::write(&seg, &garbage).unwrap();
 
@@ -749,13 +738,10 @@ fn assert_newer_format_stops_startup(dir: &Path, path: &Path, what: &str, found:
     let before = snapshot(dir);
     match Storage::open(config(dir), None) {
         Err(StorageError::UnsupportedFormat { path: p, what: w, found: f, supported }) => {
-            // Event codec 2 is current; every other format is still at 1.
-            let newest = if what == "event codec" { storage::codec::CODEC_VERSION.into() } else { 1 };
-            assert_eq!((p.as_path(), w, f, supported), (path, what, found, newest));
+            // Every format of this layout is version 1.
+            assert_eq!((p.as_path(), w, f, supported), (path, what, found, 1));
             let text = StorageError::UnsupportedFormat { path: p, what: w, found: f, supported }.to_string();
-            assert!(
-                text.ends_with(&format!("uses {what} version {found}, but this Vyrtel reads versions up to {newest}"))
-            );
+            assert!(text.ends_with(&format!("uses {what} version {found}, but this Vyrtel reads version 1 only")));
         }
         Err(e) => panic!("expected UnsupportedFormat, got {e}"),
         Ok(_) => panic!("startup must not continue past a file in a newer format"),
@@ -767,12 +753,31 @@ fn assert_newer_format_stops_startup(dir: &Path, path: &Path, what: &str, found:
 /// header and, with `footer_too`, in the footer with its checksum redone.
 fn set_segment_format(path: &Path, v: u16, footer_too: bool) {
     let mut b = std::fs::read(path).unwrap();
-    b[8..10].copy_from_slice(&v.to_le_bytes());
+    b[16..18].copy_from_slice(&v.to_le_bytes());
     if footer_too {
         let f = b.len() - storage::segment::FOOTER_LEN;
         b[f + 40..f + 42].copy_from_slice(&v.to_le_bytes());
-        let crc = crc32fast::hash(&b[f..f + 44]);
-        b[f + 44..f + 48].copy_from_slice(&crc.to_le_bytes());
+        refooter(&mut b);
+    }
+    std::fs::write(path, b).unwrap();
+}
+
+/// Redo a segment footer's checksum after its bytes were changed.
+fn refooter(b: &mut [u8]) {
+    let f = b.len() - storage::segment::FOOTER_LEN;
+    let crc = crc32fast::hash(&b[f..f + 52]);
+    b[f + 52..f + 56].copy_from_slice(&crc.to_le_bytes());
+}
+
+/// Rewrite a segment's layout identity: in the header and, with
+/// `footer_too`, in the footer with its checksum redone.
+fn set_segment_layout(path: &Path, tag: &[u8; 8], footer_too: bool) {
+    let mut b = std::fs::read(path).unwrap();
+    b[8..16].copy_from_slice(tag);
+    if footer_too {
+        let f = b.len() - storage::segment::FOOTER_LEN;
+        b[f + 44..f + 52].copy_from_slice(tag);
+        refooter(&mut b);
     }
     std::fs::write(path, b).unwrap();
 }
@@ -815,7 +820,16 @@ fn segment_header_version_contradicting_its_footer_is_damage() {
     let s = Storage::open(config(d.path()), None).unwrap();
     let q = &s.recovery_report(Signal::Logs).quarantined[0];
     assert_eq!(q.kind, QuarantineKind::Segment);
-    assert!(q.reason.contains("header version disagrees with footer"), "{}", q.reason);
+    assert!(q.reason.contains("header layout or version disagrees with footer"), "{}", q.reason);
+
+    // The same for a damaged layout identity in the header alone.
+    let d = tempfile::tempdir().unwrap();
+    let seg = sealed_segment(d.path());
+    set_segment_layout(&seg, b"0.1.9\0\0\0", false);
+    check_formats(d.path()).unwrap();
+    let s = Storage::open(config(d.path()), None).unwrap();
+    let q = &s.recovery_report(Signal::Logs).quarantined[0];
+    assert!(q.reason.contains("header layout or version disagrees with footer"), "{}", q.reason);
 }
 
 #[test]
@@ -827,7 +841,7 @@ fn wal_in_a_newer_format_stops_startup_and_is_kept() {
     }
     let wal = only_wal(d.path());
     let mut b = std::fs::read(&wal).unwrap();
-    b[8..10].copy_from_slice(&3u16.to_le_bytes());
+    b[16..18].copy_from_slice(&3u16.to_le_bytes());
     std::fs::write(&wal, &b).unwrap();
 
     assert!(matches!(check_formats(d.path()), Err(StorageError::UnsupportedFormat { found: 3, .. })));
@@ -895,43 +909,97 @@ fn unknown_record_version_with_a_bad_checksum_is_still_a_corrupt_tail() {
     assert!(q.reason.contains("unknown record version"), "{}", q.reason);
 }
 
-/// Observer 0.1.0 (Vyrtel's first release, under its earlier name) wrote the
-/// same layout with other magic bytes. Its files are not damage: startup
-/// stops, names the file, and moves or truncates nothing.
-#[test]
-fn observer_files_stop_startup_and_are_kept() {
-    // Rewrite a Vyrtel file's magic as Observer 0.1.0 wrote it.
-    let as_observer = |path: &Path, magic: &[u8; 8]| {
-        let mut b = std::fs::read(path).unwrap();
-        b[..8].copy_from_slice(magic);
-        std::fs::write(path, b).unwrap();
-    };
+/// Startup must fail with `ForeignLayout` naming `path` before any file in
+/// the data directory changes.
+fn assert_foreign_layout_stops_startup(dir: &Path, path: &Path, what: &str, found: &str) {
+    let before = snapshot(dir);
+    for result in [check_formats(dir).map(|_| ()), Storage::open(config(dir), None).map(|_| ())] {
+        match result {
+            Err(e @ StorageError::ForeignLayout { .. }) => {
+                let StorageError::ForeignLayout { path: p, what: w, found: f } = &e else { unreachable!() };
+                assert_eq!((p.as_path(), *w), (path, what), "{e}");
+                assert!(f.starts_with(found), "{f}");
+                assert!(
+                    e.to_string().ends_with(&format!(
+                        " is a {what} file with {f}, but this Vyrtel reads layout {} only",
+                        telemetry::LAYOUT
+                    )),
+                    "{e}"
+                );
+            }
+            Err(e) => panic!("expected ForeignLayout, got {e}"),
+            Ok(()) => panic!("a file of another layout must stop startup"),
+        }
+    }
+    assert_eq!(snapshot(dir), before, "nothing quarantined, truncated or sealed");
+}
 
+/// The data directory 0.1.1 wrote (tests/fixtures/datadir/v0.1.1/data).
+fn release_0_1_1(rel: &str) -> Vec<u8> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/datadir/v0.1.1/data");
+    std::fs::read(root.join(rel)).unwrap()
+}
+
+/// FR-AC3, TC3: files 0.1.1 wrote say format and record version 1, like
+/// this build's, but have no layout identity. Mixed into a current data
+/// directory they stop startup, named, and nothing changes: no replay
+/// under the wrong layout, no quarantine, no truncation, no seal.
+#[test]
+fn files_of_an_earlier_release_stop_startup_and_are_kept() {
+    for (rel, what) in [("wal/logs/000000000002.wal", "WAL"), ("segments/logs/000000000001.seg", "segment")] {
+        let d = tempfile::tempdir().unwrap();
+        {
+            let s = Storage::open(config(d.path()), None).unwrap();
+            submit(&s, vec![log(1, "acknowledged")]);
+        }
+        let name = rel.rsplit('/').next().unwrap().replace("00000000000", "00000000009");
+        let path = d.path().join(rel.rsplit_once('/').unwrap().0).join(name);
+        let old = release_0_1_1(rel);
+        assert_eq!(&old[8..10], &1u16.to_le_bytes(), "{rel}: 0.1.1 wrote version 1 here");
+        std::fs::write(&path, &old).unwrap();
+        assert_foreign_layout_stops_startup(d.path(), &path, what, "no layout identity");
+
+        // Its header alone, or cut inside the identity: still refused.
+        std::fs::write(&path, &old[..12]).unwrap();
+        assert_foreign_layout_stops_startup(d.path(), &path, what, "no layout identity");
+
+        // Without it, the directory starts and reads what it acknowledged.
+        std::fs::remove_file(&path).unwrap();
+        let s = Storage::open(config(d.path()), None).unwrap();
+        assert_eq!(messages(&s), ["acknowledged"]);
+        assert!(s.recovery_report(Signal::Logs).quarantined.is_empty());
+    }
+}
+
+/// FR-AC3: another identity, under a valid checksum where there is one, is
+/// refused the same way: no build reads another layout.
+#[test]
+fn another_layout_identity_stops_startup() {
     let d = tempfile::tempdir().unwrap();
     {
         let s = Storage::open(config(d.path()), None).unwrap();
         submit(&s, vec![log(1, "acknowledged")]);
     }
     let wal = only_wal(d.path());
-    as_observer(&wal, wal::OBSERVER_WAL_MAGIC);
-    let before = snapshot(d.path());
-    for result in [check_formats(d.path()).map(|_| ()), Storage::open(config(d.path()), None).map(|_| ())] {
-        match result {
-            Err(e @ StorageError::ObserverFormat { .. }) => {
-                assert!(e.to_string().ends_with("was written by Observer 0.1.0 (Vyrtel's first release, under its earlier name), which this Vyrtel cannot read"), "{e}");
-            }
-            other => panic!("expected ObserverFormat, got {other:?}"),
-        }
-    }
-    assert_eq!(snapshot(d.path()), before, "nothing quarantined or truncated");
+    let mut b = std::fs::read(&wal).unwrap();
+    b[8..16].copy_from_slice(b"0.1.9\0\0\0");
+    std::fs::write(&wal, &b).unwrap();
+    assert_foreign_layout_stops_startup(d.path(), &wal, "WAL", "layout 0.1.9");
 
-    let d = tempfile::tempdir().unwrap();
-    let seg = sealed_segment(d.path());
-    as_observer(&seg, storage::segment::OBSERVER_SEGMENT_MAGIC);
-    let before = snapshot(d.path());
-    assert!(matches!(check_formats(d.path()), Err(StorageError::ObserverFormat { path }) if path == seg));
-    assert!(matches!(Storage::open(config(d.path()), None), Err(StorageError::ObserverFormat { path }) if path == seg));
-    assert_eq!(snapshot(d.path()), before, "nothing quarantined");
+    for footer_too in [true, false] {
+        let d = tempfile::tempdir().unwrap();
+        let seg = sealed_segment(d.path());
+        // Footer and header agree on another layout; or the header says
+        // another one and the footer cannot prove otherwise (damaged).
+        set_segment_layout(&seg, b"0.1.9\0\0\0", footer_too);
+        if !footer_too {
+            let mut b = std::fs::read(&seg).unwrap();
+            let n = b.len();
+            b[n - 20] ^= 0xff;
+            std::fs::write(&seg, b).unwrap();
+        }
+        assert_foreign_layout_stops_startup(d.path(), &seg, "segment", "layout 0.1.9");
+    }
 }
 
 /// Rewrite a segment's summary as a newer writer would: its format version

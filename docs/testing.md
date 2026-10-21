@@ -22,22 +22,25 @@ Next to the code (`#[cfg(test)]` modules). Highlights:
 | Field resolution                                                     | `crates/query/src/fields.rs`         |
 | Timestamp parsing (RFC 3339, Unix units, precision)                  | `crates/telemetry/src/time.rs`       |
 | Varints, zigzag, bounds checks                                       | `crates/storage/src/encoding.rs`     |
-| Event codec, versioning, garbage/truncation handling; codec 2 resource tables (one entry per distinct resource, shared on decode, codec 1 still read) | `crates/storage/src/codec.rs`        |
-| WAL encoding/decoding, CRC validation, torn records; streamed appends write the same bytes as whole ones | `crates/storage/src/wal.rs`          |
+| Event codec, versioning (only version 1), garbage/truncation handling; resource tables (one entry per distinct resource, shared on decode) | `crates/storage/src/codec.rs`        |
+| WAL encoding/decoding, CRC validation, torn records; streamed appends write the same bytes as whole ones; the layout identity in the header (a 0.1.1 header, another identity or one cut short refused, never replayed) | `crates/storage/src/wal.rs`          |
+| Segment header and footer layout identity, checked before the version | `crates/storage/src/segment/format.rs` |
+| Layout identity tag and its descriptions in errors                   | `crates/telemetry/src/layout.rs`     |
 | Segment write/read, metadata, corruption detection                   | `crates/storage/src/segment/mod.rs`  |
 | Bloom filters, bitmaps, HyperLogLog, canonical index keys            | `crates/storage/src/index/`          |
 | Configuration parsing, env overrides, memory budgets                 | `crates/server/src/config.rs`        |
 | OTLP mapping (protobuf + JSON), native/CLEF parsing, templates       | `crates/ingest/src/`                 |
 | Decoding limits (REL-16): events, decoded bytes and depth at limit − 1 / limit / limit + 1 for every format; shared OTLP resources; the protobuf pre-scan covers what `prost` allocates and accepts what it accepts | `crates/ingest/tests/limits.rs`, `crates/ingest/src/{limits,jsontree,native}.rs` |
 | Real heap of native decoding (a per-thread counting allocator): an escaped-key envelope over the event limit is refused without building its tree; `[]` allocates nothing and arrays of exactly 4, 8 or 16 elements no growth step beyond them | `crates/ingest/tests/alloc.rs` |
-| Metadata store (migrations, CRUD, alert transitions, read-only schema inspection, newer schema refused) | `crates/metadata/tests/store.rs`     |
-| Data-directory check: new, pre-manifest and interrupted directories accepted; missing parts, inventory files missing or truncated, an empty metadata database, bad or newer manifests, newer and unreadable metadata refused; `accept_incomplete` returns the problems instead (never format problems); the inventory is dropped on start | `crates/server/src/datadir.rs` |
+| Metadata store (schema and identity created in one transaction, an interrupted creation leaves nothing, CRUD, alert transitions, read-only identity inspection, 0.1.1-style, foreign, other-layout and other-schema databases refused with every byte unchanged) | `crates/metadata/tests/store.rs`, `crates/metadata/src/lib.rs` |
+| Data-directory check: new and interrupted first-start directories accepted; missing parts, inventory files missing or truncated, an empty metadata database refused as incomplete; manifests, metadata and telemetry of another layout or without one, and unidentified telemetry, refused and never accepted; `accept_incomplete` returns the incomplete problems instead; the inventory is dropped on start; the `check-data-dir` report | `crates/server/src/datadir.rs` |
+| Environment variables under a settings prefix that are not settings stop startup (TC2) | `crates/server/src/config.rs` |
 
 ## Property tests (proptest)
 
 | Property                                                                                                          | Where                             |
 |-------------------------------------------------------------------------------------------------------------------|-----------------------------------|
-| `encode(event) → decode() == event` for arbitrary logs, spans, metrics                                            | `storage::codec`                  |
+| `encode(events) → decode() == events` and a segment body's head + body round trip, for arbitrary logs, spans, metrics | `storage::codec`                  |
 | arbitrary bytes never panic the decoder; truncation is always detected                                            | `storage::codec`                  |
 | random WAL records → replay → identical records; a cut at any byte replays exactly the complete records before it | `storage::wal`                    |
 | segment writing → reading → identical event set (random block sizes)                                              | `storage::segment`                |
@@ -322,48 +325,52 @@ talks HTTP to it:
   host path, no partial inventory) and the next clean shutdown records it;
   a manifest write stalled past a 500 ms `shutdown_timeout` ends the
   shutdown within 3 s, reported as the deadline in phase `Inventory`;
-* upgrades (`upgrade.rs`, REL-07), against the data directories the 0.1.0
-  (Observer) and 0.1.1 releases wrote (`tests/fixtures/datadir/`, restored
-  byte for byte from the sizes and SHA-256 sums in each `fixture.json`).
-  For 0.1.1:
-  `vyrtel check-data-dir` exits 0, changes nothing and prints the plan
-  (record `vyrtel.json` in format 2, which no released version reads
-  afterwards, so back up first); the started server answers every
-  verification query exactly as that release did before it was stopped,
-  from its codec 1 WAL records, its ingest key works, its revoked key and
-  anonymous requests get 401, nothing is quarantined, `vyrtel.json` is
-  recorded, an event ingested afterwards is appended to the same WALs in
-  codec 2, and a second start reads both and migrates nothing. Storage's
-  `wal_with_codec_1_and_codec_2_records_replays_both` covers the same mix
-  directly, and that replayed events of one resource share it. The Observer 0.1.0
-  directory is refused by `check-data-dir` and by `App::build` with what to
-  do, and nothing is quarantined (0.1.1 quarantined all 5 of its files;
-  storage unit tests `observer_files_stop_startup_and_are_kept`). A newer manifest format,
-  a newer metadata schema, and a checksummed WAL record in a newer format
-  in `metrics` while the `logs` WAL has a torn tail are each refused by
-  `check-data-dir` (exit 1) and by `App::build` with the supported versions
-  named and every file unchanged (before REL-07, the `logs` tail was
-  truncated first). With `--features fault-injection`, the fault points the
-  upgrade start reaches are recorded, then each one in turn fails once:
-  a failed `vyrtel.json` write leaves every telemetry file unchanged, and
-  in every case the next start completes the upgrade and answers the
-  verification queries as the release did. A segment whose header and
-  footer say version 1 but whose checksummed summary says 2 is refused by
-  `check-data-dir` and `App::build` with nothing changed (before, it passed
-  the check and was found only after the manifest was written; storage test
-  `segment_summary_in_a_newer_format_is_found_before_startup`, where a
+* layouts (`layouts.rs`, COMPAT-GATE-0.1.2), against the data directories
+  the 0.1.0 (Observer) and 0.1.1 releases wrote (`tests/fixtures/datadir/`,
+  restored byte for byte from the sizes and SHA-256 sums in each
+  `fixture.json`). Neither has this build's layout identity, so for each,
+  `vyrtel check-data-dir` exits 1, a start and a start with
+  `--accept-incomplete-restore` are refused, all with what to do, and the
+  SHA-256 of every file is the same before and after (nothing locked,
+  created, migrated, quarantined or truncated, so every event the release
+  acknowledged is still where it put it). The documented way forward runs
+  on that disposable copy: a new data directory beside it starts, takes the
+  same telemetry and answers the same counts after a restart, and the old
+  copy is still byte for byte unchanged. 0.1.1's WAL, segment and metadata
+  files mixed into a directory of this layout are each refused before any
+  change, named; taken out again, the directory starts with every event it
+  acknowledged. This layout's own directories restart and restore from a
+  stopped copy as they are (`check-data-dir`: no format changes). A fixture
+  of this layout (from 0.1.2 on) must answer every verification query as
+  its release did. With `--features fault-injection`, every write point of
+  a first start fails once in turn: a failed `vyrtel.json` write leaves no
+  telemetry file and a directory `check-data-dir` accepts as an
+  interrupted first start, and in every case the next start completes.
+  Backups (`backup.rs`): a manifest of another layout or without one, a
+  segment, WAL or metadata database in a format version this layout does
+  not have, and a WAL of another layout are refused with every file
+  unchanged; telemetry with neither a manifest nor a metadata database of
+  this layout is refused even with `--accept-incomplete-restore`; a backup
+  missing only `vyrtel.json` is incomplete and starts on request. Storage
+  (`crates/storage/tests/recovery.rs`): 0.1.1's WAL and segment files, also
+  cut inside the identity, and files with another identity under a valid
+  checksum stop `check_formats` and `Storage::open` with nothing changed,
+  while a header identity the checksummed footer contradicts is damage
+  (quarantined). A segment whose header and footer say version 1 but whose
+  checksummed summary says 2 is refused before anything changes
+  (`segment_summary_in_a_newer_format_is_found_before_startup`, where a
   summary failing its checksum is still quarantined as damage). The WAL
   scan believes an unknown record or codec version only when the record's
   checksum, streamed over a 200 KB record, holds (`wal.rs`
-  `record_format_scan_reads_prefixes_and_believes_only_checksums`). Unit tests: an interrupted
-  metadata migration rolls back only itself and the next open resumes
-  (`crates/metadata/src/lib.rs`); `datadir::plan`, the `check-data-dir`
-  report and the `RELEASES` table (`crates/server/src/datadir.rs`); WAL
-  record and codec versions are refused by `storage::check_formats` while a
-  bad-checksum unknown record is still a corrupt tail
-  (`crates/storage/tests/recovery.rs`). New fixtures are written by the
-  ignored `upgrade::make_datadir_fixture` test with a released binary
+  `record_format_scan_reads_prefixes_and_believes_only_checksums`). New
+  fixtures are written by the ignored `layouts::make_datadir_fixture` test
+  with a released binary
   ([tests/fixtures/datadir/README.md](../tests/fixtures/datadir/README.md)).
+* removed aliases (`api.rs` `removed_aliases_answer_actionably`, TC2):
+  `GET /api/v1/live`, the `spans` signal in `/api/v1/query/{signal}/…` and
+  `?signal=spans` answer `404`/`400` with what to use; unknown API paths
+  point to `docs/api.md`. The web UI's stored columns recover from stale or
+  unreadable values (`web/tests/unit/lib.test.ts`).
 
 Fixtures shared with E2E live in `tests/fixtures/`.
 
@@ -710,18 +717,19 @@ objects.
 
 Writing adds nothing measurable: the end-to-end column equals admission.
 The WAL record is streamed to the file in 64 KiB pieces as it is encoded,
-and in event codec 2 a batch stores each distinct resource once
+and a batch stores each distinct resource once
 ([storage format](storage-format.md#batch)). Before, the writer encoded
 the whole batch, every event with its own copy of the resource, and then
 copied it into the record, holding the encoding twice: up to 105× end to
 end for a 200-attribute resource over tiny records, 72× over SDK-like
 records, and 26.6× for tiny native events.
 
-**WAL size** (event codec 1, as 0.1.1 wrote it, against codec 2). Each
-accepted 1 MB fixture was decoded and encoded both ways in-process (release
-build, median of 11 encodings):
+**WAL size** (batches as 0.1.1 wrote them, every resource inline, against
+the current batch with its resource table; measured before the layout reset
+renumbered the current codec to 1). Each accepted 1 MB fixture was decoded
+and encoded both ways in-process (release build, median of 11 encodings):
 
-| Fixture | Codec 1 MB | Codec 2 MB | Codec 2 / 1 | Encode ms, codec 1 / 2 |
+| Fixture | 0.1.1 MB | Current MB | Current / 0.1.1 | Encode ms, 0.1.1 / current |
 |---|---:|---:|---:|---:|
 | native JSON / NDJSON representative | 0.63 | 0.63 | 1.00 | 0.26–0.46 / 0.25–0.30 |
 | CLEF representative | 1.05 | 1.05 | 1.00 | 0.62 / 0.53 |
@@ -738,8 +746,8 @@ build, median of 11 encodings):
 | OTLP protobuf metrics representative | 2.27 | 1.14 | 0.50 | 2.44 / 1.43 |
 | OTLP JSON metrics representative | 1.03 | 0.51 | 0.50 | 0.92 / 0.39 |
 
-OTLP batches repeat an SDK resource (7 attributes) on every record in codec
-1, so codec 2 halves their WAL and its write time; a large shared resource
+OTLP batches repeat an SDK resource (7 attributes) on every record in
+0.1.1's batches, so the resource table halves their WAL and its write time; a large shared resource
 goes from dominating the WAL to costing once per batch. Native events have
 no resource and encode the same, about 0.6 ms per MB slower for tiny events
 (the per-event resource index). Segments are unchanged: their bodies keep
@@ -932,8 +940,10 @@ CI job **Release gate tests**) cover the checks in
 | Failed checks publish nothing | the workflow's job graph: `image` and `release` transitively need `preflight`, `performance`, `ci` (the whole callable CI workflow), `binaries` and `verify`; only a tag push publishes (a manual run is a rehearsal); release builds set `VYRTEL_REQUIRE_WEB_UI` |
 | Embedded UI, version output and checksums are verified | artifact sets that are complete, missing a binary, tampered, missing `SHA256SUMS` or an entry, holding unexpected or empty files; the artifact list matches the build matrix; a fake binary (`testdata/fake-vyrtel.mjs`) that is correct, prints or serves the wrong version, serves the placeholder UI, misses its UI assets or exits on startup |
 | A prerelease does not replace the stable latest channel | stable plans are Latest and tag `X.Y.Z`, `X.Y`, `latest`; prereleases (`-rc.1`, `-beta`, `-alpha.3`) are not Latest and tag only `X.Y.Z-pre`; image names are lowercased |
-| TC-PERF-01: missing or failed performance evidence blocks tagging and publication | in throwaway git repositories: no record → `pretag --create` (function and CLI) exits 1 and creates no tag; FAIL verdict, missing reviewer, failing or mis-marked metric rows, missing limit/baseline/category/reports/artifact hashes, N/A without reason, budgets declared after measuring; a version with no declared gates; a review after the tag or a lightweight tag is refused by the workflow check; uncommitted changes and existing tags |
+| TC-PERF-01: missing or failed performance evidence blocks tagging and publication | in throwaway git repositories: no record → `pretag --create` (function and CLI) exits 1 and creates no tag; FAIL verdict, missing reviewer, failing or mis-marked metric rows, missing limit/baseline/category/reports, artifact hashes missing for a published binary or listed twice, N/A without reason, budgets declared after measuring; a version with no declared gates; a review after the tag or a lightweight tag is refused by the workflow check; uncommitted changes and existing tags |
 | TC-PERF-02: stale evidence is rejected until revalidated | a commit after PASS makes the record stale (no tag) until a PASS for the new commit; same-version gates (0.2.0) on different commits, or one missing; a record for another gate or version; rebuilt artifacts whose hash differs without documented `equivalence` |
+| COMPAT-GATE TC5: missing, failed or stale compatibility evidence blocks tagging and publication (`compat.test.mjs`) | no record → `pretag --create` refuses even with a performance PASS, and `check-compat` exits 1; FAIL verdict, missing reviewer or date, a failed, missing, unknown or evidence-less checklist item, no inventory, artifact hashes missing for a published binary or listed twice, a wrong issue, exceptions not approved by Rowan or without owner, removal release or issue; a commit after PASS is stale until a renewed review; a record for another layout identity than the candidate's `telemetry::LAYOUT`; a review after a performance measurement of the same candidate, or for another candidate than the performance gate; a review after the tag or a lightweight tag; built artifacts that differ from the reviewed hashes |
+| COMPAT-GATE AC7: every tagged release needs its gate | a prerelease needs its own compatibility PASS (but no performance sign-off) and its tag records it; a version without a declared gate cannot be tagged, and declaring one in `compat-gates.json` (the setup for a newly assigned release) makes it require and accept its record; the manifest, the record template and the issue template are complete; the workflow's `compat` job blocks `binaries` and `verify` |
 | TC-PERF-03: a complete passing matrix for the exact candidate passes | the documented template covers every metric category and passes; `pretag --create` makes an annotated tag on the candidate with the PASS lines, which `check-performance --tag-date` (the workflow's check) accepts; matching or documented-equivalent artifacts; prereleases need no sign-off; the manifest declares unique gates with issues; the workflow wiring |
 | REL-09 AC1: on each architecture the image becomes ready and serves the UI | the workflow runs `verify-image` in an `image-smoke` matrix on native `linux/amd64` and `linux/arm64` runners; each platform is pushed by digest only after its smoke test and checked to have the tested layers; `image` tags exactly those digests without building, and the published image is checked against the tested records (`checkManifest`: a missing platform, or a platform whose layers differ from the tested image, fails; `imagesByPlatform`, `testedRecord`); CI runs the same gate on amd64; an image for the wrong platform fails |
 | REL-09 AC2: events in a named volume survive recreating the container | `checkPersisted`: the same events and settings pass; a lost or changed event, an extra event, or a changed `dataDir` or `durability` fail; `docker port` parsing |

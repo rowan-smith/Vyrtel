@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { checkCompat, compatTagLine } from './compat.mjs';
 import { checkTagMatchesWorkspace, EXPECTED_ARTIFACTS, GateError, parseChecksums, ROOT } from './release.mjs';
 
 export const GATES_FILE = 'scripts/release/performance-gates.json';
@@ -57,9 +58,12 @@ export function requiredGates(version, prerelease, root = ROOT) {
   return { gates: entry.gates, reason: entry.reason };
 }
 
-/** Reads performance/<version>/<gate>.json from a directory or a git ref; null when absent. */
-export function readRecord(evidence, version, gate) {
-  const rel = `performance/${version}/${gate}.json`;
+/**
+ * Reads <kind>/<version>/<gate>.json (kind `performance` or `compat`) from a directory or a git
+ * ref; null when absent.
+ */
+export function readRecord(evidence, version, gate, kind = 'performance') {
+  const rel = `${kind}/${version}/${gate}.json`;
   let text;
   if (evidence.dir) {
     const file = path.join(evidence.dir, rel);
@@ -77,6 +81,26 @@ export function readRecord(evidence, version, gate) {
   } catch (e) {
     fail(`${rel} is not valid JSON: ${e.message}`);
   }
+}
+
+/**
+ * Problems with a record's `candidate.artifacts`: it must name every published binary
+ * (EXPECTED_ARTIFACTS) exactly once, each with a SHA-256. `verify` compares only the artifacts a
+ * record names, so an omitted platform would otherwise ship without an approved hash.
+ */
+export function artifactProblems(artifacts, verb) {
+  if (!Array.isArray(artifacts) || !artifacts.length) return [`candidate.artifacts lists no ${verb} artifact hashes`];
+  const p = [];
+  const seen = new Set();
+  for (const a of artifacts) {
+    if (!EXPECTED_ARTIFACTS.includes(a?.name)) p.push(`candidate.artifacts: unknown artifact "${a?.name}"`);
+    else if (seen.has(a.name)) p.push(`candidate.artifacts: ${a.name} is listed more than once`);
+    seen.add(a?.name);
+    if (!SHA256.test(a?.sha256 ?? '')) p.push(`candidate.artifacts: ${a?.name} has no sha256`);
+  }
+  const missing = EXPECTED_ARTIFACTS.filter((name) => !seen.has(name));
+  if (missing.length) p.push(`candidate.artifacts: no ${verb} hash for ${missing.join(', ')}; every published binary needs one`);
+  return p;
 }
 
 /** Problems with one metric row; the recorded pass/fail must agree with value vs limit. */
@@ -122,12 +146,7 @@ export function recordProblems(record, { gate, version, sha }) {
   else if (cand.sha !== sha) {
     p.push(`stale: approved candidate ${cand.sha.slice(0, 12)} but the release commit is ${sha.slice(0, 12)}; the candidate changed after sign-off, so rerun the affected workloads and record a new PASS`);
   }
-  const artifacts = Array.isArray(cand.artifacts) ? cand.artifacts : [];
-  if (!artifacts.length) p.push('candidate.artifacts lists no profiled artifact hashes');
-  for (const a of artifacts) {
-    if (!EXPECTED_ARTIFACTS.includes(a?.name)) p.push(`candidate.artifacts: unknown artifact "${a?.name}"`);
-    if (!SHA256.test(a?.sha256 ?? '')) p.push(`candidate.artifacts: ${a?.name} has no sha256`);
-  }
+  p.push(...artifactProblems(cand.artifacts, 'profiled'));
 
   const base = record.baseline ?? {};
   if (!filled(base.release) || !SHA1.test(base.sha ?? '')) p.push('baseline needs the prior approved release and its full commit SHA');
@@ -226,13 +245,15 @@ export function tagMessage(version, result) {
   const lines = result.gates.length
     ? result.records.map((r) => `Performance-Gate: ${r.gate} PASS ${r.candidate.sha} by ${r.review.reviewer} at ${r.review.reviewedAt}`)
     : [`Performance-Gate: none (${result.reason})`];
+  if (result.compat) lines.push(compatTagLine(result.compat));
   return `Vyrtel ${version}\n\n${lines.join('\n')}\n`;
 }
 
 /**
  * The supported way to create a release tag: checks the working tree is clean, the version
- * matches and every performance gate has signed off HEAD, then creates an annotated tag.
- * Nothing is tagged if any check fails. Pushing the tag is left to the maintainer.
+ * matches, every performance gate has signed off HEAD and the compatibility gate has signed off
+ * HEAD before those measurements (compat.mjs), then creates an annotated tag. Nothing is tagged
+ * if any check fails. Pushing the tag is left to the maintainer.
  */
 export function pretag({ tag, cwd = ROOT, evidence, create = false }) {
   const dirty = git(['status', '--porcelain', '--untracked-files=no'], cwd);
@@ -246,7 +267,8 @@ export function pretag({ tag, cwd = ROOT, evidence, create = false }) {
     }
     evidence = { ref: `origin/${EVIDENCE_BRANCH}`, cwd };
   }
-  const result = checkPerformance({ tag, sha, evidence, root: cwd });
+  const performance = checkPerformance({ tag, sha, evidence, root: cwd });
+  const result = { ...performance, compat: checkCompat({ tag, sha, evidence, root: cwd, performance: performance.records }) };
   let exists = true;
   try {
     git(['rev-parse', '--verify', '--quiet', `refs/tags/${tag}`], cwd);

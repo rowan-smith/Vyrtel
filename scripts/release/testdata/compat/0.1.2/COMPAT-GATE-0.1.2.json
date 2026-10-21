@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "gate": "COMPAT-GATE-0.1.2",
+  "issue": 229,
+  "version": "0.1.2",
+  "candidate": {
+    "sha": "1111111111111111111111111111111111111111",
+    "artifacts": [
+      { "name": "vyrtel-linux-x86_64", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      { "name": "vyrtel-linux-arm64", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+      { "name": "vyrtel-macos-arm64", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+      { "name": "vyrtel-windows-x86_64.exe", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }
+    ]
+  },
+  "layout": {
+    "identity": "0.1.2",
+    "evidence": "Example fixture, not a review. Link docs/compatibility/0.1.2.md#format-version-reset and the identity test run here."
+  },
+  "inventory": "https://github.com/rowan-smith/Vyrtel/blob/main/docs/compatibility/0.1.2.md",
+  "removals": ["https://github.com/rowan-smith/Vyrtel/pull/0"],
+  "checklist": [
+    { "item": "inventory", "result": "pass", "evidence": "docs/compatibility/0.1.2.md#inventory" },
+    { "item": "removals", "result": "pass", "evidence": "docs/compatibility/0.1.2.md#removed" },
+    { "item": "contract", "result": "pass", "evidence": "docs/compatibility/0.1.2.md#supported-contract" },
+    { "item": "roadmap", "result": "pass", "evidence": "docs/compatibility/0.1.2.md#roadmap-reconciliation" },
+    { "item": "tests", "result": "pass", "evidence": "CI run on the candidate; docs/compatibility/0.1.2.md#verification" },
+    { "item": "format-reset", "result": "pass", "evidence": "docs/compatibility/0.1.2.md#format-version-reset" },
+    { "item": "layout-identity", "result": "pass", "evidence": "tests/integration/layouts.rs on the candidate" },
+    { "item": "docs", "result": "pass", "evidence": "docs/configuration.md#upgrading-between-pre-10-releases" }
+  ],
+  "exceptions": [],
+  "review": { "verdict": "PASS", "reviewer": "example-reviewer", "reviewedAt": "2026-10-01T12:00:00Z" }
+}

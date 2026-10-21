@@ -15,8 +15,9 @@
 //! [`RecoveryReport::quarantined`]. An I/O error that is not evidence of
 //! damage (permissions, a failing disk) aborts startup instead: moving a
 //! readable-but-unread WAL aside would hide acknowledged telemetry. A file
-//! in a format version this build cannot read (a newer Vyrtel wrote it) is
-//! not damage either: recovery stops with
+//! of another layout (another layout identity, or none: every release
+//! before 0.1.2) or in a format version this build cannot read is not
+//! damage either: recovery stops with [`StorageError::ForeignLayout`] or
 //! [`StorageError::UnsupportedFormat`] and leaves it untouched.
 
 use std::collections::BTreeSet;
@@ -356,9 +357,11 @@ pub fn recover(signal: Signal, dirs: &StreamDirs, seg_opts: &SegmentWriteOptions
             Err(ReplayError::Unsupported { what, found, supported }) => {
                 return Err(StorageError::UnsupportedFormat { path, what, found, supported });
             }
-            Err(ReplayError::Observer) => return Err(StorageError::ObserverFormat { path }),
+            Err(ReplayError::ForeignLayout(found)) => {
+                return Err(StorageError::ForeignLayout { path, what: "WAL", found });
+            }
             Err(ReplayError::BadHeader) => {
-                let reason = "WAL header is missing, truncated or has an unknown magic or version".to_string();
+                let reason = "WAL header is missing, truncated or has an unknown magic".to_string();
                 quarantine(dirs, signal, QuarantineKind::Wal, &path, reason, &mut report)?;
                 report.wal_files_quarantined += 1;
                 continue;
@@ -481,9 +484,10 @@ fn preserve_tail(
 }
 
 /// Check, without changing anything, that every segment and WAL file under
-/// `data_dir` is in a format this build reads; fails with
-/// [`StorageError::UnsupportedFormat`] for the first one that is not.
-/// Checks every version recovery would: segment header, footer and
+/// `data_dir` is in the layout and format this build reads; fails with
+/// [`StorageError::ForeignLayout`] or [`StorageError::UnsupportedFormat`]
+/// for the first one that is not. Checks every layout identity and version
+/// recovery would: segment header, footer and
 /// summary ([`check_segment_format`]), and each WAL's header, record
 /// versions and batch codec versions ([`wal::check_record_formats`]), so a
 /// newer file in one signal stops startup before recovery has changed any
@@ -518,7 +522,9 @@ fn check_wal_records(path: &Path) -> Result<()> {
         Err(ReplayError::Unsupported { what, found, supported }) => {
             Err(StorageError::UnsupportedFormat { path: path.to_path_buf(), what, found, supported })
         }
-        Err(ReplayError::Observer) => Err(StorageError::ObserverFormat { path: path.to_path_buf() }),
+        Err(ReplayError::ForeignLayout(found)) => {
+            Err(StorageError::ForeignLayout { path: path.to_path_buf(), what: "WAL", found })
+        }
         Err(ReplayError::Io(source)) => Err(StorageError::Io { path: path.to_path_buf(), source }),
     }
 }
@@ -561,6 +567,12 @@ mod tests {
             supported: 1,
         };
         assert_eq!(damage_reason(&newer), None);
+        let foreign = StorageError::ForeignLayout {
+            path: "/data/segments/logs/x.seg".into(),
+            what: "segment",
+            found: "no layout identity".into(),
+        };
+        assert_eq!(damage_reason(&foreign), None);
 
         let truncated = damage_reason(&io(std::io::ErrorKind::UnexpectedEof)).unwrap();
         assert!(truncated.starts_with("truncated"));

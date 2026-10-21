@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { formatBytes, formatCount, formatDuration, levelShort } from '../../src/lib/format';
-import { columnLabel, columnTemplate, columnValue, orderColumns } from '../../src/lib/columns';
+import {
+  columnLabel,
+  columnTemplate,
+  columnValue,
+  DEFAULT_COLUMNS,
+  loadColumns,
+  orderColumns,
+  saveColumns,
+} from '../../src/lib/columns';
 import {
   andParts,
   andQuery,
@@ -109,6 +117,23 @@ describe('log columns', () => {
     expect(cols).toEqual(['timestamp', 'level', 'customerId', 'message']);
     expect(columnTemplate(cols).split(' ').pop()).toBe('1fr)');
     expect(columnTemplate(cols)).toMatch(/minmax\(0, 1fr\)$/);
+  });
+
+  // COMPAT-GATE-0.1.2 TC2: `vyrtel.columns` is the UI's only stored state,
+  // with no versioned shape to migrate. Whatever an earlier build (or a
+  // hand edit) left there, the page falls back to columns it still offers.
+  it('recovers from stale or unreadable stored columns', () => {
+    localStorage.clear();
+    expect(loadColumns()).toEqual(DEFAULT_COLUMNS);
+    saveColumns(['level', 'message']);
+    expect(loadColumns()).toEqual(['level', 'message']);
+    for (const stale of ['{not json', '"timestamp"', '{"columns":["level"]}', '["retiredColumn", 7]', '[]']) {
+      localStorage.setItem('vyrtel.columns', stale);
+      expect(loadColumns()).toEqual(DEFAULT_COLUMNS);
+    }
+    localStorage.setItem('vyrtel.columns', '["retiredColumn", "level"]');
+    expect(loadColumns()).toEqual(['level']);
+    localStorage.clear();
   });
 });
 

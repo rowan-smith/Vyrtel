@@ -78,6 +78,31 @@ async fn invalid_payloads_return_structured_errors() {
     let r = s.client.get(s.u("/api/v1/does-not-exist")).send().await.unwrap();
     let (status, e) = error_of(r).await;
     assert_eq!((status, e["code"].as_str()), (404, Some("not_found")));
+    assert_eq!(e["message"], "endpoint not found (see docs/api.md for the supported API)");
+    s.stop().await;
+}
+
+/// COMPAT-GATE-0.1.2, TC2: the duplicate live-tail route and the `spans`
+/// signal alias were removed. Each answers with what to use instead, and
+/// the supported spelling works.
+#[tokio::test(flavor = "multi_thread")]
+async fn removed_aliases_answer_actionably() {
+    let s = TestServer::start().await;
+    let r = s.client.get(s.u("/api/v1/live")).send().await.unwrap();
+    let (status, e) = error_of(r).await;
+    assert_eq!(
+        (status, e["message"].as_str()),
+        (404, Some("endpoint not found (see docs/api.md for the supported API)"))
+    );
+
+    let r = s.post("/api/v1/query/spans/count", json!({"query": ""})).await;
+    let (status, e) = error_of(r).await;
+    assert_eq!((status, e["message"].as_str()), (404, Some("unknown signal: use logs, traces or metrics")));
+    assert_eq!(s.post_ok("/api/v1/query/traces/count", json!({"query": ""})).await["count"], 0);
+
+    let r = s.client.get(s.u("/api/v1/live/logs")).query(&[("signal", "spans")]).send().await.unwrap();
+    let (status, e) = error_of(r).await;
+    assert_eq!((status, e["message"].as_str()), (400, Some("signal must be logs, traces or metrics")));
     s.stop().await;
 }
 

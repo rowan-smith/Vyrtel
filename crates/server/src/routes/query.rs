@@ -2,6 +2,7 @@
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::StatusCode;
 use query::{Cursor, Direction, MetricQuery, TimeRange};
 use serde::Deserialize;
 use serde_json::{Value as Json_, json};
@@ -76,9 +77,9 @@ pub struct SearchBody {
 fn signal_of(s: &str) -> ApiResult<Signal> {
     match s {
         "logs" => Ok(Signal::Logs),
-        "traces" | "spans" => Ok(Signal::Traces),
+        "traces" => Ok(Signal::Traces),
         "metrics" => Ok(Signal::Metrics),
-        _ => Err(ApiError::not_found("signal")),
+        _ => Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "unknown signal: use logs, traces or metrics")),
     }
 }
 

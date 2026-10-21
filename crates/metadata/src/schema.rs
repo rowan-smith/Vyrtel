@@ -1,8 +1,10 @@
-//! Schema migrations. Append new migrations; never edit applied ones.
+//! The metadata schema of layout [`telemetry::LAYOUT`], created whole in
+//! one transaction on a new database. There is no migration chain: before
+//! 1.0 a schema change sets a new layout identity and resets
+//! [`crate::SCHEMA_VERSION`] to 1, and a database of another layout is
+//! refused (see docs/releasing.md).
 
-pub const MIGRATIONS: &[(i64, &str)] = &[(
-    1,
-    r#"
+pub const SCHEMA: &str = r#"
 CREATE TABLE settings (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
@@ -112,5 +114,12 @@ CREATE TABLE query_stats (
     last_seen        INTEGER NOT NULL,
     PRIMARY KEY (signal, field)
 );
-"#,
-)];
+
+-- The layout identity (crate docs). One row, written with the schema.
+CREATE TABLE vyrtel_layout (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),
+    layout         TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    created_at     INTEGER NOT NULL
+);
+"#;

@@ -34,16 +34,18 @@ impl Segment {
         let file = File::open(path).ctx(path)?;
         let file_len = file.metadata().ctx(path)?.len();
         let what = || path.display().to_string();
+        // Before the length: a short file of another layout is refused too.
+        check_format(&file, path, file_len)?;
         if file_len < (HEADER_LEN + FOOTER_LEN) as u64 {
             return Err(corrupt(what(), DecodeError::UnexpectedEof));
         }
-        check_format(&file, path, file_len)?;
         let mut hb = [0u8; HEADER_LEN];
         read_exact_at(&file, &mut hb, 0).ctx(path)?;
         let header = Header::decode(&hb).map_err(|e| match e {
-            // `check_format` passed, so the checksummed footer says version 1.
-            DecodeError::UnsupportedVersion(_) => {
-                corrupt(what(), DecodeError::Invalid("header version disagrees with footer"))
+            // `check_format` passed, so the checksummed footer says this
+            // layout and version 1.
+            DecodeError::UnsupportedVersion(_) | DecodeError::ForeignLayout(_) => {
+                corrupt(what(), DecodeError::Invalid("header layout or version disagrees with footer"))
             }
             e => corrupt(what(), e),
         })?;
@@ -172,15 +174,23 @@ fn unsupported(path: &Path, found: u16) -> StorageError {
     }
 }
 
-/// Fail with [`StorageError::UnsupportedFormat`] if the segment at `path`
-/// was written in a format version this build cannot read, checking every
+fn foreign(path: &Path, found: String) -> StorageError {
+    StorageError::ForeignLayout { path: path.to_path_buf(), what: "segment", found }
+}
+
+/// Fail with [`StorageError::ForeignLayout`] if the segment at `path` has
+/// another layout identity than this build's (or none, or one cut short),
+/// or with [`StorageError::UnsupportedFormat`] if it was written in a
+/// format version this build cannot read, checking every identity and
 /// version [`Segment::open`] checks: header, footer and summary. Never
-/// reports damage: a file too short, without the segment magic, or whose
-/// summary fails its checksum passes, and [`Segment::open`] judges it.
+/// reports damage: a file too short to identify, without the segment
+/// magic, or whose summary fails its checksum passes, and
+/// [`Segment::open`] judges it.
 ///
-/// The header carries no checksum, so an unknown header version counts
-/// as a newer format unless the checksummed footer proves the file is
-/// version 1: then the header is damaged, which `Segment::open` reports.
+/// The header carries no checksum, so another identity or an unknown
+/// version in it counts as a foreign or newer file unless the checksummed
+/// footer proves the file is this layout and version 1: then the header is
+/// damaged, which `Segment::open` reports.
 /// The summary's version is read only once its checksum holds, streaming
 /// the compressed summary through the checksum in [`SCAN_CHUNK`] pieces and
 /// decompressing just the bytes up to its version, so memory stays bounded
@@ -237,23 +247,28 @@ fn check_summary_version(file: &File, path: &Path, file_len: u64) -> Result<()> 
 }
 
 fn check_format(file: &File, path: &Path, file_len: u64) -> Result<()> {
-    if file_len < (HEADER_LEN + FOOTER_LEN) as u64 {
-        return Ok(());
-    }
-    let mut hb = [0u8; HEADER_LEN];
+    let mut hb = vec![0u8; file_len.min(HEADER_LEN as u64) as usize];
     read_exact_at(file, &mut hb, 0).ctx(path)?;
-    if hb.starts_with(OBSERVER_SEGMENT_MAGIC) {
-        return Err(StorageError::ObserverFormat { path: path.to_path_buf() });
+    let footer = if file_len >= (HEADER_LEN + FOOTER_LEN) as u64 {
+        let mut fb = [0u8; FOOTER_LEN];
+        read_exact_at(file, &mut fb, file_len - FOOTER_LEN as u64).ctx(path)?;
+        Some(Footer::decode(&fb))
+    } else {
+        None
+    };
+    // The footer's checksum is checked before its identity and version,
+    // so these are genuine.
+    match footer {
+        Some(Err(DecodeError::ForeignLayout(found))) => return Err(foreign(path, found)),
+        Some(Err(DecodeError::UnsupportedVersion(found))) => return Err(unsupported(path, found)),
+        _ => {}
     }
-    let mut fb = [0u8; FOOTER_LEN];
-    read_exact_at(file, &mut fb, file_len - FOOTER_LEN as u64).ctx(path)?;
-    // The footer is checked before its version, so this one is genuine.
-    let footer = Footer::decode(&fb);
-    if let Err(DecodeError::UnsupportedVersion(found)) = footer {
-        return Err(unsupported(path, found));
-    }
+    // Too short for a footer: damage whatever its version says, unless it
+    // is not this layout at all.
+    let proven = matches!(footer, Some(Ok(_)));
     match Header::decode(&hb) {
-        Err(DecodeError::UnsupportedVersion(found)) if footer.is_err() => Err(unsupported(path, found)),
+        Err(DecodeError::ForeignLayout(found)) if !proven => Err(foreign(path, found)),
+        Err(DecodeError::UnsupportedVersion(found)) if footer.is_some() && !proven => Err(unsupported(path, found)),
         _ => Ok(()),
     }
 }

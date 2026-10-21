@@ -466,6 +466,45 @@ pub const ENV_VARS: &[&str] = &[
     "VYRTEL_LOG_FORMAT",
 ];
 
+/// Prefixes of the configuration sections that environment variables can
+/// set. A variable under one of them that is not in [`ENV_VARS`] is a
+/// typo or a setting Vyrtel does not take from the environment.
+const ENV_SECTIONS: &[&str] = &[
+    "VYRTEL_SERVER_",
+    "VYRTEL_STORAGE_",
+    "VYRTEL_RETENTION_",
+    "VYRTEL_INGEST_",
+    "VYRTEL_QUERY_",
+    "VYRTEL_AUTH_",
+    "VYRTEL_ALERTS_",
+    "VYRTEL_LOG_",
+];
+
+/// Refuse an environment variable that looks like a setting but is not
+/// one, instead of starting with the default it was meant to replace (a
+/// misspelt `VYRTEL_AUTH_ENABLED` would start without authentication).
+/// Other `VYRTEL_*` names (test and release tooling) are not settings and
+/// are left alone.
+pub fn check_env_names<S: AsRef<str>>(names: impl IntoIterator<Item = S>) -> Result<(), String> {
+    let mut unknown: Vec<String> = names
+        .into_iter()
+        .map(|n| n.as_ref().to_string())
+        .filter(|n| ENV_SECTIONS.iter().any(|p| n.starts_with(p)) && !ENV_VARS.contains(&n.as_str()))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort();
+    Err(format!(
+        "unknown environment variable{} {}: not a setting Vyrtel reads from the environment. Remove it, or set the \
+         option in the configuration file instead (see docs/configuration.md#environment-variables for the {} \
+         supported variables)",
+        if unknown.len() == 1 { "" } else { "s" },
+        unknown.join(", "),
+        ENV_VARS.len()
+    ))
+}
+
 fn parse_bool(s: &str) -> Result<bool, String> {
     match s.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Ok(true),
@@ -888,6 +927,26 @@ mod tests {
         assert_eq!(c.retention.traces, Some(Duration::from_secs(14 * 86_400)));
         assert_eq!(c.ingest.queue_capacity, 10_000);
         c.validate().unwrap();
+    }
+
+    /// TC2: a variable that looks like a setting but is not one stops the
+    /// start; it never leaves the default (here: no authentication) on.
+    #[test]
+    fn unknown_setting_variables_are_refused() {
+        check_env_names(ENV_VARS.iter().copied()).unwrap();
+        // Tooling and unrelated variables are not settings.
+        check_env_names(["VYRTEL_CRASH_AT", "VYRTEL_WEB_DIST", "VYRTEL_BIN", "PATH", "OBSERVER_AUTH_ENABLED"]).unwrap();
+        let e = check_env_names(["PATH", "VYRTEL_AUTH_ENABLE"]).unwrap_err();
+        assert!(
+            e.starts_with(
+                "unknown environment variable VYRTEL_AUTH_ENABLE: not a setting Vyrtel reads from the environment. \
+                 Remove it, or set the option in the configuration file instead (see \
+                 docs/configuration.md#environment-variables for the 28 supported variables)"
+            ),
+            "{e}"
+        );
+        let e = check_env_names(["VYRTEL_QUERY_MAX_SCAN_BYTES", "VYRTEL_LOG_LEVELS"]).unwrap_err();
+        assert!(e.starts_with("unknown environment variables VYRTEL_LOG_LEVELS, VYRTEL_QUERY_MAX_SCAN_BYTES: "), "{e}");
     }
 
     #[test]

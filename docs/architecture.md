@@ -47,7 +47,7 @@ flowchart LR
 | `storage`       | Event codec, WAL, segment format, indexes, recovery, sealing, compaction, retention, index cache       | telemetry          |
 | `query`         | Lexer, parser, AST, evaluator, index pruning, executor, aggregations, traces, query stats              | telemetry, storage |
 | `ingest`        | Native JSON/NDJSON and OTLP (protobuf + JSON) → `TelemetryEvent`                                       | telemetry          |
-| `metadata`      | SQLite: migrations, settings, users/sessions, API keys, dashboards, saved queries, alerts, query stats | –                  |
+| `metadata`      | SQLite: schema and layout identity, settings, users/sessions, API keys, dashboards, saved queries, alerts, query stats | –                  |
 | `server`        | Config, HTTP API, auth, live tail, alert evaluator, embedded UI, binary                                | all                |
 | `tools/loadgen` | Load generator                                                                                         | –                  |
 
@@ -167,8 +167,8 @@ flowchart LR
 
 ## Metadata
 
-SQLite (bundled, WAL mode, foreign keys on, versioned migrations, prepared
-statements) stores product metadata only: settings, API key hashes, users
+SQLite (bundled, WAL mode, foreign keys on, one schema per layout created in
+one transaction, prepared statements) stores product metadata only: settings, API key hashes, users
 and sessions, dashboards and panels, saved queries, alerts with state and
 history, aggregated query statistics. Telemetry never goes to SQLite.
 
@@ -197,23 +197,23 @@ server.
 
 There is exactly one OS process. At startup (`App::build`) the server first
 checks the data directory without changing it (`crates/server/src/datadir.rs`):
-the `vyrtel.json` manifest's format, that a used directory has a metadata
-database with a schema and every stream directory, that every file in the
-inventory of the last clean shutdown is there with its size, the segment
-and WAL format versions and the metadata schema version. A directory that
-fails is refused with exit status 1 and left untouched, so a partial or
-newer backup is never started half-empty (`--accept-incomplete-restore`
-starts a partial one on purpose). Then it takes the data-directory lock,
+the layout identity (`telemetry::LAYOUT`) of the `vyrtel.json` manifest, the
+metadata database and every WAL and segment file, then their format
+versions; that a used directory has a metadata database with a schema and
+every stream directory; and that every file in the inventory of the last
+clean shutdown is there with its size. A directory that fails is refused
+with exit status 1 and left untouched, so a partial backup, or data of
+another layout (any earlier pre-1.0 release), is never started half-empty
+or misread (`--accept-incomplete-restore` starts a partial one on purpose,
+never one of another layout). Then it takes the data-directory lock,
 checks again under it, removes the inventory, creates the stream
-directories, opens the metadata store (schema migrations, one transaction
-each), records the manifest with the current format and opens storage with
-that lock (recovery). Nothing in the directory changes before the lock is
-held, and the format is recorded before any telemetry file changes, so an
-interrupted upgrade is either finished by the next start or refused by an
-older version. `vyrtel check-data-dir` runs the same check and prints the
-migrations a start would make (`datadir::plan`) without changing anything.
+directories, opens the metadata store (creating its schema and identity in
+one transaction if it has none), records the manifest and opens storage
+with that lock (recovery). Nothing in the directory changes before the lock
+is held, and the manifest is recorded before any telemetry file is written.
+`vyrtel check-data-dir` runs the same check without changing anything.
 See [backup and restore](configuration.md#backup-and-restore) and
-[upgrades and data migrations](configuration.md#upgrades-and-data-migrations).
+[upgrading between pre-1.0 releases](configuration.md#upgrading-between-pre-10-releases).
 
 Connections pass through a bounded transport (`crates/server/src/transport.rs`,
 REL-18) before axum sees a request: a fixed number of connection slots,

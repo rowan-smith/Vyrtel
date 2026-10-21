@@ -6,8 +6,15 @@
 //!
 //! The API is synchronous; the server calls it from blocking tasks. One
 //! connection behind a mutex is plenty for metadata-sized workloads.
+//!
+//! A database carries the layout identity ([`telemetry::LAYOUT`]): SQLite's
+//! `application_id` is [`APPLICATION_ID`] and the one-row `vyrtel_layout`
+//! table names the layout and [`SCHEMA_VERSION`]. A new database gets both
+//! with its schema, in one transaction; any other database (another
+//! layout, or one from before 0.1.2 without an identity) is refused before
+//! it is written.
 
-mod migrations;
+mod schema;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -24,19 +31,69 @@ pub enum MetadataError {
     NotFound,
     #[error("{0}")]
     Invalid(String),
-    /// The database was migrated by a newer Vyrtel. Opening it is refused
-    /// before anything is written.
-    #[error("metadata schema version {found} is newer than this Vyrtel supports (up to {supported})")]
-    NewerSchema { found: i64, supported: i64 },
-    /// A schema migration failed. Each migration is one transaction, so
-    /// the database is left at schema `at`, as the last one committed it;
-    /// the next open retries from there.
-    #[error("metadata migration to schema version {version} failed (the database stays at version {at}): {source}")]
-    Migration { version: i64, at: i64, source: rusqlite::Error },
+    /// The database is not of this build's layout: another identity, or
+    /// none. Opening it is refused before anything is written.
+    #[error(
+        "the metadata database has {found}, but this Vyrtel reads layout {} (schema version {SCHEMA_VERSION}) only",
+        telemetry::LAYOUT
+    )]
+    ForeignLayout { found: String },
+    /// Creating the schema of a new database failed. It is one
+    /// transaction, so nothing of it was created; the next open retries.
+    #[error("creating the metadata schema failed (nothing was created): {0}")]
+    Create(rusqlite::Error),
 }
 
-/// The schema version this build migrates databases to.
-pub const SCHEMA_VERSION: i64 = migrations::MIGRATIONS[migrations::MIGRATIONS.len() - 1].0;
+/// The schema version of layout [`telemetry::LAYOUT`]: the only one.
+pub const SCHEMA_VERSION: i64 = 1;
+
+/// SQLite's `application_id` of a Vyrtel metadata database: "VYRT".
+pub const APPLICATION_ID: i32 = 0x5659_5254;
+
+/// What a metadata database is, judged by its identity alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Identity {
+    /// No schema yet (a new or empty file).
+    Empty,
+    /// Layout [`telemetry::LAYOUT`], schema [`SCHEMA_VERSION`].
+    Current,
+    /// Anything else, described for an error message.
+    Foreign(String),
+}
+
+/// Identify the database on `conn`, reading only.
+fn identify(conn: &Connection) -> Result<Identity> {
+    let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'", [], |r| r.get(0))?;
+    let app_id: i32 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
+    if tables == 0 && app_id == 0 {
+        return Ok(Identity::Empty);
+    }
+    let has = |name: &str| -> Result<bool> {
+        Ok(conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [name],
+            |r| r.get(0),
+        )?)
+    };
+    if app_id != APPLICATION_ID || !has("vyrtel_layout")? {
+        return Ok(Identity::Foreign(if has("schema_migrations")? {
+            "no layout identity (it has schema_migrations: Vyrtel 0.1.1 or earlier, or Observer, wrote it)".into()
+        } else {
+            "no layout identity (it is not a Vyrtel metadata database)".into()
+        }));
+    }
+    let row: Option<(String, i64)> = conn
+        .query_row("SELECT layout, schema_version FROM vyrtel_layout WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?;
+    Ok(match row {
+        None => Identity::Foreign("no layout identity (vyrtel_layout is empty)".into()),
+        Some((layout, _)) if layout != telemetry::LAYOUT => Identity::Foreign(format!("layout {layout}")),
+        Some((_, v)) if v != SCHEMA_VERSION => {
+            Identity::Foreign(format!("layout {} schema version {v}", telemetry::LAYOUT))
+        }
+        Some(_) => Identity::Current,
+    })
+}
 
 pub type Result<T> = std::result::Result<T, MetadataError>;
 
@@ -336,7 +393,8 @@ const ALERT_SELECT: &str = "SELECT a.*, s.state, s.last_value, s.last_evaluated_
      FROM alerts a LEFT JOIN alert_state s ON s.alert_id = a.id";
 
 impl Metadata {
-    /// Open (or create) the database and apply pending migrations.
+    /// Open the database, or create it with its schema if it has none.
+    /// A database of another layout is refused unchanged.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| MetadataError::Invalid(format!("create metadata dir: {e}")))?;
@@ -345,10 +403,9 @@ impl Metadata {
         Self::init(conn)
     }
 
-    /// The schema version of the database at `path`, read without
-    /// changing anything: no journal or lock files are created when none
-    /// exist, and nothing is migrated. `0` for an empty database.
-    pub fn inspect(path: &Path) -> Result<i64> {
+    /// The identity of the database at `path`, read without changing
+    /// anything: no journal or lock files are created when none exist.
+    pub fn inspect(path: &Path) -> Result<Identity> {
         use rusqlite::OpenFlags;
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         // `immutable` reads the file without locking or creating `-wal` and
@@ -358,15 +415,7 @@ impl Metadata {
         wal.push("-wal");
         let immutable = !Path::new(&wal).exists();
         let conn = Connection::open_with_flags(sqlite_uri(path, immutable), flags)?;
-        let has_table: bool = conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')",
-            [],
-            |r| r.get(0),
-        )?;
-        if !has_table {
-            return Ok(0);
-        }
-        Ok(conn.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |r| r.get(0))?)
+        identify(&conn)
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -374,58 +423,45 @@ impl Metadata {
     }
 
     fn init(conn: Connection) -> Result<Self> {
-        Self::init_with(conn, migrations::MIGRATIONS)
+        Self::init_with(conn, schema::SCHEMA)
     }
 
-    fn init_with(conn: Connection, migrations: &[(i64, &str)]) -> Result<Self> {
+    fn init_with(mut conn: Connection, schema: &str) -> Result<Self> {
+        // Before anything is written, even a journal mode.
+        let identity = identify(&conn)?;
+        if let Identity::Foreign(found) = identity {
+            return Err(MetadataError::ForeignLayout { found });
+        }
         // WAL for concurrent readers and crash safety; foreign keys are
         // off by default in SQLite and must be enabled per connection.
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        let m = Self { conn: Mutex::new(conn) };
-        m.migrate(migrations)?;
-        Ok(m)
+        if identity == Identity::Empty {
+            Self::create(&mut conn, schema).map_err(MetadataError::Create)?;
+            tracing::info!(layout = telemetry::LAYOUT, schema = SCHEMA_VERSION, "created metadata database");
+        }
+        Ok(Self { conn: Mutex::new(conn) })
     }
 
-    /// Apply every migration above the database's version, in order, each
-    /// in its own transaction together with its `schema_migrations` row. An
-    /// interruption (a failed statement, a crash, a full disk) rolls back
-    /// only the migration in progress, so the next open resumes with it.
-    fn migrate(&self, migrations: &[(i64, &str)]) -> Result<()> {
-        let supported = migrations.last().map_or(0, |m| m.0);
-        let mut c = self.conn.lock().unwrap();
-        c.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)",
+    /// The schema and the identity, in one transaction: an interruption (a
+    /// failed statement, a crash, a full disk) leaves the database empty,
+    /// and the next open creates it again.
+    fn create(conn: &mut Connection, schema: &str) -> rusqlite::Result<()> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(schema)?;
+        tx.execute(
+            "INSERT INTO vyrtel_layout (id, layout, schema_version, created_at) VALUES (1, ?1, ?2, ?3)",
+            params![telemetry::LAYOUT, SCHEMA_VERSION, now_ms()],
         )?;
-        let mut current: i64 =
-            c.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |r| r.get(0))?;
-        if current > supported {
-            return Err(MetadataError::NewerSchema { found: current, supported });
-        }
-        for (version, sql) in migrations {
-            if *version <= current {
-                continue;
-            }
-            let failed = |source| MetadataError::Migration { version: *version, at: current, source };
-            let tx = c.transaction().map_err(failed)?;
-            tx.execute_batch(sql).map_err(failed)?;
-            tx.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![version, now_ms()],
-            )
-            .map_err(failed)?;
-            tx.commit().map_err(failed)?;
-            tracing::info!(from = current, to = version, "applied metadata migration");
-            current = *version;
-        }
-        Ok(())
+        tx.pragma_update(None, "application_id", APPLICATION_ID)?;
+        tx.commit()
     }
 
     pub fn schema_version(&self) -> Result<i64> {
         let c = self.conn.lock().unwrap();
-        Ok(c.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |r| r.get(0))?)
+        Ok(c.query_row("SELECT schema_version FROM vyrtel_layout WHERE id = 1", [], |r| r.get(0))?)
     }
 
     // ---- settings -------------------------------------------------------
@@ -982,71 +1018,39 @@ fn validate_name(name: &str, what: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    const V1: (i64, &str) = (1, "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL);");
-    const V2: (i64, &str) = (2, "ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;");
-    /// Changes the schema, then fails part-way through.
-    const V3_FAILS: (i64, &str) = (3, "CREATE TABLE tags (name TEXT); INSERT INTO missing VALUES (1);");
-    const V3: (i64, &str) = (3, "CREATE TABLE tags (name TEXT);");
-
-    fn open(path: &Path, migrations: &[(i64, &str)]) -> Result<Metadata> {
-        Metadata::init_with(Connection::open(path)?, migrations)
-    }
-
     fn tables(path: &Path) -> Vec<String> {
         let c = Connection::open(path).unwrap();
         let mut st = c.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").unwrap();
         st.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
     }
 
-    #[test]
-    fn an_interrupted_migration_rolls_back_and_resumes() {
-        let d = tempfile::tempdir().unwrap();
-        let path = d.path().join("metadata.db");
-        {
-            let m = open(&path, &[V1]).unwrap();
-            m.conn.lock().unwrap().execute("INSERT INTO notes (body) VALUES ('kept')", []).unwrap();
-        }
-
-        // Migration 2 commits, migration 3 fails part-way: only 3 is undone.
-        match open(&path, &[V1, V2, V3_FAILS]) {
-            Err(e @ MetadataError::Migration { version: 3, at: 2, .. }) => {
-                let text = e.to_string();
-                assert!(
-                    text.starts_with(
-                        "metadata migration to schema version 3 failed (the database stays at version 2): "
-                    ),
-                    "{text}"
-                );
-            }
-            Err(e) => panic!("expected Migration, got {e}"),
-            Ok(_) => panic!("migration 3 must fail"),
-        }
-        assert_eq!(Metadata::inspect(&path).unwrap(), 2);
-        assert_eq!(tables(&path), ["notes", "schema_migrations"], "nothing of migration 3 remains");
-
-        // The next start resumes with migration 3 and keeps the data.
-        let m = open(&path, &[V1, V2, V3]).unwrap();
-        assert_eq!(m.schema_version().unwrap(), 3);
-        let c = m.conn.lock().unwrap();
-        let row: (String, i64) =
-            c.query_row("SELECT body, pinned FROM notes", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
-        assert_eq!(row, ("kept".to_string(), 0));
-        let applied: Vec<i64> = c
-            .prepare("SELECT version FROM schema_migrations ORDER BY version")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect();
-        assert_eq!(applied, [1, 2, 3], "each migration applied once");
+    /// The schema, then a statement that fails: creation stops part-way.
+    fn failing_schema() -> String {
+        format!("{}\nINSERT INTO missing VALUES (1);", schema::SCHEMA)
     }
 
     #[test]
-    fn the_newest_known_migration_bounds_what_opens() {
+    fn an_interrupted_creation_leaves_nothing_and_is_redone() {
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("metadata.db");
-        drop(open(&path, &[V1, V2]).unwrap());
-        assert!(matches!(open(&path, &[V1]), Err(MetadataError::NewerSchema { found: 2, supported: 1 })));
-        assert_eq!(Metadata::inspect(&path).unwrap(), 2);
+        match Metadata::init_with(Connection::open(&path).unwrap(), &failing_schema()) {
+            Err(e @ MetadataError::Create(_)) => {
+                assert!(e.to_string().starts_with("creating the metadata schema failed (nothing was created): "))
+            }
+            Err(e) => panic!("expected Create, got {e}"),
+            Ok(_) => panic!("creation must fail"),
+        }
+        assert_eq!(Metadata::inspect(&path).unwrap(), Identity::Empty);
+        assert!(tables(&path).is_empty(), "nothing of the schema remains");
+
+        let m = Metadata::open(&path).unwrap();
+        assert_eq!(m.schema_version().unwrap(), SCHEMA_VERSION);
+        drop(m);
+        assert_eq!(Metadata::inspect(&path).unwrap(), Identity::Current);
+        let c = Connection::open(&path).unwrap();
+        let app_id: i32 = c.query_row("PRAGMA application_id", [], |r| r.get(0)).unwrap();
+        assert_eq!(app_id, APPLICATION_ID);
+        let layout: String = c.query_row("SELECT layout FROM vyrtel_layout", [], |r| r.get(0)).unwrap();
+        assert_eq!(layout, telemetry::LAYOUT);
     }
 }

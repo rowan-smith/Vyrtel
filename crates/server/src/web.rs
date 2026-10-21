@@ -14,7 +14,12 @@ pub async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     // Unknown API routes get a JSON 404, not the SPA shell.
     if path.starts_with("api/") || path.starts_with("v1/") {
-        return ApiError::not_found("endpoint").into_response();
+        return ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "endpoint not found (see docs/api.md for the supported API)",
+        )
+        .into_response();
     }
     if let Some(resp) = asset(path) {
         return resp;
