@@ -113,6 +113,6 @@ public class HostAndOptionsTests
         Assert.EndsWith("baseline.toml", path);
         var text = File.ReadAllText(path);
         Assert.Contains("compaction = false", text);
-        Assert.Contains("zstd_level = 3", text);
+        Assert.Contains("ingest_api_key = false", text);
     }
 }

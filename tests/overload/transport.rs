@@ -143,6 +143,10 @@ async fn connection_heap_stays_within_the_transport_estimate() {
     // and its write buffer with unsent responses.
     let write_timeouts = transport.snapshot().write_timeouts;
     let target = addr.clone();
+    let request =
+        format!("GET /api/v1/system/config HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer {}\r\n\r\n", s.api_key)
+            .repeat(16)
+            .into_bytes();
     let stalled = clients
         .spawn(async move {
             let mut v = Vec::with_capacity(C);
@@ -151,7 +155,6 @@ async fn connection_heap_stays_within_the_transport_estimate() {
                 socket.set_recv_buffer_size(4096).unwrap();
                 v.push(socket.connect(target.parse().unwrap()).await.unwrap());
             }
-            let request = b"GET /api/v1/system/config HTTP/1.1\r\nHost: t\r\n\r\n".repeat(16);
             let writers: Vec<_> = v
                 .into_iter()
                 .map(|mut tcp| {

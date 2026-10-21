@@ -142,7 +142,6 @@ fn restore(fixture: &Path, f: &Fixture) -> tempfile::TempDir {
 /// The stored admin user signs in: no `admin_password`. Nothing expires.
 fn config(dir: &Path) -> Config {
     let mut c = base_config(dir);
-    c.auth.enabled = true;
     c.auth.admin_password = None;
     c.retention.logs = None;
     c.retention.traces = None;
@@ -302,8 +301,7 @@ async fn mixed_directories_are_refused_before_any_change() {
 
     let host = tempfile::tempdir().unwrap();
     let dir = host.path().to_path_buf();
-    let mut c = config(&dir);
-    c.auth.enabled = false;
+    let c = config(&dir);
     let s = TestServer::launch(c.clone(), None).await;
     ingest_fixtures(&s).await;
     let acknowledged = counts(&s).await;
@@ -458,8 +456,12 @@ async fn make_datadir_fixture() {
 
     // Observer 0.1.0 reads OBSERVER_* variables.
     let prefix = if written_by.starts_with("observer ") { "OBSERVER" } else { "VYRTEL" };
+    // Releases before 0.1.2 have authentication off unless enabled; later
+    // ones always require a login and refuse the setting.
+    let legacy_auth = ["observer 0.1.0", "vyrtel 0.1.1"].iter().any(|v| written_by.starts_with(v));
+    let auth_enabled = if legacy_auth { ("AUTH_ENABLED", "true") } else { ("AUTH_INGEST_API_KEY", "true") };
     let settings = [
-        ("AUTH_ENABLED", "true"),
+        auth_enabled,
         ("AUTH_ADMIN_PASSWORD", PASSWORD),
         // Seal the first batches into segments; later ones stay in the WAL.
         ("STORAGE_SEGMENT_MAX_AGE", "1s"),

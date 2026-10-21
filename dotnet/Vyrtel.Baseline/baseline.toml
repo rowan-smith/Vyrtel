@@ -21,14 +21,11 @@ max_memory = "512MB"
 # instead of only the in-memory active segment.
 segment_target_size = "4MB"
 segment_max_age = "5m"
-segment_max_events = 2000000
 durability = "normal"
 fsync_interval = "1s"
 # Off so background merges cannot start partway through a measurement and make repeated
 # runs disagree. Production defaults to true; see the limitations in docs/benchmarks.md.
 compaction = false
-zstd_level = 3
-block_events = 1024
 
 [retention]
 logs = "30d"
@@ -51,7 +48,8 @@ max_results = 1000
 max_live_streams = 64
 
 [auth]
-enabled = false
+# The harness ingests without a key; queries use the admin login.
+ingest_api_key = false
 
 [alerts]
 # No rule evaluation in the background during measurements.

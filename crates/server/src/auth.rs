@@ -6,9 +6,10 @@
 //! * Sessions are random tokens in an HttpOnly, SameSite=Lax cookie; only
 //!   their SHA-256 is stored.
 //!
-//! When `auth.enabled = false` every check passes (local/dev use). The
-//! boundaries are kept small so OIDC etc. can be added later as another way
-//! of producing a [`Principal`].
+//! The UI and API always need a session or an admin key. Ingestion needs an
+//! API key unless `auth.ingest_api_key = false`. The boundaries are kept
+//! small so OIDC etc. can be added later as another way of producing a
+//! [`Principal`].
 
 use std::time::{Duration, Instant};
 
@@ -28,13 +29,8 @@ pub const SESSION_COOKIE: &str = "vyrtel_session";
 
 #[derive(Debug, Clone)]
 pub enum Principal {
-    /// Authentication is disabled.
-    Open,
     User(String),
-    ApiKey {
-        id: i64,
-        scope: String,
-    },
+    ApiKey { id: i64, scope: String },
 }
 
 pub fn sha256_hex(s: &str) -> String {
@@ -118,14 +114,14 @@ async fn check_session(state: &SharedState, token: String) -> Result<Option<Prin
     Ok(user.map(|u| Principal::User(u.username)))
 }
 
-/// Ingestion endpoints: any valid API key.
+/// Ingestion endpoints: any valid API key, unless `auth.ingest_api_key`
+/// is off.
 pub async fn require_ingest(
     State(state): State<SharedState>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if !state.config.auth.enabled {
-        req.extensions_mut().insert(Principal::Open);
+    if !state.config.auth.ingest_api_key {
         return Ok(next.run(req).await);
     }
     let Some(key) = api_key_from(req.headers()) else {
@@ -144,10 +140,6 @@ pub async fn require_user(
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if !state.config.auth.enabled {
-        req.extensions_mut().insert(Principal::Open);
-        return Ok(next.run(req).await);
-    }
     if let Some(token) = session_from(req.headers())
         && let Some(p) = check_session(&state, token).await?
     {
@@ -168,12 +160,9 @@ pub async fn require_user(
 }
 
 /// Create/refresh the admin user at startup. Returns a generated password
-/// when auth is enabled but none was configured and no user exists yet.
+/// when none was configured and no user exists yet.
 pub fn bootstrap_admin(state: &SharedState) -> anyhow::Result<Option<String>> {
     let auth = &state.config.auth;
-    if !auth.enabled {
-        return Ok(None);
-    }
     let m = &state.metadata;
     if let Some(pw) = &auth.admin_password {
         let existing = m.find_user(&auth.admin_username)?;

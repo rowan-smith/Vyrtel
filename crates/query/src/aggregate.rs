@@ -185,19 +185,31 @@ struct FieldCounter {
 }
 
 /// Facets over a sample of events: well-known fields first, then the most
-/// common structured properties.
+/// common structured properties. `only` restricts counting to the fields
+/// named, and skips the property walk when none of them is a property.
 ///
 /// Counting runs within the request's `budget`: it is checked every
 /// [`crate::budget::ROWS_PER_CHECK`] values (property leaves included) and
 /// before and after the final ordering, so a cancelled or timed-out request
 /// stops here too and returns only the error.
-pub fn facets(events: &[TelemetryEvent], top_values: usize, budget: &Budget) -> Result<Facets, QueryError> {
+pub fn facets(
+    events: &[TelemetryEvent],
+    top_values: usize,
+    only: Option<&[String]>,
+    budget: &Budget,
+) -> Result<Facets, QueryError> {
+    let well_known = ["level", "service", "environment", "name", "status", "exception.type"];
+    let wanted = |field: &str| only.is_none_or(|o| o.iter().any(|f| f == field));
+    let walk_properties = only.is_none_or(|o| o.iter().any(|f| !well_known.contains(&f.as_str())));
     let mut fields: Vec<(String, FieldCounter)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     // The leaf walk cannot return early, so a failed check is parked here
     // and every later value is skipped.
     let failed: Cell<Option<QueryError>> = Cell::new(None);
     let mut add = |field: &str, v: Value, seen: &mut Vec<usize>| {
+        if !wanted(field) {
+            return;
+        }
         if let Err(e) = budget.tick(Checkpoint::Aggregate) {
             failed.set(Some(e));
         }
@@ -253,17 +265,18 @@ pub fn facets(events: &[TelemetryEvent], top_values: usize, budget: &Budget) -> 
             }
             TelemetryPayload::Metric(m) => add("name", Value::from(m.name.as_str()), &mut seen),
         }
-        e.attributes.for_each_leaf(&mut |p, v| {
-            if !matches!(v, Value::Null) {
-                add(p, v.clone(), &mut seen);
-            }
-        });
+        if walk_properties {
+            e.attributes.for_each_leaf(&mut |p, v| {
+                if !matches!(v, Value::Null) {
+                    add(p, v.clone(), &mut seen);
+                }
+            });
+        }
         if let Some(e) = failed.take() {
             return Err(e);
         }
     }
     budget.check(Checkpoint::Aggregate)?;
-    let well_known = ["level", "service", "environment", "name", "status", "exception.type"];
     let mut out: Vec<Facet> = fields
         .into_iter()
         .map(|(field, fc)| {

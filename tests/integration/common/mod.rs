@@ -14,12 +14,22 @@ use tokio::task::JoinHandle;
 pub struct TestServer {
     pub url: String,
     pub config: Config,
+    /// Sends `api_key` with every request.
     pub client: reqwest::Client,
+    /// An admin-scoped key, created at launch.
+    pub api_key: String,
     dir: Option<tempfile::TempDir>,
     stop: Option<oneshot::Sender<()>>,
     force: Option<oneshot::Sender<()>>,
     handle: Option<JoinHandle<anyhow::Result<()>>>,
     state: Option<server::state::SharedState>,
+}
+
+/// A client that sends `header: value` with every request.
+pub fn authorized_client(header: &'static str, value: &str) -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(header, reqwest::header::HeaderValue::from_str(value).unwrap());
+    reqwest::Client::builder().default_headers(headers).build().unwrap()
 }
 
 pub fn base_config(dir: &Path) -> Config {
@@ -67,6 +77,8 @@ impl TestServer {
             }
         };
         let state = app.state.clone();
+        let (api_key, prefix, hash) = server::auth::new_api_key();
+        state.metadata.create_api_key(HARNESS_KEY, &prefix, &hash, "admin").unwrap();
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (tx, rx) = oneshot::channel::<()>();
@@ -81,7 +93,8 @@ impl TestServer {
         TestServer {
             url,
             config,
-            client: reqwest::Client::new(),
+            client: authorized_client("authorization", &format!("Bearer {api_key}")),
+            api_key,
             dir,
             stop: Some(tx),
             force: Some(force_tx),
@@ -292,7 +305,10 @@ impl RawRequest {
         use tokio::io::AsyncWriteExt;
         let addr = s.url.trim_start_matches("http://");
         let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let mut head = format!("POST {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+        let mut head = format!(
+            "POST {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nAuthorization: Bearer {}\r\n",
+            s.api_key
+        );
         for (k, v) in headers {
             head.push_str(&format!("{k}: {v}\r\n"));
         }
@@ -352,13 +368,30 @@ pub struct Process {
     pub child: std::process::Child,
     pub url: String,
     pub client: reqwest::Client,
+    /// The admin key `client` sends (empty from [`Process::start_binary`]).
+    pub api_key: String,
     stderr: tempfile::NamedTempFile,
 }
 
+/// Name of the admin keys the harness creates; [`verification`] leaves
+/// them out, since every start adds one.
+pub const HARNESS_KEY: &str = "tests";
+
+/// The admin password [`Process::start`] gives the server.
+pub const PROCESS_PASSWORD: &str = "process admin";
+
 impl Process {
-    /// Start with auth disabled plus `env`, and wait until it is healthy.
+    /// Start with `env`, wait until it is healthy, and log in as admin:
+    /// `client` then sends the session cookie with every request.
     pub async fn start(dir: &Path, env: &[(&str, &str)]) -> Process {
-        Process::start_binary(Path::new(env!("CARGO_BIN_EXE_vyrtel")), dir, env).await
+        let env: Vec<(&str, &str)> =
+            [("VYRTEL_AUTH_ADMIN_PASSWORD", PROCESS_PASSWORD)].into_iter().chain(env.iter().copied()).collect();
+        let mut p = Process::start_binary(Path::new(env!("CARGO_BIN_EXE_vyrtel")), dir, &env).await;
+        let a = Admin::login_at(&p.client, &p.url, PROCESS_PASSWORD).await;
+        let key = a.post("/api/v1/api-keys", json!({"name": HARNESS_KEY, "scope": "admin"})).await;
+        p.api_key = key["key"].as_str().unwrap().to_string();
+        p.client = authorized_client("authorization", &format!("Bearer {}", p.api_key));
+        p
     }
 
     /// [`Process::start`] with another Vyrtel binary, such as an older release.
@@ -369,13 +402,18 @@ impl Process {
         let stderr = tempfile::NamedTempFile::new().unwrap();
         let child = Command::new(binary)
             .args(["--data-dir", dir.to_str().unwrap(), "--bind", &format!("127.0.0.1:{port}"), "--log-level", "warn"])
-            .env("VYRTEL_AUTH_ENABLED", "false")
             .envs(env.iter().copied())
             .stdout(Stdio::null())
             .stderr(stderr.reopen().unwrap())
             .spawn()
             .unwrap();
-        let p = Process { child, url: format!("http://127.0.0.1:{port}"), client: reqwest::Client::new(), stderr };
+        let p = Process {
+            child,
+            url: format!("http://127.0.0.1:{port}"),
+            client: reqwest::Client::new(),
+            api_key: String::new(),
+            stderr,
+        };
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         loop {
             if let Ok(r) = p.client.get(format!("{}/health", p.url)).send().await
@@ -578,6 +616,7 @@ pub async fn verification(a: &Admin) -> Value {
             .collect::<Vec<_>>(),
         "savedQueries": a.get("/api/v1/saved-queries").await,
         "apiKeys": a.get("/api/v1/api-keys").await["apiKeys"].as_array().unwrap().iter()
+            .filter(|k| k["name"] != HARNESS_KEY)
             .map(|k| json!({"id": k["id"], "name": k["name"], "prefix": k["prefix"], "scope": k["scope"]}))
             .collect::<Vec<_>>(),
     })

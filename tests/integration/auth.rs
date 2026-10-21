@@ -4,12 +4,11 @@ use serde_json::{Value, json};
 
 use crate::common::*;
 
+/// A server whose `client` sends no credentials.
 async fn start_secure() -> TestServer {
-    TestServer::start_with(|c| {
-        c.auth.enabled = true;
-        c.auth.admin_password = Some("correct horse".into());
-    })
-    .await
+    let mut s = TestServer::start_with(|c| c.auth.admin_password = Some("correct horse".into())).await;
+    s.client = reqwest::Client::new();
+    s
 }
 
 async fn login(s: &TestServer, password: &str) -> reqwest::Response {
@@ -96,7 +95,7 @@ async fn ingestion_requires_a_valid_key() {
     // Keys are listed without secrets and can be revoked.
     let keys: Value =
         s.client.get(s.u("/api/v1/api-keys")).header("cookie", &cookie).send().await.unwrap().json().await.unwrap();
-    let listed = &keys["apiKeys"][0];
+    let listed = keys["apiKeys"].as_array().unwrap().iter().find(|k| k["name"] == "ci").unwrap();
     assert!(listed.get("key").is_none());
     assert!(plaintext.starts_with(listed["prefix"].as_str().unwrap()));
     let r = s
@@ -180,9 +179,7 @@ async fn ui_api_requires_session_or_admin_key() {
 #[tokio::test(flavor = "multi_thread")]
 async fn generated_admin_password_when_none_configured() {
     let dir = tempfile::tempdir().unwrap();
-    let mut c = base_config(dir.path());
-    c.auth.enabled = true;
-    let app = server::App::build(c).unwrap();
+    let app = server::App::build(base_config(dir.path())).unwrap();
     let pw = app.generated_password.clone().expect("password generated on first start");
     assert!(app.banner("127.0.0.1:8080".parse().unwrap()).contains(&pw));
     let user = app.state.metadata.find_user("admin").unwrap().unwrap();
@@ -205,4 +202,20 @@ async fn banner_shows_a_browsable_web_ui_url() {
     let b = app.banner("192.168.1.20:8080".parse().unwrap());
     assert!(b.contains("Web UI              http://192.168.1.20:8080\n"), "{b}");
     app.shutdown().await.unwrap();
+}
+
+/// `auth.ingest_api_key = false` opens ingestion only: everything else
+/// still needs a login or an admin key.
+#[tokio::test(flavor = "multi_thread")]
+async fn ingestion_without_keys_leaves_the_rest_of_the_api_closed() {
+    let mut s = TestServer::start_with(|c| c.auth.ingest_api_key = false).await;
+    s.client = reqwest::Client::new();
+    assert_eq!(s.post("/api/v1/events", json!({"message": "open"})).await.status(), 200);
+    assert_eq!(s.otlp_json("/v1/logs", "{}".into()).await.status(), 200);
+    for path in ["/api/v1/query/logs", "/api/v1/api-keys"] {
+        assert_eq!(s.post(path, json!({})).await.status(), 401, "{path}");
+    }
+    let me: Value = s.client.get(s.u("/api/v1/auth/me")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(me, json!({"authEnabled": true, "user": null}));
+    s.stop().await;
 }

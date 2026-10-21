@@ -25,9 +25,6 @@ fn cookie(value: &str, max_age: u64) -> HeaderValue {
 }
 
 pub async fn login(State(state): State<SharedState>, ApiJson(b): ApiJson<LoginBody>) -> ApiResult<Response> {
-    if !state.config.auth.enabled {
-        return Ok(Json(json!({ "authEnabled": false, "user": null })).into_response());
-    }
     let username = b.username.trim().to_string();
     let user = {
         let u = username.clone();
@@ -66,11 +63,9 @@ pub async fn logout(State(state): State<SharedState>, headers: HeaderMap) -> Api
     Ok(resp)
 }
 
-/// Public: tells the UI whether to show a login screen.
+/// Public: tells the UI whether to show a login screen. `authEnabled` is
+/// always true; it stays for clients written against 0.1.1.
 pub async fn me(State(state): State<SharedState>, headers: HeaderMap) -> ApiResult<Response> {
-    if !state.config.auth.enabled {
-        return Ok(Json(json!({ "authEnabled": false, "user": null })).into_response());
-    }
     let user = match auth::session_from(&headers) {
         Some(token) => {
             let hash = auth::sha256_hex(&token);

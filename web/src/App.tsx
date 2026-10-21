@@ -178,7 +178,7 @@ export function App() {
       </div>
     );
   }
-  if (auth.authEnabled && !auth.user) return <LoginPage onLogin={setAuth} />;
+  if (!auth.user) return <LoginPage onLogin={setAuth} />;
 
   const active = (p: string) => location.path === p || location.path.startsWith(`${p}/`);
   return (
@@ -198,22 +198,16 @@ export function App() {
           <Link to="/settings" className={`nav-link ${active('/settings') ? 'is-active' : ''}`}>
             Settings
           </Link>
-          {auth.authEnabled ? (
-            <button
-              className="nav-link profile"
-              title="Sign out"
-              onClick={async () => {
-                await api.logout();
-                setAuth({ ...auth, user: null });
-              }}
-            >
-              {auth.user} · Sign out
-            </button>
-          ) : (
-            <span className="nav-link profile muted" title="Authentication is disabled">
-              Local
-            </span>
-          )}
+          <button
+            className="nav-link profile"
+            title="Sign out"
+            onClick={async () => {
+              await api.logout();
+              setAuth({ ...auth, user: null });
+            }}
+          >
+            {auth.user} · Sign out
+          </button>
         </div>
       </header>
       <main className="main">

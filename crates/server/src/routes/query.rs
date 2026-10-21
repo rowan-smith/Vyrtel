@@ -124,6 +124,8 @@ pub struct AggBody {
     pub to: Option<Json_>,
     pub buckets: Option<usize>,
     pub sample: Option<usize>,
+    /// Facets only: the fields to count (all when absent).
+    pub fields: Option<Vec<String>>,
 }
 
 pub async fn histogram(
@@ -164,7 +166,11 @@ pub async fn facets(
     let signal = signal_of(&signal)?;
     let range = range(b.from.as_ref(), b.to.as_ref())?;
     let sample = b.sample.unwrap_or(2000).clamp(1, 10_000);
-    let (f, d) = state.query(move |e, c| Ok(e.facets(signal, &b.query, range, sample, c)?)).await?;
+    if b.fields.as_ref().is_some_and(|f| f.len() > 64) {
+        return Err(ApiError::bad_request("at most 64 facet fields"));
+    }
+    let (f, d) =
+        state.query(move |e, c| Ok(e.facets(signal, &b.query, range, sample, b.fields.as_deref(), c)?)).await?;
     Ok(Json(json!({ "sampled": f.sampled, "fields": f.fields, "diagnostics": d })))
 }
 

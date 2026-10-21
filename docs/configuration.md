@@ -67,12 +67,14 @@ admin_password = "change-me"     # or VYRTEL_AUTH_ADMIN_PASSWORD
 | `max_memory`          | `512MB`   | `VYRTEL_STORAGE_MAX_MEMORY`          | Global memory budget (see below). Minimum 64MB; with a derived ingest limit, at least 219MB for 1MB requests ([ingest memory](#ingest-memory)).    |
 | `segment_target_size` | `64MB`    | `VYRTEL_STORAGE_SEGMENT_TARGET_SIZE` | Seal the active segment at this *uncompressed in-memory* size (capped by the memory budget). Compressed segment files are typically 5–15× smaller. |
 | `segment_max_age`     | `5m`      | `VYRTEL_STORAGE_SEGMENT_MAX_AGE`     | Seal the active segment after this long, even if small.                                                                                            |
-| `segment_max_events`  | `2000000` | –                                      | Seal after this many events.                                                                                                                       |
 | `durability`          | `normal`  | `VYRTEL_STORAGE_DURABILITY`          | `normal`: acknowledge after writing to the OS, fsync every `fsync_interval`. `strict`: fsync before every acknowledgement (group-committed). See [Crash recovery](#crash-recovery-and-backups). |
 | `fsync_interval`      | `1s`      | `VYRTEL_STORAGE_FSYNC_INTERVAL`      | WAL fsync period in `normal` mode.                                                                                                                 |
 | `compaction`          | `true`    | `VYRTEL_STORAGE_COMPACTION`          | Merge small segments (e.g. sealed by age on quiet systems).                                                                                        |
-| `zstd_level`          | `3`       | –                                      | Compression level 1–22. Higher is smaller and slower to write.                                                                                     |
-| `block_events`        | `1024`    | –                                      | Events per compressed block.                                                                                                                       |
+
+`storage.zstd_level`, `block_events` and `segment_max_events` were removed in
+0.1.2: segments are always compressed at level 3 in blocks of up to 1024
+events, and seal by `segment_target_size` and `segment_max_age`. A
+configuration that still sets one is refused at startup, naming it.
 
 ### `[retention]`
 
@@ -339,15 +341,27 @@ since the process started.
 
 | Key              | Default | Env                            | Description                                                                                                                                       |
 |------------------|---------|--------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
-| `enabled`        | `false` | `VYRTEL_AUTH_ENABLED`        | Require API keys for ingestion and an admin login for the UI/API.                                                                                 |
+| `ingest_api_key` | `true`  | `VYRTEL_AUTH_INGEST_API_KEY` | Require an API key for ingestion (`/api/v1/events`, `/v1/*`). The UI and the rest of the API always require a login or an admin API key.            |
 | `admin_username` | `admin` | `VYRTEL_AUTH_ADMIN_USERNAME` |                                                                                                                                                   |
-| `admin_password` | –       | `VYRTEL_AUTH_ADMIN_PASSWORD` | Hashed (Argon2id) into the metadata store at startup. If unset on first start with auth enabled, a random password is generated and printed once. |
+| `admin_password` | –       | `VYRTEL_AUTH_ADMIN_PASSWORD` | Hashed (Argon2id) into the metadata store at startup. If unset on first start, a random password is generated and printed once.                  |
 | `session_ttl`    | `7d`    | –                              | Login session lifetime.                                                                                                                           |
 
-> **Security note.** With `enabled = false` (the default, for zero-setup
-> local use) anyone who can reach the port can read and write data. Enable
-> authentication before exposing Vyrtel beyond a trusted network, and put
-> it behind TLS (a reverse proxy) — Vyrtel itself serves plain HTTP.
+> **Security note.** The UI and API always need a login, but with
+> `ingest_api_key = false` anyone who can reach the port can write data.
+> Keep that to trusted networks, and put Vyrtel behind TLS (a reverse proxy)
+> before exposing it — Vyrtel itself serves plain HTTP.
+
+#### Authentication changes in 0.1.2
+
+* `auth.enabled` is gone: the UI and API always require a login or an admin
+  API key, and a fresh install generates and prints an admin password once.
+  A configuration that still sets `auth.enabled` (or `VYRTEL_AUTH_ENABLED`)
+  is refused at startup with what to do instead, so an upgrade never
+  silently changes what it meant.
+* Ingestion is configured on its own: `auth.ingest_api_key` (default
+  `true`). Set it to `false` to keep accepting telemetry without keys.
+* `GET /api/v1/auth/me` still returns `authEnabled`, now always `true`;
+  `GET /api/v1/system/info` adds `ingestApiKey`.
 
 ### `[alerts]`
 
@@ -398,8 +412,8 @@ set in the TOML file. A variable under a section's prefix
 (`VYRTEL_SERVER_`, `VYRTEL_STORAGE_`, `VYRTEL_RETENTION_`,
 `VYRTEL_INGEST_`, `VYRTEL_QUERY_`, `VYRTEL_AUTH_`, `VYRTEL_ALERTS_`,
 `VYRTEL_LOG_`) that is not one of them stops Vyrtel at startup (exit
-status 1) instead of being ignored, so a misspelt `VYRTEL_AUTH_ENABLED`
-never starts a server without authentication:
+status 1) instead of being ignored, so a misspelt `VYRTEL_AUTH_INGEST_API_KEY`
+never starts a server with a setting other than the one meant:
 
 ```text
 vyrtel: unknown environment variable VYRTEL_AUTH_ENABLE: not a setting Vyrtel reads from the environment. Remove it, or set the option in the configuration file instead (see docs/configuration.md#environment-variables for the 28 supported variables)
@@ -1055,7 +1069,7 @@ curl -s localhost:8080/api/v1/system/storage | jq -c '.recovery, .signals.logs.r
 
 Only `committed` is queryable afterwards. Restart once more and the status
 is `quarantineRetained`; stop, delete `/tmp/vyrtel-rel11/quarantine`, start
-again, and it is `clean`. With authentication enabled, sign in first as in
+again, and it is `clean`. Sign in first as in
 [Verification queries](#verification-queries).
 
 #### Recovery health changes in 0.1.2
@@ -1095,8 +1109,8 @@ has no export or import step.
 | `tmp/`, `indexes/`, `.lock` | Scratch space and the process lock; recreated at start                                    | not needed   |
 
 The configuration file and `VYRTEL_*` environment variables are not in the
-data directory. Back them up separately; in particular keep `auth.enabled`
-the same on the restored host.
+data directory. Back them up separately; in particular keep
+`auth.ingest_api_key` the same on the restored host.
 
 **Protect backups like credentials.** They hold the password and key
 hashes, session tokens (hashed) and alert webhook URLs in plain text. A
@@ -1165,7 +1179,7 @@ provided.
 ### Verification queries
 
 Run these before taking the backup and after restoring it; the answers
-must match. With authentication enabled, log in first and pass the
+must match. Log in first and pass the
 session cookie (`-b cookies` below), or replace it with an admin API key
 (`-H "Authorization: Bearer $ADMIN_KEY"`).
 
@@ -1231,8 +1245,8 @@ command). Vyrtel logs one `WARN starting without part of the data
 directory` line per problem and starts without them: events in missing WAL
 and segment files are gone, missing directories are created, and a missing
 or empty metadata database starts with no dashboards, alerts, keys or
-users (with authentication enabled and no `auth.admin_password`, a new
-admin password is generated and printed), and a missing `vyrtel.json` is
+users (with no `auth.admin_password`, a new admin password is generated
+and printed), and a missing `vyrtel.json` is
 written again. The flag only covers missing, truncated and empty parts;
 another layout or format is always refused. It is not a
 configuration setting on purpose, so it is not left on by accident: once

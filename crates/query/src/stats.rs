@@ -26,6 +26,11 @@ pub struct FieldQueryStats {
     pub total_ms: f64,
 }
 
+/// Distinct (signal, field) pairs held between flushes. Field names come
+/// from queries, so without a cap a client could grow this without bound;
+/// fields first seen beyond it are not counted until the next flush.
+pub const MAX_PENDING_FIELDS: usize = 4096;
+
 #[derive(Default)]
 pub struct QueryStats {
     inner: Mutex<HashMap<(String, String), FieldQueryStats>>,
@@ -40,7 +45,11 @@ impl QueryStats {
         let scanned = (diag.segments_considered - diag.segments_skipped) as u64;
         let mut m = self.inner.lock().unwrap();
         for f in fields {
-            let e = m.entry((signal.to_string(), f.field.clone())).or_insert_with(|| FieldQueryStats {
+            let key = (signal.to_string(), f.field.clone());
+            if m.len() >= MAX_PENDING_FIELDS && !m.contains_key(&key) {
+                continue;
+            }
+            let e = m.entry(key).or_insert_with(|| FieldQueryStats {
                 signal: signal.to_string(),
                 field: f.field.clone(),
                 ..Default::default()
@@ -93,5 +102,21 @@ mod tests {
         assert_eq!(v[0].segments_skipped, 14);
         assert_eq!(v[0].segments_scanned, 6);
         assert!(s.drain().is_empty());
+    }
+
+    #[test]
+    fn pending_fields_are_bounded() {
+        let s = QueryStats::default();
+        let d = |field: String| Diagnostics { indexes: vec![IndexUse { field, kind: "none" }], ..Default::default() };
+        for i in 0..MAX_PENDING_FIELDS + 10 {
+            s.record("logs", &d(format!("f{i}")));
+        }
+        s.record("logs", &d("f0".into()));
+        let v = s.pending();
+        assert_eq!(v.len(), MAX_PENDING_FIELDS);
+        assert_eq!(v.iter().find(|r| r.field == "f0").unwrap().queries, 2, "known fields still count");
+        assert_eq!(s.drain().len(), MAX_PENDING_FIELDS);
+        s.record("logs", &d(format!("f{}", MAX_PENDING_FIELDS + 1)));
+        assert_eq!(s.pending().len(), 1, "room again after a flush");
     }
 }

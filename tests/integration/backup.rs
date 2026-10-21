@@ -51,14 +51,14 @@ fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
 
 fn secure(dir: &Path) -> Config {
     let mut c = base_config(dir);
-    c.auth.enabled = true;
     c.auth.admin_password = Some(PASSWORD.into());
     c
 }
 
 /// Ingest with an API key; returns the status code.
 async fn ingest_with(s: &TestServer, key: Option<&str>, path: &str, content_type: &str, body: String) -> u16 {
-    let mut r = s.client.post(s.u(path)).header("content-type", content_type).body(body);
+    // Not `s.client`, which sends the harness key.
+    let mut r = reqwest::Client::new().post(s.u(path)).header("content-type", content_type).body(body);
     if let Some(k) = key {
         r = r.bearer_auth(k);
     }
@@ -159,11 +159,12 @@ async fn restored_backup_keeps_telemetry_configuration_and_authentication() {
     );
     assert_eq!(ingest_with(&s, Some(&revoked), "/api/v1/events", "application/json", "{}".into()).await, 401);
     assert_eq!(ingest_with(&s, None, "/api/v1/events", "application/json", "{}".into()).await, 401);
-    let r = s.client.get(s.u("/api/v1/dashboards")).send().await.unwrap();
+    let anon = reqwest::Client::new();
+    let r = anon.get(s.u("/api/v1/dashboards")).send().await.unwrap();
     assert_eq!(r.status(), 401);
-    let r = s.client.get(s.u("/api/v1/auth/me")).header("cookie", &cookie).send().await.unwrap();
+    let r = anon.get(s.u("/api/v1/auth/me")).header("cookie", &cookie).send().await.unwrap();
     assert_eq!(r.status(), 200);
-    let r = s.client.get(s.u("/api/v1/dashboards")).bearer_auth(&key).send().await.unwrap();
+    let r = anon.get(s.u("/api/v1/dashboards")).bearer_auth(&key).send().await.unwrap();
     assert_eq!(r.status(), 403, "an ingest key still cannot read configuration");
 
     // A stopped server's backup restores like a clean stop: nothing damaged.
@@ -415,7 +416,6 @@ async fn refused_backup_exits_with_status_1_and_the_reason() {
     let before = snapshot(backup.path());
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_vyrtel"))
         .args(["--data-dir", backup.path().to_str().unwrap(), "--bind", "127.0.0.1:0", "--log-level", "warn"])
-        .env("VYRTEL_AUTH_ENABLED", "true")
         .env("VYRTEL_AUTH_ADMIN_PASSWORD", PASSWORD)
         .output()
         .unwrap();

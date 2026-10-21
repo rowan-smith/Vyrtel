@@ -157,7 +157,7 @@ fn every_request(e: &Engine, cancel: &CancelToken) -> Vec<(&'static str, Result<
         ("search", e.search(Signal::Logs, "", all(), 100, Direction::Backward, None, cancel).map(drop)),
         ("count", e.count(Signal::Logs, "level = Error", all(), cancel).map(drop)),
         ("histogram", e.histogram(Signal::Logs, "", bounded(), 60, cancel).map(drop)),
-        ("facets", e.facets(Signal::Logs, "", all(), 500, cancel).map(drop)),
+        ("facets", e.facets(Signal::Logs, "", all(), 500, None, cancel).map(drop)),
         ("traceSearch", e.trace_search("", all(), 10, cancel).map(drop)),
         ("trace", e.trace(&t, all(), cancel).map(drop)),
         ("metric", e.metric_query(&metric(bounded(), None), cancel).map(drop)),
@@ -257,7 +257,7 @@ fn cancel_at_a_row_checkpoint_stops_every_aggregation() {
     let requests: [(&str, &Request); 3] = [
         ("count", &|c| e.count(Signal::Logs, "level = Error", all(), c).map(drop)),
         ("histogram", &|c| e.histogram(Signal::Logs, "level = Error", bounded(), 60, c).map(drop)),
-        ("facets", &|c| e.facets(Signal::Logs, "", all(), 1000, c).map(drop)),
+        ("facets", &|c| e.facets(Signal::Logs, "", all(), 1000, None, c).map(drop)),
     ];
     for (what, run) in requests {
         e.set_checkpoint_hook(Some(cancel_at(Checkpoint::Rows, 1, Arc::new(Mutex::new(Vec::new())))));
@@ -288,7 +288,7 @@ fn scan_byte_budget_boundary() {
     let c = CancelToken::new();
     let needed = [
         ("count", open.count(Signal::Logs, "level = Error", all(), &c).unwrap().1.bytes_read),
-        ("facets", open.facets(Signal::Logs, "", all(), 1000, &c).unwrap().1.bytes_read),
+        ("facets", open.facets(Signal::Logs, "", all(), 1000, None, &c).unwrap().1.bytes_read),
         ("traceSearch", open.trace_search("", all(), 30, &c).unwrap().1.bytes_read),
     ];
     for (what, bytes) in needed {
@@ -297,7 +297,7 @@ fn scan_byte_budget_boundary() {
             let e = fx.engine(QueryLimits { max_scan_bytes, ..QueryLimits::default() });
             match what {
                 "count" => e.count(Signal::Logs, "level = Error", all(), &c).map(|r| r.1.bytes_read),
-                "facets" => e.facets(Signal::Logs, "", all(), 1000, &c).map(|r| r.1.bytes_read),
+                "facets" => e.facets(Signal::Logs, "", all(), 1000, None, &c).map(|r| r.1.bytes_read),
                 _ => e.trace_search("", all(), 30, &c).map(|r| r.1.bytes_read),
             }
         };
@@ -460,7 +460,7 @@ fn facet_counting_after_the_scan_checks_the_budget() {
     let e = fx.engine(QueryLimits::default());
     let seen = Arc::new(Mutex::new(Vec::new()));
     e.set_checkpoint_hook(Some(cancel_at(Checkpoint::Aggregate, 1, seen.clone())));
-    let r = e.facets(Signal::Logs, "", all(), 1000, &CancelToken::new());
+    let r = e.facets(Signal::Logs, "", all(), 1000, None, &CancelToken::new());
     assert!(matches!(r, Err(QueryError::Cancelled)), "{:?}", r.map(drop));
     let seen = seen.lock().unwrap();
     let assemble = seen.iter().position(|c| *c == Checkpoint::Assemble).expect("the scan finished");
@@ -478,9 +478,10 @@ fn facet_counting_checks_within_one_event() {
     let event = TelemetryEvent { attributes, ..log(1) };
     let limits = QueryLimits::default();
     let cancel = CancelToken::new();
-    let f = query::aggregate::facets(std::slice::from_ref(&event), 10, &Budget::new(&limits, cancel.clone())).unwrap();
+    let f = query::aggregate::facets(std::slice::from_ref(&event), 10, None, &Budget::new(&limits, cancel.clone()))
+        .unwrap();
     assert_eq!(f.sampled, 1);
     cancel.cancel();
-    let r = query::aggregate::facets(std::slice::from_ref(&event), 10, &Budget::new(&limits, cancel));
+    let r = query::aggregate::facets(std::slice::from_ref(&event), 10, None, &Budget::new(&limits, cancel));
     assert!(matches!(r, Err(QueryError::Cancelled)), "{:?}", r.map(drop));
 }

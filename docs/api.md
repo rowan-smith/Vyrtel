@@ -77,11 +77,12 @@ default to the last hour).
 
 ## Authentication
 
-Disabled by default (`auth.enabled = false`): everything is open, intended
-for local and trusted networks. When enabled:
+Always on for the UI and API. Ingestion is configured separately
+(`auth.ingest_api_key`, default `true`):
 
 * **Ingestion** (`/api/v1/events`, `/v1/*`) requires an API key:
-  `Authorization: Bearer <key>` or `X-Api-Key: <key>`.
+  `Authorization: Bearer <key>` or `X-Api-Key: <key>`. With
+  `auth.ingest_api_key = false` it is open, for trusted networks.
 * **Everything else under `/api/v1`** requires either the admin session
   cookie (from `/api/v1/auth/login`) or an API key with scope `admin`.
 * `/health`, `/ready`, `/api/v1/auth/*` and the web UI assets are public.
@@ -89,7 +90,7 @@ for local and trusted networks. When enabled:
 ```
 POST /api/v1/auth/login    {"username": "admin", "password": "..."}  → sets HttpOnly cookie
 POST /api/v1/auth/logout
-GET  /api/v1/auth/me       → {"authEnabled": true, "user": "admin" | null}
+GET  /api/v1/auth/me       → {"authEnabled": true, "user": "admin" | null}   (authEnabled is always true since 0.1.2)
 ```
 
 ### API keys
@@ -427,14 +428,17 @@ Aggregations (all take `query`, `from`, `to`):
 ```
 POST /api/v1/query/{signal}/count       → {"count": n, "diagnostics": {...}}
 POST /api/v1/query/{signal}/histogram   {"buckets": 60} → {"stepMs", "total", "buckets": [{"start", "count", "levels"}]}
-POST /api/v1/query/{signal}/facets      {"sample": 2000} → {"sampled", "fields": [{"field", "count", "values": [{"value", "count"}]}]}
+POST /api/v1/query/{signal}/facets      {"sample": 2000, "fields": ["level"]} → {"sampled", "fields": [{"field", "count", "values": [{"value", "count"}]}]}
 POST /api/v1/query/{signal}/events      same body/response as /query/logs
 ```
 
 `{signal}` is `logs`, `traces` (spans) or `metrics` (data points).
 `levels` in histogram buckets counts `[none, Trace, Debug, Information,
 Warning, Error, Fatal]`. Facets are computed over the most recent `sample`
-matching events.
+matching events. `fields` (optional, at most 64) counts only the fields
+named; without it every well-known field and the most common properties are
+counted. Naming only well-known fields (`level`, `service`, `environment`,
+`name`, `status`, `exception.type`) skips the walk over event properties.
 
 ### Live tail
 

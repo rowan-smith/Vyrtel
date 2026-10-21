@@ -7,7 +7,7 @@
 | Rust                | stable ≥ 1.89 (edition 2024)      | server and libraries       |
 | A C compiler        | any (MSVC, gcc, clang)            | bundled SQLite and zstd    |
 | Node.js             | 22+ (with npm)                    | web UI                     |
-| .NET SDK            | 10.0+                             | benchmarks, profiler, demo |
+| .NET SDK            | 10.0+                             | benchmarks, baseline, demo |
 | Playwright browsers | `npx playwright install chromium` | E2E tests only             |
 
 ## Layout
@@ -20,7 +20,7 @@ crates/ingest      native JSON + OTLP parsing
 crates/metadata    SQLite metadata store
 crates/server      HTTP server and the `vyrtel` binary
 tools/loadgen      load generator
-dotnet/            .NET benchmark, profiler, shared harness and demo producer
+dotnet/            .NET benchmark, baseline, shared harness and demo producer
 web/               React + TypeScript UI (Vite)
 tests/integration  end-to-end Rust tests against a real server
 tests/fixtures     shared test data
@@ -146,11 +146,6 @@ dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short
 # Capture a snapshot for a released version (also what the tag CI job does):
 dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short --label v0.1.1 --out docs/benchmarks/versions/v0.1.1.json
 
-# Mixed-load percentile profile (p50/p90/p95/p99 per operation) and index hotspots.
-# The first --warmup seconds (default 3) are discarded and hotspots are diffed over
-# the measured window only.
-dotnet run --project dotnet/Vyrtel.Profiling -c Release -- --duration 30 --warmup 3 --concurrency 4
-
 # Reproducible baseline: repeated runs with the pinned configuration, cold/warm queries with
 # diagnostics, accepted/rejected counts, peak RSS and variance-derived regression budgets;
 # writes target/baseline/report.{json,md,samples.csv}. --compare checks against an earlier report.
@@ -161,7 +156,7 @@ dotnet run --project dotnet/Vyrtel.Baseline -c Release -- compare old.json targe
 dotnet test dotnet/Vyrtel.slnx -c Release
 ```
 
-Use the benchmark and profiler to see trends and hotspots; use the baseline to decide whether a
+Use the benchmark to see trends; use the baseline (which includes the mixed-load percentile profile) to decide whether a
 change regressed, because it pins the server configuration, repeats the workload and states how
 noisy the machine is. See [Reproducible baselines](benchmarks.md#reproducible-baselines).
 

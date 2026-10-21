@@ -216,6 +216,17 @@ async fn facets_feed_the_filter_panel() {
     assert_eq!(counts, [("orders".into(), 3), ("payments".into(), 3), ("auth".into(), 2)]);
     let customer = fields.iter().find(|f| f["field"] == "customerId").unwrap();
     assert_eq!(customer["values"][0]["value"], 481);
+
+    // `fields` counts only those: a well-known field, a property, or none.
+    let only = |fields: Value| s.post_ok("/api/v1/query/logs/facets", json!({"query": "", "fields": fields}));
+    let names = |v: &Value| v["fields"].as_array().unwrap().iter().map(|f| f["field"].clone()).collect::<Vec<_>>();
+    let v = only(json!(["level", "customerId"])).await;
+    assert_eq!(names(&v), [json!("level"), json!("customerId")]);
+    assert_eq!(v["fields"][1], *customer);
+    let v = only(json!([])).await;
+    assert_eq!((v["sampled"].clone(), names(&v)), (json!(8), vec![]));
+    let r = s.post("/api/v1/query/logs/facets", json!({"fields": vec!["f"; 65]})).await;
+    assert_eq!(r.status(), 400);
     s.stop().await;
 }
 

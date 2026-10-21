@@ -5,21 +5,63 @@ using System.Text.Json;
 namespace Vyrtel.Harness;
 
 /// <summary>
-/// Thin helper over the Vyrtel HTTP API shared by the benchmark and the profiler. Every
+/// Thin helper over the Vyrtel HTTP API shared by the benchmark and the baseline. Every
 /// call reads the full response body so connection reuse is measured, and throws with
-/// the server's error text when a request fails.
+/// the server's error text when a request fails. Signs in as admin before its first request.
 /// </summary>
 public sealed class ApiClient : IDisposable
 {
+    /// <summary>
+    /// The admin password the harness gives the servers it launches, and signs in with:
+    /// <c>VYRTEL_AUTH_ADMIN_PASSWORD</c> when set (for a server that is already running).
+    /// </summary>
+    public static string AdminPassword =>
+        Environment.GetEnvironmentVariable("VYRTEL_AUTH_ADMIN_PASSWORD") ?? "vyrtel-harness";
+
     private readonly HttpClient _http;
 
     public ApiClient(string baseUrl)
     {
-        _http = new HttpClient
+        var baseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
+        var handler = new SignInHandler(baseAddress) { InnerHandler = new HttpClientHandler { CookieContainer = new() } };
+        _http = new HttpClient(handler)
         {
-            BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"),
+            BaseAddress = baseAddress,
             Timeout = TimeSpan.FromMinutes(2),
         };
+    }
+
+    /// <summary>
+    /// Signs in once, before the first request; the session cookie is kept by the inner
+    /// handler. A failed sign-in is not retried: the requests then fail with the server's 401.
+    /// </summary>
+    private sealed class SignInHandler(Uri baseAddress) : DelegatingHandler
+    {
+        private readonly SemaphoreSlim _once = new(1, 1);
+        private bool _tried;
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            if (!_tried)
+            {
+                await _once.WaitAsync(ct);
+                try
+                {
+                    if (!_tried)
+                    {
+                        _tried = true;
+                        using var login = new HttpRequestMessage(HttpMethod.Post, new Uri(baseAddress, "api/v1/auth/login"))
+                        {
+                            Content = Json(new { username = "admin", password = AdminPassword }),
+                        };
+                        try { (await base.SendAsync(login, ct)).Dispose(); }
+                        catch (HttpRequestException) { /* the request below reports the server's state */ }
+                    }
+                }
+                finally { _once.Release(); }
+            }
+            return await base.SendAsync(request, ct);
+        }
     }
 
     private static StringContent Json(object body) =>

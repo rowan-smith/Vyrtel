@@ -1,12 +1,12 @@
 import type { ReactNode } from 'react';
 
-import { AVAILABLE_COLUMNS, DEFAULT_COLUMNS, columnLabel } from '../lib/columns';
+import { AVAILABLE_COLUMNS, columnLabel, DEFAULT_COLUMNS } from '../lib/columns';
 import { formatCount, valueText } from '../lib/format';
 import { isFilterActive } from '../lib/query';
 import type { Facet, Json } from '../lib/types';
 
 /** The filter groups shown (for now), in order, with their headings. */
-const GROUPS: [field: string, title: string][] = [
+export const GROUPS: [field: string, title: string][] = [
   ['level', 'Levels'],
   ['environment', 'Environments'],
 ];

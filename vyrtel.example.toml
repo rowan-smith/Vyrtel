@@ -50,7 +50,9 @@ max_trace_spans = 50000      # spans one trace may return; 422 beyond
 max_metric_names = 10000     # names GET /api/v1/metrics returns; "truncated": true beyond
 
 [auth]
-enabled = false
+# The UI and API always need a login (or an admin API key). Ingestion needs
+# an API key too unless this is false.
+ingest_api_key = true
 # admin_username = "admin"
 # admin_password = "change-me"
 

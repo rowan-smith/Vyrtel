@@ -1,23 +1,23 @@
 import type {
-  Agg,
-  Alert,
-  AlertInput,
-  ApiKey,
-  AuthState,
-  Dashboard,
-  Diagnostics,
-  FacetsResponse,
-  HistogramResponse,
-  Json,
-  MetricResponse,
-  Panel,
-  PanelKind,
-  QueryFieldStats,
-  SearchResponse,
-  StorageStats,
-  SystemInfo,
-  TraceResponse,
-  TraceSummary,
+    Agg,
+    Alert,
+    AlertInput,
+    ApiKey,
+    AuthState,
+    Dashboard,
+    Diagnostics,
+    FacetsResponse,
+    HistogramResponse,
+    Json,
+    MetricResponse,
+    Panel,
+    PanelKind,
+    QueryFieldStats,
+    SearchResponse,
+    StorageStats,
+    SystemInfo,
+    TraceResponse,
+    TraceSummary,
 } from './types';
 
 /** Error returned by the API: `{"error": {"code", "message", ...}}`. */
@@ -105,8 +105,11 @@ export const api = {
     post<HistogramResponse>(`/api/v1/query/${signalName}/histogram`, q, signal),
   count: (signalName: string, q: { query: string } & TimeWindow, signal?: AbortSignal) =>
     post<{ count: number; diagnostics: Diagnostics }>(`/api/v1/query/${signalName}/count`, q, signal),
-  facets: (signalName: string, q: { query: string; sample?: number } & TimeWindow, signal?: AbortSignal) =>
-    post<FacetsResponse>(`/api/v1/query/${signalName}/facets`, q, signal),
+  facets: (
+    signalName: string,
+    q: { query: string; sample?: number; fields?: string[] } & TimeWindow,
+    signal?: AbortSignal,
+  ) => post<FacetsResponse>(`/api/v1/query/${signalName}/facets`, q, signal),
 
   searchTraces: (q: { query: string; limit?: number } & TimeWindow, signal?: AbortSignal) =>
     post<{ traces: TraceSummary[]; diagnostics: Diagnostics }>('/api/v1/query/traces', q, signal),

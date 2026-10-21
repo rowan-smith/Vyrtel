@@ -61,8 +61,6 @@ fn storage_config(config: &Config) -> StorageConfig {
     };
     sc.fsync_interval = config.storage.fsync_interval;
     sc.index_cache_bytes = budgets.index_cache as usize;
-    sc.segment.block_events = config.storage.block_events;
-    sc.segment.zstd_level = config.storage.zstd_level;
     sc.compaction.enabled = config.storage.compaction;
     // Compaction holds its inputs in memory; keep that inside the
     // background budget.
@@ -71,7 +69,6 @@ fn storage_config(config: &Config) -> StorageConfig {
         let s = sc.stream_mut(signal);
         s.segment_target_bytes = budgets.segment_target[i];
         s.segment_max_age = config.storage.segment_max_age;
-        s.segment_max_events = config.storage.segment_max_events;
         s.queue_events = config.ingest.queue_capacity;
         s.retention = match signal {
             Signal::Logs => config.retention.logs,
@@ -244,7 +241,11 @@ impl App {
             },
             c.server.max_connections,
             human_bytes(c.transport_limits().estimated_peak()),
-            if c.auth.enabled { "enabled" } else { "disabled (open access; see docs/configuration.md)" },
+            if c.auth.ingest_api_key {
+                "login for the UI/API, API keys for ingestion"
+            } else {
+                "login for the UI/API; ingestion open (auth.ingest_api_key = false)"
+            },
         );
         if let Some(pw) = &self.generated_password {
             out.push_str(&format!(
@@ -590,24 +591,24 @@ impl std::fmt::Display for IncompleteShutdown {
 
 impl std::error::Error for IncompleteShutdown {}
 
+/// In-memory query statistics as the row that persists them.
+pub(crate) fn stored_query_stats(s: query::stats::FieldQueryStats) -> metadata::StoredQueryStats {
+    metadata::StoredQueryStats {
+        signal: s.signal,
+        field: s.field,
+        index: s.index,
+        queries: s.queries,
+        bytes_read: s.bytes_read,
+        segments_scanned: s.segments_scanned,
+        segments_skipped: s.segments_skipped,
+        total_ms: s.total_ms,
+        last_seen: metadata::now_ms(),
+    }
+}
+
 async fn persist_query_stats(state: &SharedState) {
-    let rows: Vec<metadata::StoredQueryStats> = state
-        .engine
-        .stats()
-        .drain()
-        .into_iter()
-        .map(|s| metadata::StoredQueryStats {
-            signal: s.signal,
-            field: s.field,
-            index: s.index,
-            queries: s.queries,
-            bytes_read: s.bytes_read,
-            segments_scanned: s.segments_scanned,
-            segments_skipped: s.segments_skipped,
-            total_ms: s.total_ms,
-            last_seen: metadata::now_ms(),
-        })
-        .collect();
+    let rows: Vec<metadata::StoredQueryStats> =
+        state.engine.stats().drain().into_iter().map(stored_query_stats).collect();
     if rows.is_empty() {
         return;
     }
@@ -707,10 +708,14 @@ mod tests {
         config.storage.path = dir.path().to_path_buf();
         config.alerts.enabled = false;
         let app = App::build(config).unwrap();
+        let (key, prefix, hash) = crate::auth::new_api_key();
+        app.state.metadata.create_api_key("test", &prefix, &hash, "admin").unwrap();
+        let bearer = format!("Bearer {key}");
         let request = |method: &str, uri: &str, body: &'static str| {
             Request::builder()
                 .method(method)
                 .uri(uri)
+                .header(header::AUTHORIZATION, &bearer)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(body))
                 .unwrap()

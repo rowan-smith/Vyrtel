@@ -24,23 +24,23 @@ impl Bloom {
         self.words.len() as u64 * 64
     }
 
-    fn positions(&self, hash: u64) -> impl Iterator<Item = u64> + '_ {
+    /// Bit positions for `hash`, computed from copies so `insert` can
+    /// mutate `words` while iterating without collecting them first.
+    fn positions(k: u8, m: u64, hash: u64) -> impl Iterator<Item = u64> {
         // Kirsch–Mitzenmacher double hashing from one 64-bit hash.
         let h1 = hash & 0xffff_ffff;
         let h2 = (hash >> 32) | 1;
-        let m = self.num_bits();
-        (0..self.k as u64).map(move |i| h1.wrapping_add(i.wrapping_mul(h2)) % m)
+        (0..k as u64).map(move |i| h1.wrapping_add(i.wrapping_mul(h2)) % m)
     }
 
     pub fn insert(&mut self, hash: u64) {
-        let positions: Vec<u64> = self.positions(hash).collect();
-        for p in positions {
+        for p in Self::positions(self.k, self.num_bits(), hash) {
             self.words[(p / 64) as usize] |= 1 << (p % 64);
         }
     }
 
     pub fn may_contain(&self, hash: u64) -> bool {
-        self.positions(hash).all(|p| self.words[(p / 64) as usize] & (1 << (p % 64)) != 0)
+        Self::positions(self.k, self.num_bits(), hash).all(|p| self.words[(p / 64) as usize] & (1 << (p % 64)) != 0)
     }
 
     pub fn byte_size(&self) -> usize {

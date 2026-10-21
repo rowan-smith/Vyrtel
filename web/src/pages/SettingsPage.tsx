@@ -112,8 +112,8 @@ function SystemTab() {
           <td>{i.durability}</td>
         </tr>
         <tr>
-          <th>Authentication</th>
-          <td>{i.authEnabled ? 'enabled' : 'disabled'}</td>
+          <th>Ingestion</th>
+          <td>{i.ingestApiKey ? 'API key required' : 'open (no API key needed)'}</td>
         </tr>
         <tr>
           <th>Events</th>

@@ -188,13 +188,15 @@ impl Engine {
         Ok((sink.finish(), self.finish(signal, ctx, filter.as_ref())))
     }
 
-    /// Field/value counts over the most recent `sample` matching events.
+    /// Field/value counts over the most recent `sample` matching events,
+    /// for the `fields` named (all of them when `None`).
     pub fn facets(
         &self,
         signal: Signal,
         query: &str,
         range: TimeRange,
         sample: usize,
+        fields: Option<&[String]>,
         cancel: &CancelToken,
     ) -> Result<(Facets, Diagnostics), QueryError> {
         let filter = compile_query(query, signal)?;
@@ -216,7 +218,7 @@ impl Engine {
         )?;
         ctx.diag.merge(&inner.finish());
         ctx.check(Checkpoint::Assemble)?;
-        let facets = aggregate::facets(&r.events, 10, &budget)?;
+        let facets = aggregate::facets(&r.events, 10, fields, &budget)?;
         Ok((facets, self.finish(signal, ctx, filter.as_ref())))
     }
 

@@ -95,18 +95,22 @@ pub fn bool_key(path: &str, b: bool) -> u64 {
     hash(path, b'b', &[b as u8])
 }
 
+/// Keys to insert for a stored string at `path`; the same keys
+/// [`stored_keys`] gives a `Value::String`, without building one.
+pub fn stored_str_keys(path: &str, s: &str, out: &mut dyn FnMut(u64)) {
+    out(string_key(path, s));
+    if let Some(n) = canonical_str_number(s) {
+        out(number_key(path, n));
+    }
+    if let Some(b) = bool_from_str(s) {
+        out(bool_key(path, b));
+    }
+}
+
 /// Keys to insert for a stored value at `path`.
 pub fn stored_keys(path: &str, v: &Value, out: &mut dyn FnMut(u64)) {
     match v {
-        Value::String(s) => {
-            out(string_key(path, s));
-            if let Some(n) = canonical_str_number(s) {
-                out(number_key(path, n));
-            }
-            if let Some(b) = bool_from_str(s) {
-                out(bool_key(path, b));
-            }
-        }
+        Value::String(s) => stored_str_keys(path, s, out),
         Value::Int(_) | Value::Float(_) => {
             if let Some(n) = canonical_number(v) {
                 out(number_key(path, n));

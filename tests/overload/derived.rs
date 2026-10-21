@@ -122,7 +122,7 @@ async fn run(name: &str, configure: fn(&mut Config), bodies: &Arc<Vec<Body>>, ru
     tokio::time::sleep(Duration::from_millis(50)).await;
     // Load clients get their own connection pool: their connections live on clients_rt, and
     // once it shuts down a pooled one is dead (DispatchGone) if s.client later reuses it.
-    let load = reqwest::Client::new();
+    let load = authorized_client("authorization", &format!("Bearer {}", s.api_key));
     let rss_before = rss();
     let start = reset_peak();
 
@@ -313,7 +313,7 @@ async fn rejected_body_drain_overhead_is_within_the_fixed_allowance() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     // Load clients get their own connection pool: their connections live on clients_rt, and
     // once it shuts down a pooled one is dead (DispatchGone) if s.client later reuses it.
-    let load = reqwest::Client::new();
+    let load = authorized_client("authorization", &format!("Bearer {}", s.api_key));
     let start = reset_peak();
     let stop = Instant::now() + Duration::from_secs(3);
     let rejected = Arc::new(AtomicU64::new(0));

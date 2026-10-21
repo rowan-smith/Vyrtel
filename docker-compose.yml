@@ -10,8 +10,10 @@ services:
       - ./vyrtel-data:/data
     environment:
       VYRTEL_LOG_LEVEL: info
-      # VYRTEL_AUTH_ENABLED: "true"
+      # The UI always needs a login; without this a password is generated and printed once.
       # VYRTEL_AUTH_ADMIN_PASSWORD: change-me
+      # Accept ingestion without API keys (trusted networks only).
+      # VYRTEL_AUTH_INGEST_API_KEY: "false"
     restart: unless-stopped
     # Longer than server.shutdown_timeout (8s), so in-flight requests drain
     # before Docker force-kills the container.

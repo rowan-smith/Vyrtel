@@ -81,6 +81,24 @@ describe('LogsPage', () => {
     expect(d).toHaveTextContent('no index (scanned)');
   });
 
+  it('asks only for the sidebar facets, excluding a sidebar field only from its own counts', async () => {
+    const calls = setup();
+    renderWithRouter(<LogsPage />, '/logs?q=level%20%3D%20Error%20and%20service%20%3D%20api');
+    expect(await screen.findByText('first event')).toBeInTheDocument();
+    await waitFor(() => expect(calls.filter((c) => c.url === '/api/v1/query/logs/facets')).toHaveLength(2));
+    const bodies = calls
+      .filter((c) => c.url === '/api/v1/query/logs/facets')
+      .map((c) => {
+        const b = c.body as { query: string; fields: string[] };
+        return { query: b.query, fields: b.fields };
+      });
+    // `service` is not in the sidebar, so filtering on it costs no extra request.
+    expect(bodies).toEqual([
+      { query: 'level = Error and service = api', fields: ['environment'] },
+      { query: 'service = api', fields: ['level'] },
+    ]);
+  });
+
   it('expands a row on click', async () => {
     setup();
     renderWithRouter(<LogsPage />, '/logs');

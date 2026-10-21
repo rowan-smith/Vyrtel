@@ -2,11 +2,13 @@
 
 Linux measurements for [REL-18](https://github.com/rowan-smith/Vyrtel/issues/184) (bounded HTTP
 connections and transport buffers), against the budgets declared beforehand in
-[`../budgets.md`](../budgets.md). Every run directory here holds its raw data: `resources.csv` (the
-server process every ~2 s), `samples.csv` (`/api/v1/system/info` every second), `summary.json`
-and `connload.log` (load generator), `server.log`, and `resources.json` (peaks, idle levels, CPU,
-shutdown). `matrix.log` and `followup.log` give the order and times of the runs;
-`listen-overflows.csv` the kernel's listen-queue counters sampled during them. These runs used
+[`../budgets.md`](../budgets.md). Every run directory here holds its results: `summary.json`
+(load generator) and `resources.json` (peaks, idle levels, CPU, shutdown). The raw captures
+(`resources.csv`, the server process every ~2 s; `samples.csv`, `/api/v1/system/info` every
+second; `connload.log`, `server.log`; `matrix.log` and `followup.log` with the order and times of
+the runs; `listen-overflows.csv`, the kernel's listen-queue counters sampled during them) were
+moved out of the repository and stay available at
+[this commit](https://github.com/rowan-smith/Vyrtel/tree/8250c5be7af16dfbeff5ce6b17fb66174ed29a7c/docs/benchmarks/transport/2026-10-17-wsl2). These runs used
 `scripts/bench/transport-soak.sh` before it recorded `listenOverflows` itself (added afterwards,
 so the columns of `resources.csv` here stop at `socketBuffersKb`); the counters came from a
 separate 15 s sampler instead.

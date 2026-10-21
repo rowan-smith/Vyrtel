@@ -270,7 +270,8 @@ pub async fn info(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
         "uptimeSeconds": state.started_at.elapsed().as_secs(),
         "dataDir": state.config.storage.path,
         "durability": state.config.storage.durability,
-        "authEnabled": state.config.auth.enabled,
+        "authEnabled": true,
+        "ingestApiKey": state.config.auth.ingest_api_key,
         "eventCounts": {
             "logs": stats.logs.segment_events + stats.logs.active_events + stats.logs.frozen_events,
             "traces": stats.traces.segment_events + stats.traces.active_events + stats.traces.frozen_events,
@@ -327,17 +328,7 @@ pub async fn query_stats(State(state): State<SharedState>) -> ApiResult<Json<Val
             r.total_ms += p.total_ms;
             r.index = p.index;
         } else {
-            rows.push(metadata::StoredQueryStats {
-                signal: p.signal,
-                field: p.field,
-                index: p.index,
-                queries: p.queries,
-                bytes_read: p.bytes_read,
-                segments_scanned: p.segments_scanned,
-                segments_skipped: p.segments_skipped,
-                total_ms: p.total_ms,
-                last_seen: metadata::now_ms(),
-            });
+            rows.push(crate::app::stored_query_stats(p));
         }
     }
     rows.sort_by(|a, b| b.queries.cmp(&a.queries).then(a.field.cmp(&b.field)));

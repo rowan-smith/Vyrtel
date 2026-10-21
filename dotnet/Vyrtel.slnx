@@ -4,5 +4,4 @@
   <Project Path="Vyrtel.Benchmark/Vyrtel.Benchmark.csproj" />
   <Project Path="Vyrtel.Harness/Vyrtel.Harness.csproj" />
   <Project Path="Vyrtel.LiveDataSim/Vyrtel.LiveDataSim.csproj" />
-  <Project Path="Vyrtel.Profiling/Vyrtel.Profiling.csproj" />
 </Solution>

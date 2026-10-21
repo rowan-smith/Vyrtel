@@ -2,20 +2,22 @@ name: Release
 
 # Publishes a release only after it has been validated (docs/releasing.md):
 #
-#   preflight ─┬─ performance ────────────┐
-#              ├─ compat ─────────────────┤
-#              ├─ ci (the full CI suite) ─┤
-#              └──────────────────────────┴─ binaries ─ verify ─ image-smoke ─ image ─ release
+#   preflight ─┬─ functional (the full CI suite) ───────────────┐
+#              └─ signoff (performance/reliability, compatibility) ┴─ binaries ─ verify ─ image-smoke ─ image ─ release
+#
+# Three gates decide whether a candidate ships; everything after them checks that what is
+# published is exactly what they approved.
 #
 # - preflight: the tag must be v<semver> and match the workspace version, or nothing runs.
-# - performance: every performance gate for the version has a reviewer PASS for this exact
-#   commit on the release-evidence branch, signed off before the tag was created. The
-#   sign-off itself happens before tagging (scripts/release/release.mjs pretag); this job
-#   refuses to publish a tag that bypassed it.
-# - compat: the version's COMPAT-GATE (every release, prereleases included) has a reviewer PASS
-#   for this exact commit and the layout identity it writes, reviewed before the tag and before
-#   any performance measurement of the same candidate (cleanup first).
-# - ci: every required CI check, run against the tagged commit.
+# - functional: every required CI check, run against the tagged commit.
+# - signoff: from the release-evidence branch, fetched once:
+#   - performance/reliability: every performance gate for the version has a reviewer PASS for
+#     this exact commit, signed off before the tag was created. The sign-off itself happens
+#     before tagging (scripts/release/release.mjs pretag); this job refuses to publish a tag
+#     that bypassed it.
+#   - compatibility: the version's COMPAT-GATE (every release, prereleases included) has a
+#     reviewer PASS for this exact commit and the layout identity it writes, reviewed before the
+#     tag and before any performance measurement of the same candidate (cleanup first).
 # - binaries: built with the UI that CI tested; each one's --version and embedded UI are
 #   checked on its own runner before it is uploaded.
 # - verify: the full artifact set and SHA256SUMS, plus the Linux binary as shipped, and the
@@ -73,75 +75,57 @@ jobs:
       - id: plan
         run: node scripts/release/release.mjs plan --tag "$TAG" --image "ghcr.io/${{ github.repository }}"
 
-  performance:
-    name: Pre-tag performance sign-off
-    needs: preflight
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Fetch approval records
-        # A missing branch leaves evidence/ empty, which fails the check below as missing evidence.
-        run: |
-          mkdir -p evidence
-          if git fetch --depth=1 origin release-evidence; then git archive FETCH_HEAD | tar -x -C evidence; fi
-      - name: Check sign-off for this commit
-        run: |
-          args=()
-          if [ "$PUBLISH" = "true" ]; then
-            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
-            # Empty for a lightweight tag, which the check rejects when gates are required.
-            args=(--tag-date "$(git for-each-ref "refs/tags/$TAG" --format='%(taggerdate:iso-strict)')")
-          fi
-          node scripts/release/release.mjs check-performance --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence "${args[@]}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: performance-evidence
-          path: evidence/performance
-          if-no-files-found: ignore
-
-  compat:
-    name: Pre-tag compatibility sign-off
-    needs: preflight
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Fetch approval records
-        # A missing branch leaves evidence/ empty, which fails the check below as missing evidence.
-        run: |
-          mkdir -p evidence
-          if git fetch --depth=1 origin release-evidence; then git archive FETCH_HEAD | tar -x -C evidence; fi
-      - name: Check sign-off for this commit
-        run: |
-          args=()
-          if [ "$PUBLISH" = "true" ]; then
-            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
-            # Empty for a lightweight tag, which the check rejects.
-            args=(--tag-date "$(git for-each-ref "refs/tags/$TAG" --format='%(taggerdate:iso-strict)')")
-          fi
-          node scripts/release/release.mjs check-compat --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence "${args[@]}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: compat-evidence
-          path: evidence/compat
-          if-no-files-found: ignore
-
-  ci:
-    name: Required checks
+  functional:
+    name: Functional gate (the full CI suite)
     needs: preflight
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
       checks: write
 
+  signoff:
+    name: Performance/reliability and compatibility gates
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch approval records
+        # A missing branch leaves evidence/ empty, which fails the checks below as missing evidence.
+        run: |
+          mkdir -p evidence
+          if git fetch --depth=1 origin release-evidence; then git archive FETCH_HEAD | tar -x -C evidence; fi
+      - name: Tag date
+        id: tag
+        run: |
+          if [ "$PUBLISH" = "true" ]; then
+            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+            # Empty for a lightweight tag, which the checks reject when gates are required.
+            echo "date=$(git for-each-ref "refs/tags/$TAG" --format='%(taggerdate:iso-strict)')" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Performance/reliability sign-off for this commit
+        run: |
+          args=()
+          if [ "$PUBLISH" = "true" ]; then args=(--tag-date "${{ steps.tag.outputs.date }}"); fi
+          node scripts/release/release.mjs check-performance --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence "${args[@]}"
+      - name: Compatibility sign-off for this commit
+        run: |
+          args=()
+          if [ "$PUBLISH" = "true" ]; then args=(--tag-date "${{ steps.tag.outputs.date }}"); fi
+          node scripts/release/release.mjs check-compat --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signoff-evidence
+          path: |
+            evidence/performance
+            evidence/compat
+          if-no-files-found: ignore
+
   binaries:
     name: Build and check ${{ matrix.name }}
-    needs: [preflight, performance, compat, ci]
+    needs: [preflight, functional, signoff]
     strategy:
       fail-fast: true
       matrix:
@@ -153,7 +137,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      # The UI that passed lint, unit and E2E tests in the ci job.
+      # The UI that passed lint, unit and E2E tests in the functional gate.
       - uses: actions/download-artifact@v4
         with:
           name: web-dist
@@ -195,7 +179,7 @@ jobs:
 
   verify:
     name: Verify release artifacts
-    needs: [preflight, performance, compat, binaries]
+    needs: [preflight, signoff, binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -209,13 +193,8 @@ jobs:
           merge-multiple: true
       - uses: actions/download-artifact@v4
         with:
-          name: performance-evidence
-          path: evidence/performance
-        continue-on-error: true
-      - uses: actions/download-artifact@v4
-        with:
-          name: compat-evidence
-          path: evidence/compat
+          name: signoff-evidence
+          path: evidence
         continue-on-error: true
       - name: Combined checksums
         run: |
