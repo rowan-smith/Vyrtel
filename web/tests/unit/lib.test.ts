@@ -2,24 +2,24 @@ import { describe, expect, it } from 'vitest';
 
 import { formatBytes, formatCount, formatDuration, levelShort } from '../../src/lib/format';
 import {
-    columnLabel,
-    columnTemplate,
-    columnValue,
-    DEFAULT_COLUMNS,
-    loadColumns,
-    orderColumns,
-    saveColumns,
+  columnLabel,
+  columnTemplate,
+  columnValue,
+  DEFAULT_COLUMNS,
+  loadColumns,
+  orderColumns,
+  saveColumns,
 } from '../../src/lib/columns';
 import {
-    andParts,
-    andQuery,
-    clause,
-    filteredFields,
-    isFilterActive,
-    isPlainField,
-    literal,
-    rangeWindow,
-    setFieldFilter,
+  andParts,
+  andQuery,
+  clause,
+  filteredFields,
+  isFilterActive,
+  isPlainField,
+  literal,
+  rangeWindow,
+  setFieldFilter,
 } from '../../src/lib/query';
 import { matchPath } from '../../src/lib/router';
 import { nanosSince, spanTree } from '../../src/pages/TraceDetailPage';
