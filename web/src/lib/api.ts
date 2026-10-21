@@ -17,7 +17,7 @@ import type {
   StorageStats,
   SystemInfo,
   TraceResponse,
-  TraceSummary
+  TraceSummary,
 } from './types';
 
 /** Error returned by the API: `{"error": {"code", "message", ...}}`. */
