@@ -138,6 +138,8 @@ describe('TC-PERF-01: missing or failed evidence prevents tagging and publicatio
       [(r) => void (r.metrics[8].na = ' '), /N\/A needs a reason/],
       [(r) => void (r.reports = []), /no profiling report links/],
       [(r) => void (r.candidate.artifacts = []), /lists no profiled artifact hashes/],
+      [(r) => void (r.candidate.artifacts = r.candidate.artifacts.filter((a) => a.name !== 'vyrtel-macos-arm64')), /candidate\.artifacts: no profiled hash for vyrtel-macos-arm64; every published binary needs one/],
+      [(r) => void r.candidate.artifacts.push({ ...r.candidate.artifacts[0] }), /candidate\.artifacts: vyrtel-linux-x86_64 is listed more than once/],
       [(r) => void (r.baseline = {}), /baseline needs the prior approved release/],
       [(r) => void (r.budgetsDeclaredAt = '2026-10-02T10:00:00Z'), /budgets were declared after the candidate was measured/],
     ];
@@ -212,10 +214,18 @@ describe('TC-PERF-02: stale or mismatched evidence is rejected until revalidated
   test('released artifacts must match the approved hashes or document equivalence', () => {
     const dir = tmp();
     const approved = FIXTURE.candidate.artifacts[0].sha256;
-    const sums = (hex) => fs.writeFileSync(path.join(dir, 'SHA256SUMS'), `${hex}  vyrtel-linux-x86_64\n`);
+    // Every published binary as approved, except the Linux x86_64 one is `hex`.
+    const sums = (hex) =>
+      fs.writeFileSync(
+        path.join(dir, 'SHA256SUMS'),
+        FIXTURE.candidate.artifacts.map((a, i) => `${i === 0 ? hex : a.sha256}  ${a.name}\n`).join(''),
+      );
 
     sums(approved);
-    assert.deepEqual(checkArtifactsMatchApproval([FIXTURE], dir), ['PERF-GATE-1: vyrtel-linux-x86_64 matches the approved hash']);
+    assert.deepEqual(
+      checkArtifactsMatchApproval([FIXTURE], dir),
+      FIXTURE.candidate.artifacts.map((a) => `PERF-GATE-1: ${a.name} matches the approved hash`),
+    );
 
     sums('b'.repeat(64));
     assert.throws(() => checkArtifactsMatchApproval([FIXTURE], dir), gateError(/vyrtel-linux-x86_64 built as bbbbbbbbbbbb but aaaaaaaaaaaa was approved, and the record documents no reproducible equivalence/));

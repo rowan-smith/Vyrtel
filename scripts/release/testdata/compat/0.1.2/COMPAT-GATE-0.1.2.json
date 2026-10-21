@@ -6,7 +6,10 @@
   "candidate": {
     "sha": "1111111111111111111111111111111111111111",
     "artifacts": [
-      { "name": "vyrtel-linux-x86_64", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+      { "name": "vyrtel-linux-x86_64", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      { "name": "vyrtel-linux-arm64", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+      { "name": "vyrtel-macos-arm64", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+      { "name": "vyrtel-windows-x86_64.exe", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }
     ]
   },
   "layout": {

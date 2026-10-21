@@ -144,6 +144,8 @@ describe('TC5: missing, failed or stale compatibility evidence blocks tagging an
       [(r) => void r.checklist.push({ item: 'vibes', result: 'pass', evidence: 'x' }), /checklist: unknown item "vibes"/],
       [(r) => void delete r.inventory, /no inventory link/],
       [(r) => void (r.candidate.artifacts = []), /lists no reviewed artifact hashes/],
+      [(r) => void (r.candidate.artifacts = r.candidate.artifacts.filter((a) => a.name !== 'vyrtel-macos-arm64')), /candidate\.artifacts: no reviewed hash for vyrtel-macos-arm64; every published binary needs one/],
+      [(r) => void r.candidate.artifacts.push({ ...r.candidate.artifacts[0] }), /candidate\.artifacts: vyrtel-linux-x86_64 is listed more than once/],
       [(r) => void (r.issue = 1), /record links issue #1, expected #229/],
       [(r) => void delete r.exceptions, /exceptions must be a list/],
       [exception({ approvedBy: 'someone-else' }), /approved by "someone-else", but only rowan-smith may approve an exception/],

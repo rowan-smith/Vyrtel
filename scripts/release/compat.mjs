@@ -13,8 +13,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { readRecord } from './performance.mjs';
-import { checkTagMatchesWorkspace, EXPECTED_ARTIFACTS, GateError, ROOT } from './release.mjs';
+import { artifactProblems, readRecord } from './performance.mjs';
+import { checkTagMatchesWorkspace, GateError, ROOT } from './release.mjs';
 
 export const COMPAT_FILE = 'scripts/release/compat-gates.json';
 export const LAYOUT_FILE = 'crates/telemetry/src/layout.rs';
@@ -32,7 +32,6 @@ export const CHECKLIST = [
 ];
 
 const SHA1 = /^[0-9a-f]{40}$/;
-const SHA256 = /^[0-9a-f]{64}$/;
 
 const fail = (msg) => {
   throw new GateError(msg);
@@ -86,12 +85,7 @@ export function compatRecordProblems(record, { gate, version, sha, layout, appro
   else if (cand.sha !== sha) {
     p.push(`stale: approved candidate ${cand.sha.slice(0, 12)} but the release commit is ${sha.slice(0, 12)}; the candidate changed after review, so review the change and record a new PASS`);
   }
-  const artifacts = Array.isArray(cand.artifacts) ? cand.artifacts : [];
-  if (!artifacts.length) p.push('candidate.artifacts lists no reviewed artifact hashes');
-  for (const a of artifacts) {
-    if (!EXPECTED_ARTIFACTS.includes(a?.name)) p.push(`candidate.artifacts: unknown artifact "${a?.name}"`);
-    if (!SHA256.test(a?.sha256 ?? '')) p.push(`candidate.artifacts: ${a?.name} has no sha256`);
-  }
+  p.push(...artifactProblems(cand.artifacts, 'reviewed'));
 
   if (record.layout?.identity !== layout) {
     p.push(`layout.identity is ${JSON.stringify(record.layout?.identity ?? null)}, but the candidate writes layout ${layout} (${LAYOUT_FILE})`);

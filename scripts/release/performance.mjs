@@ -83,6 +83,26 @@ export function readRecord(evidence, version, gate, kind = 'performance') {
   }
 }
 
+/**
+ * Problems with a record's `candidate.artifacts`: it must name every published binary
+ * (EXPECTED_ARTIFACTS) exactly once, each with a SHA-256. `verify` compares only the artifacts a
+ * record names, so an omitted platform would otherwise ship without an approved hash.
+ */
+export function artifactProblems(artifacts, verb) {
+  if (!Array.isArray(artifacts) || !artifacts.length) return [`candidate.artifacts lists no ${verb} artifact hashes`];
+  const p = [];
+  const seen = new Set();
+  for (const a of artifacts) {
+    if (!EXPECTED_ARTIFACTS.includes(a?.name)) p.push(`candidate.artifacts: unknown artifact "${a?.name}"`);
+    else if (seen.has(a.name)) p.push(`candidate.artifacts: ${a.name} is listed more than once`);
+    seen.add(a?.name);
+    if (!SHA256.test(a?.sha256 ?? '')) p.push(`candidate.artifacts: ${a?.name} has no sha256`);
+  }
+  const missing = EXPECTED_ARTIFACTS.filter((name) => !seen.has(name));
+  if (missing.length) p.push(`candidate.artifacts: no ${verb} hash for ${missing.join(', ')}; every published binary needs one`);
+  return p;
+}
+
 /** Problems with one metric row; the recorded pass/fail must agree with value vs limit. */
 function metricProblems(m, i) {
   const at = `metrics[${i}]${filled(m?.name) ? ` (${m.category}: ${m.name})` : ''}`;
@@ -126,12 +146,7 @@ export function recordProblems(record, { gate, version, sha }) {
   else if (cand.sha !== sha) {
     p.push(`stale: approved candidate ${cand.sha.slice(0, 12)} but the release commit is ${sha.slice(0, 12)}; the candidate changed after sign-off, so rerun the affected workloads and record a new PASS`);
   }
-  const artifacts = Array.isArray(cand.artifacts) ? cand.artifacts : [];
-  if (!artifacts.length) p.push('candidate.artifacts lists no profiled artifact hashes');
-  for (const a of artifacts) {
-    if (!EXPECTED_ARTIFACTS.includes(a?.name)) p.push(`candidate.artifacts: unknown artifact "${a?.name}"`);
-    if (!SHA256.test(a?.sha256 ?? '')) p.push(`candidate.artifacts: ${a?.name} has no sha256`);
-  }
+  p.push(...artifactProblems(cand.artifacts, 'profiled'));
 
   const base = record.baseline ?? {};
   if (!filled(base.release) || !SHA1.test(base.sha ?? '')) p.push('baseline needs the prior approved release and its full commit SHA');
