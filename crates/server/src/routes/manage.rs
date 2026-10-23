@@ -143,19 +143,21 @@ fn ingest_scope() -> String {
 
 pub async fn list_api_keys(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
     let k = state.db(|m| m.list_api_keys()).await?;
-    Ok(Json(json!({ "apiKeys": k })))
+    let protected = state.api_keys.read().unwrap().ingest_protected();
+    Ok(Json(json!({ "apiKeys": k, "ingestKeyRequired": protected })))
 }
 
 /// The plaintext key appears in this response only.
 pub async fn create_api_key(State(state): State<SharedState>, ApiJson(b): ApiJson<ApiKeyBody>) -> ApiResult<Response> {
-    let (key, prefix, hash) = auth::new_api_key();
-    let rec = state.db(move |m| m.create_api_key(&b.name, &prefix, &hash, &b.scope)).await?;
+    let st = state.clone();
+    let (rec, key) = state.blocking(move || Ok(auth::create_api_key(&st, &b.name, &b.scope)?)).await?;
     let mut v = serde_json::to_value(rec).map_err(ApiError::internal)?;
     v["key"] = Value::String(key);
     Ok((StatusCode::CREATED, Json(v)).into_response())
 }
 
 pub async fn revoke_api_key(State(state): State<SharedState>, ApiPath(id): ApiPath<i64>) -> ApiResult<StatusCode> {
-    state.db(move |m| m.revoke_api_key(id)).await?;
+    let st = state.clone();
+    state.blocking(move || Ok(auth::revoke_api_key(&st, id)?)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

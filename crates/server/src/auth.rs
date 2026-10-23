@@ -6,10 +6,12 @@
 //! * Sessions are random tokens in an HttpOnly, SameSite=Lax cookie; only
 //!   their SHA-256 is stored.
 //!
-//! When `auth.enabled = false` every check passes (local/dev use). The
-//! boundaries are kept small so OIDC etc. can be added later as another way
-//! of producing a [`Principal`].
+//! The UI and API always need a session or an admin key. Ingestion needs an
+//! API key while at least one ingest-scoped key exists, and is open while
+//! none does (see [`ApiKeys`]). The boundaries are kept small so OIDC etc.
+//! can be added later as another way of producing a [`Principal`].
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use argon2::Argon2;
@@ -18,23 +20,19 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderMap, header};
 use axum::middleware::Next;
 use axum::response::Response;
+use metadata::Metadata;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 use crate::error::ApiError;
-use crate::state::SharedState;
+use crate::state::{AppState, SharedState};
 
 pub const SESSION_COOKIE: &str = "vyrtel_session";
 
 #[derive(Debug, Clone)]
 pub enum Principal {
-    /// Authentication is disabled.
-    Open,
     User(String),
-    ApiKey {
-        id: i64,
-        scope: String,
-    },
+    ApiKey { id: i64, scope: String },
 }
 
 pub fn sha256_hex(s: &str) -> String {
@@ -87,9 +85,73 @@ pub fn session_from(headers: &HeaderMap) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-async fn check_api_key(state: &SharedState, key: String) -> Result<Principal, ApiError> {
-    let hash = sha256_hex(&key);
-    let found = state.db(move |m| m.find_api_key(&hash)).await?;
+/// Every active API key, by SHA-256 of the key with its id and scope.
+/// Loaded at startup and changed only by [`create_api_key`] and
+/// [`revoke_api_key`], so authenticating a request never reads SQLite.
+/// Ingestion is protected while it holds an ingest-scoped key; admin keys
+/// do not count.
+#[derive(Default)]
+pub struct ApiKeys {
+    by_hash: HashMap<String, (i64, String)>,
+    ingest: usize,
+}
+
+impl ApiKeys {
+    pub fn load(m: &Metadata) -> metadata::Result<Self> {
+        let mut keys = Self::default();
+        for (id, hash, scope) in m.active_api_keys()? {
+            keys.add(hash, id, scope);
+        }
+        Ok(keys)
+    }
+
+    /// Whether ingestion needs an API key.
+    pub fn ingest_protected(&self) -> bool {
+        self.ingest > 0
+    }
+
+    fn add(&mut self, hash: String, id: i64, scope: String) {
+        self.ingest += usize::from(scope == "ingest");
+        self.by_hash.insert(hash, (id, scope));
+    }
+
+    fn remove(&mut self, id: i64) {
+        let Self { by_hash, ingest } = self;
+        by_hash.retain(|_, (key_id, scope)| {
+            let revoked = *key_id == id;
+            if revoked && scope == "ingest" {
+                *ingest -= 1;
+            }
+            !revoked
+        });
+    }
+}
+
+/// Store a new key and accept it; an ingest key also protects ingestion
+/// from here on. Returns the record and the plaintext key. Blocking.
+///
+/// The registry stays locked across the SQLite write, so it never holds a
+/// key that is revoked in SQLite, even if the revocation races the
+/// creation. Requests wait for that write only while a key is created or
+/// revoked.
+pub fn create_api_key(state: &AppState, name: &str, scope: &str) -> metadata::Result<(metadata::ApiKey, String)> {
+    let (key, prefix, hash) = new_api_key();
+    let mut keys = state.api_keys.write().unwrap();
+    let rec = state.metadata.create_api_key(name, &prefix, &hash, scope)?;
+    keys.add(hash, rec.id, rec.scope.clone());
+    Ok((rec, key))
+}
+
+/// Revoke a key; revoking the last ingest key opens ingestion. Blocking.
+pub fn revoke_api_key(state: &AppState, id: i64) -> metadata::Result<()> {
+    let mut keys = state.api_keys.write().unwrap();
+    state.metadata.revoke_api_key(id)?;
+    keys.remove(id);
+    Ok(())
+}
+
+fn check_api_key(state: &AppState, key: &str) -> Result<Principal, ApiError> {
+    let found = state.api_keys.read().unwrap().by_hash.get(&sha256_hex(key)).cloned();
     let Some((id, scope)) = found else {
         return Err(ApiError::unauthorized("invalid API key"));
     };
@@ -118,14 +180,14 @@ async fn check_session(state: &SharedState, token: String) -> Result<Option<Prin
     Ok(user.map(|u| Principal::User(u.username)))
 }
 
-/// Ingestion endpoints: any valid API key.
+/// Ingestion endpoints: open while no ingest-scoped key exists, otherwise
+/// any valid API key.
 pub async fn require_ingest(
     State(state): State<SharedState>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if !state.config.auth.enabled {
-        req.extensions_mut().insert(Principal::Open);
+    if !state.api_keys.read().unwrap().ingest_protected() {
         return Ok(next.run(req).await);
     }
     let Some(key) = api_key_from(req.headers()) else {
@@ -133,7 +195,7 @@ pub async fn require_ingest(
             "missing API key; send 'Authorization: Bearer <key>' or 'X-Api-Key: <key>'",
         ));
     };
-    let p = check_api_key(&state, key).await?;
+    let p = check_api_key(&state, &key)?;
     req.extensions_mut().insert(p);
     Ok(next.run(req).await)
 }
@@ -144,10 +206,6 @@ pub async fn require_user(
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if !state.config.auth.enabled {
-        req.extensions_mut().insert(Principal::Open);
-        return Ok(next.run(req).await);
-    }
     if let Some(token) = session_from(req.headers())
         && let Some(p) = check_session(&state, token).await?
     {
@@ -155,7 +213,7 @@ pub async fn require_user(
         return Ok(next.run(req).await);
     }
     if let Some(key) = api_key_from(req.headers()) {
-        let p = check_api_key(&state, key).await?;
+        let p = check_api_key(&state, &key)?;
         if let Principal::ApiKey { scope, .. } = &p
             && scope != "admin"
         {
@@ -168,12 +226,9 @@ pub async fn require_user(
 }
 
 /// Create/refresh the admin user at startup. Returns a generated password
-/// when auth is enabled but none was configured and no user exists yet.
+/// when none was configured and no user exists yet.
 pub fn bootstrap_admin(state: &SharedState) -> anyhow::Result<Option<String>> {
     let auth = &state.config.auth;
-    if !auth.enabled {
-        return Ok(None);
-    }
     let m = &state.metadata;
     if let Some(pw) = &auth.admin_password {
         let existing = m.find_user(&auth.admin_username)?;
@@ -228,5 +283,23 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert(header::COOKIE, HeaderValue::from_static("a=1; vyrtel_session=tok; b=2"));
         assert_eq!(session_from(&h).as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn only_ingest_keys_protect_ingestion() {
+        let mut k = ApiKeys::default();
+        k.add("a".into(), 1, "admin".into());
+        assert!(!k.ingest_protected());
+        k.add("i1".into(), 2, "ingest".into());
+        k.add("i2".into(), 3, "ingest".into());
+        assert!(k.ingest_protected());
+        k.remove(2);
+        assert!(k.ingest_protected());
+        k.remove(1);
+        k.remove(99);
+        assert!(k.ingest_protected());
+        k.remove(3);
+        assert!(!k.ingest_protected());
+        assert!(k.by_hash.is_empty());
     }
 }

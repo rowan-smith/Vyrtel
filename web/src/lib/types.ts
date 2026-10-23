@@ -296,7 +296,8 @@ export interface SystemInfo {
   startedAt: string;
   dataDir: string;
   durability: string;
-  authEnabled: boolean;
+  /** Whether ingestion needs an API key: true while an ingest-scoped key exists. */
+  ingestKeyRequired: boolean;
   eventCounts: { logs: number; traces: number; metrics: number };
   storageBytes: number;
   memory: {
@@ -323,6 +324,5 @@ export interface QueryFieldStats {
 }
 
 export interface AuthState {
-  authEnabled: boolean;
   user: string | null;
 }

@@ -4,7 +4,7 @@
 //   node scripts/release/release.mjs plan --tag v0.1.2 [--image ghcr.io/owner/repo]
 //   node scripts/release/release.mjs verify-artifacts <dir> [--version 0.1.2]
 //   node scripts/release/release.mjs verify-binary <path> [--version 0.1.2]
-//   node scripts/release/release.mjs verify-server <url> [--version 0.1.2]
+//   node scripts/release/release.mjs verify-server <url> [--version 0.1.2] [--password <admin password>]
 //   node scripts/release/release.mjs verify-image <image> [--version 0.1.2] [--platform linux/arm64]
 //                                    [--bind-mount auto|on|off] [--record <dir>]
 //   node scripts/release/release.mjs verify-pushed-image <ref> [--version 0.1.2] [--tested <dir>]
@@ -157,9 +157,30 @@ export function verifyArtifacts(dir, expected = EXPECTED_ARTIFACTS) {
 
 // ---- running server -------------------------------------------------------------
 
-async function get(url) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+/**
+ * The admin password the checks start servers with (`CHECK_ENV`) and sign in with. Ingestion
+ * is open by default, so the image check ingests without first creating a key.
+ */
+export const CHECK_PASSWORD = 'release-check';
+export const CHECK_ENV = { VYRTEL_AUTH_ADMIN_PASSWORD: CHECK_PASSWORD };
+
+async function get(url, headers = {}) {
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
   return { status: res.status, type: res.headers.get('content-type') ?? '', body: await res.text() };
+}
+
+/** Signs in as admin; returns the session cookie (`name=value`). */
+export async function login(base, password = CHECK_PASSWORD) {
+  const res = await fetch(`${base}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) fail(`admin login answered HTTP ${res.status}: ${await res.text()}`);
+  const cookie = res.headers.get('set-cookie')?.split(';')[0];
+  if (!cookie) fail('admin login set no session cookie');
+  return cookie;
 }
 
 /** Checks the HTML served at `/` is the built UI, not the placeholder build.rs embeds. Returns the entry script. */
@@ -188,12 +209,16 @@ async function waitForHealth(base, timeoutMs, exited) {
   fail(`${base}/health did not answer 200 within ${timeoutMs / 1000}s (last: ${last})`);
 }
 
-/** Checks a running server reports `version` and serves the embedded UI and its assets. */
-export async function verifyServer(base, version, { timeoutMs = 30_000, exited } = {}) {
+/**
+ * Checks a running server reports `version` and serves the embedded UI and its assets. Signs
+ * in with `password`; returns the session cookie with the results.
+ */
+export async function verifyServer(base, version, { timeoutMs = 30_000, exited, password = CHECK_PASSWORD } = {}) {
   base = base.replace(/\/+$/, '');
   await waitForHealth(base, timeoutMs, exited);
 
-  const info = await get(`${base}/api/v1/system/info`);
+  const cookie = await login(base, password);
+  const info = await get(`${base}/api/v1/system/info`, { cookie });
   if (info.status !== 200) fail(`/api/v1/system/info answered HTTP ${info.status}`);
   const reported = JSON.parse(info.body).version;
   if (reported !== version) fail(`server reports version ${reported}, expected ${version}`);
@@ -205,7 +230,7 @@ export async function verifyServer(base, version, { timeoutMs = 30_000, exited }
   if (asset.status !== 200 || !/javascript/.test(asset.type) || asset.body.length === 0) {
     fail(`embedded UI asset ${entry} answered HTTP ${asset.status} (${asset.type}, ${asset.body.length} bytes)`);
   }
-  return { version: reported, entry };
+  return { version: reported, entry, cookie };
 }
 
 function freePort() {
@@ -243,7 +268,7 @@ function cleanEnv() {
  */
 export async function verifyBinary(binary, version, { prefixArgs = [], timeoutMs = 30_000 } = {}) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'vyrtel-release-check-'));
-  const opts = { cwd: work, env: cleanEnv() };
+  const opts = { cwd: work, env: { ...cleanEnv(), ...CHECK_ENV } };
   try {
     const out = await run(binary, [...prefixArgs, '--version'], opts);
     const printed = out.stdout.trim();
@@ -324,7 +349,8 @@ export async function main(argv) {
       return;
     }
     case 'verify-server': {
-      const r = await verifyServer(positional[0] ?? fail('verify-server needs a URL'), version);
+      const url = positional[0] ?? fail('verify-server needs a URL');
+      const r = await verifyServer(url, version, flags.password ? { password: flags.password } : {});
       console.log(`${positional[0]}: version ${r.version}, embedded UI ok (${r.entry})`);
       return;
     }

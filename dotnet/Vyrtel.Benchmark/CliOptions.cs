@@ -14,6 +14,7 @@ internal sealed record CliOptions
     public string Job { get; init; } = "short";
     public string Output { get; init; } = DefaultOutput();
     public string Label { get; init; } = "";
+    public string? IngestKey { get; init; }
     public bool NoLaunch { get; init; }
     public bool KeepData { get; init; }
     public bool List { get; init; }
@@ -37,6 +38,7 @@ internal sealed record CliOptions
                 "--job" => options with { Job = next() },
                 "--out" => options with { Output = next() },
                 "--label" => options with { Label = next() },
+                "--ingest-key" => options with { IngestKey = next() },
                 "--no-launch" => options with { NoLaunch = true },
                 "--keep-data" => options with { KeepData = true },
                 "--list" => options with { List = true },
@@ -70,6 +72,8 @@ internal sealed record CliOptions
               --job <name>       BenchmarkDotNet job: dry, short, medium, default (default short)
               --out <path>       Where to write results.json (default docs/benchmarks/results.json)
               --label <name>     Version label for a version snapshot (default: server version)
+              --ingest-key <key> API key for ingestion, for a running server that has
+                                 ingest-scoped API keys (or VYRTEL_HARNESS_INGEST_KEY)
               --no-launch        Require an already-running server instead of launching one
               --keep-data        Keep the temporary data directory after the run
               --list             List the benchmarks and exit

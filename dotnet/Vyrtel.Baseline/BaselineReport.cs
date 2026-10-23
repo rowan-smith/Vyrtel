@@ -155,13 +155,18 @@ public sealed record QueryDiagnostics(
     long UnsealedEventsScanned,
     IReadOnlyList<string> Indexes);
 
+/// <param name="Hotspots">
+/// The server's query statistics over the measured window (<see cref="Vyrtel.Baseline.Hotspots.Diff"/>);
+/// null when a snapshot could not be read, or in reports written before they were recorded.
+/// </param>
 public sealed record MixedPhase(
     double MeasuredSeconds,
     int Concurrency,
     double RequestsPerSecond,
     long EventsAccepted,
     RequestCounts Requests,
-    IReadOnlyList<MixedOperationResult> Operations);
+    IReadOnlyList<MixedOperationResult> Operations,
+    IReadOnlyList<FieldHotspot>? Hotspots = null);
 
 public sealed record MixedOperationResult(string Name, string Label, RequestCounts Requests, LatencyStats Latency);
 

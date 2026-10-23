@@ -105,8 +105,11 @@ export const api = {
     post<HistogramResponse>(`/api/v1/query/${signalName}/histogram`, q, signal),
   count: (signalName: string, q: { query: string } & TimeWindow, signal?: AbortSignal) =>
     post<{ count: number; diagnostics: Diagnostics }>(`/api/v1/query/${signalName}/count`, q, signal),
-  facets: (signalName: string, q: { query: string; sample?: number } & TimeWindow, signal?: AbortSignal) =>
-    post<FacetsResponse>(`/api/v1/query/${signalName}/facets`, q, signal),
+  facets: (
+    signalName: string,
+    q: { query: string; sample?: number; fields?: string[] } & TimeWindow,
+    signal?: AbortSignal,
+  ) => post<FacetsResponse>(`/api/v1/query/${signalName}/facets`, q, signal),
 
   searchTraces: (q: { query: string; limit?: number } & TimeWindow, signal?: AbortSignal) =>
     post<{ traces: TraceSummary[]; diagnostics: Diagnostics }>('/api/v1/query/traces', q, signal),
@@ -144,7 +147,7 @@ export const api = {
   deleteAlert: (id: number) => del(`/api/v1/alerts/${id}`),
   evaluateAlert: (id: number) => post<Alert>(`/api/v1/alerts/${id}/evaluate`, {}),
 
-  apiKeys: () => get<{ apiKeys: ApiKey[] }>('/api/v1/api-keys'),
+  apiKeys: () => get<{ apiKeys: ApiKey[]; ingestKeyRequired: boolean }>('/api/v1/api-keys'),
   createApiKey: (name: string, scope: 'ingest' | 'admin') => post<ApiKey>('/api/v1/api-keys', { name, scope }),
   revokeApiKey: (id: number) => del(`/api/v1/api-keys/${id}`),
 

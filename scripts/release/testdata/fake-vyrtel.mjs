@@ -31,6 +31,21 @@ http
   .createServer((req, res) => {
     const send = (status, type, body) => res.writeHead(status, { 'content-type': type }).end(body);
     if (req.url === '/health') return send(200, 'application/json', '{"status":"ok"}');
+    if (req.url === '/api/v1/auth/login') {
+      let body = '';
+      req.on('data', (d) => (body += d));
+      req.on('end', () => {
+        if (JSON.parse(body).password !== process.env.VYRTEL_AUTH_ADMIN_PASSWORD) {
+          return send(401, 'application/json', '{"error":{"code":"unauthorized"}}');
+        }
+        res.setHeader('set-cookie', 'vyrtel_session=fake; Path=/; HttpOnly');
+        send(200, 'application/json', '{"authEnabled":true,"user":"admin"}');
+      });
+      return;
+    }
+    if (req.url === '/api/v1/system/info' && req.headers.cookie !== 'vyrtel_session=fake') {
+      return send(401, 'application/json', '{"error":{"code":"unauthorized"}}');
+    }
     if (req.url === '/api/v1/system/info') return send(200, 'application/json', JSON.stringify({ name: 'Vyrtel', version: served }));
     if (req.url === '/') return send(200, 'text/html', mode === 'placeholder' ? placeholder : ui);
     if (req.url === '/assets/index-abc123.js' && mode !== 'no-asset') return send(200, 'text/javascript', 'console.log(1)');

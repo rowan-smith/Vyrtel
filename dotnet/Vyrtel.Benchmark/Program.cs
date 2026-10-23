@@ -17,6 +17,12 @@ if (options.List)
     return 0;
 }
 
+if (options.IngestKey is { } ingestKey)
+{
+    // The environment, so the BenchmarkDotNet child processes send it too.
+    Environment.SetEnvironmentVariable("VYRTEL_HARNESS_INGEST_KEY", ingestKey);
+}
+
 Console.WriteLine($"vyrtel-benchmark: job={options.Job} url={options.Url} events={options.Events:N0} batch={options.Batch}");
 
 var serverOptions = new VyrtelServerOptions

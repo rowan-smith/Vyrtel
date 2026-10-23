@@ -291,10 +291,11 @@ describe('TC-PERF-03: a complete passing matrix for the exact candidate satisfie
 describe('release workflow wiring', () => {
   const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/release.yml'), 'utf8').replace(/\r\n/g, '\n');
 
-  test('the performance job blocks the build and checks the tag was created after sign-off', () => {
-    assert.match(workflow, /\n {2}binaries:\n(?: {4}.*\n)*? {4}needs: \[preflight, performance, compat, ci\]\n/);
+  test('the sign-off job blocks the build and checks the tag was created after sign-off', () => {
+    assert.match(workflow, /\n {2}binaries:\n(?: {4}.*\n)*? {4}needs: \[preflight, functional, signoff\]\n/);
     assert.match(workflow, /check-performance --tag "\$TAG" --sha "\$GITHUB_SHA" --evidence evidence "\$\{args\[@\]\}"/);
-    assert.match(workflow, /args=\(--tag-date "\$\(git for-each-ref "refs\/tags\/\$TAG" --format='%\(taggerdate:iso-strict\)'\)"\)/);
+    assert.match(workflow, /echo "date=\$\(git for-each-ref "refs\/tags\/\$TAG" --format='%\(taggerdate:iso-strict\)'\)"/);
+    assert.match(workflow, /args=\(--tag-date "\$\{\{ steps\.tag\.outputs\.date \}\}"\)/);
   });
 
   test('verify checks the built artifacts against the approved hashes', () => {

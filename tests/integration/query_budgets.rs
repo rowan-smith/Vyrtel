@@ -279,9 +279,15 @@ async fn metric_name_discovery_is_cancelled_on_disconnect_and_frees_its_slot() {
 
     let addr = s.url.trim_start_matches("http://").to_string();
     let mut tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
-    tcp.write_all(format!("GET /api/v1/metrics HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes())
-        .await
-        .unwrap();
+    tcp.write_all(
+        format!(
+            "GET /api/v1/metrics HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            s.api_key
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
     wait_until("discovery parked", || hold.held() == 1).await;
     assert_eq!(queries_in_flight(&s), 1, "discovery takes a query slot");
     let (status, err) = error_of(s.post("/api/v1/query/logs", json!({ "query": "" })).await).await;

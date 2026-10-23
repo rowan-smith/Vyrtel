@@ -526,12 +526,12 @@ impl Metadata {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Look up an active key by hash; returns its scope.
-    pub fn find_api_key(&self, key_hash: &str) -> Result<Option<(i64, String)>> {
+    /// Every active key as `(id, hash, scope)`.
+    pub fn active_api_keys(&self) -> Result<Vec<(i64, String, String)>> {
         let c = self.conn.lock().unwrap();
-        Ok(c.prepare_cached("SELECT id, scope FROM api_keys WHERE key_hash = ?1 AND revoked_at IS NULL")?
-            .query_row([key_hash], |r| Ok((r.get(0)?, r.get(1)?)))
-            .optional()?)
+        let mut st = c.prepare_cached("SELECT id, key_hash, scope FROM api_keys WHERE revoked_at IS NULL")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn touch_api_key(&self, id: i64) -> Result<()> {

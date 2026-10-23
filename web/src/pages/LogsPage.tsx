@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api } from '../lib/api';
 import type { Diagnostics, Facet, Json, TelemetryEvent } from '../lib/types';
@@ -10,13 +10,14 @@ import { useHasData } from '../lib/useHasData';
 import { useLiveTail } from '../lib/useLiveTail';
 import { DiagnosticsPanel } from '../components/Diagnostics';
 import { LiveToggle, QueryBar, RangeSelect } from '../components/QueryBar';
-import { LogsSidebar } from '../components/LogsSidebar';
+import { GROUPS, LogsSidebar } from '../components/LogsSidebar';
 import { LogRow } from '../components/LogRow';
 import { Empty, ErrorBanner, Spinner } from '../components/common';
 
 const PAGE = 200;
 /** Live mode keeps at most this many rows on screen. */
 const MAX_ROWS = 1000;
+const FACET_FIELDS = GROUPS.map(([field]) => field);
 
 export function LogsPage() {
   const hasData = useHasData('logs');
@@ -48,7 +49,7 @@ function LogsView() {
   const [newIds, setNewIds] = useState<Set<string>>(new Set());
   const [live, setLive] = useState(false);
   const [columns, setColumns] = useState<string[]>(loadColumns);
-  const [facets, setFacets] = useState<{ fields: Facet[]; sampled: number }>({ fields: [], sampled: 0 });
+  const [facets, setFacets] = useState<{ fields: Facet[]; sampled: number | null }>({ fields: [], sampled: 0 });
   const [facetsLoading, setFacetsLoading] = useState(false);
   const [runId, setRunId] = useState(0);
   const abort = useRef<AbortController | null>(null);
@@ -97,21 +98,23 @@ function LogsView() {
     const ctrl = new AbortController();
     setFacetsLoading(true);
     const win = rangeWindow(range);
-    // A field you've filtered on lists its values as if that one filter weren't applied (but the
-    // others still are), so you can see and switch to the alternatives.
-    const own = filteredFields(query);
+    // Only the sidebar's fields are counted. One of them that you've filtered on lists its values
+    // as if that one filter weren't applied (but the others still are), so you can see and switch
+    // to the alternatives; filters on any other field need no extra request. When every sidebar
+    // field is filtered, nothing is left for the query itself, so it is not sent (and there is no
+    // one sample size to show).
+    const filtered = filteredFields(query);
+    const own = FACET_FIELDS.filter((f) => filtered.includes(f));
+    const rest = FACET_FIELDS.filter((f) => !own.includes(f));
+    const facetsFor = (q: string, fields: string[]) =>
+      api.facets('logs', { query: q, sample: 2000, fields, ...win }, ctrl.signal);
     Promise.all([
-      api.facets('logs', { query, sample: 2000, ...win }, ctrl.signal),
-      ...own.map((field) =>
-        api.facets('logs', { query: setFieldFilter(query, field, null), sample: 2000, ...win }, ctrl.signal),
-      ),
+      rest.length > 0 ? facetsFor(query, rest) : null,
+      ...own.map((field) => facetsFor(setFieldFilter(query, field, null), [field])),
     ])
       .then(([main, ...others]) => {
-        const fields = main.fields.map((f) => {
-          const i = own.indexOf(f.field);
-          return (i >= 0 && others[i].fields.find((x) => x.field === f.field)) || f;
-        });
-        setFacets({ fields, sampled: main.sampled });
+        const fields = [...(main?.fields ?? []), ...others.flatMap((o) => o?.fields ?? [])];
+        setFacets({ fields, sampled: main?.sampled ?? null });
       })
       .catch(() => setFacets({ fields: [], sampled: 0 }))
       .finally(() => {

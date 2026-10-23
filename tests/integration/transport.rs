@@ -363,7 +363,8 @@ async fn clients_that_stop_reading_are_closed_on_the_write_timeout() {
     let mut tcp = socket.connect(addr(&s).parse().unwrap()).await.unwrap();
     let body = r#"{"query": "", "limit": 1000}"#;
     let request = format!(
-        "POST /api/v1/query/logs HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        "POST /api/v1/query/logs HTTP/1.1\r\nHost: test\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        s.api_key,
         body.len()
     );
     let began = Instant::now();
@@ -471,7 +472,8 @@ async fn every_way_a_connection_ends_releases_its_slot() {
     let body = "{not json";
     tcp.write_all(
         format!(
-            "POST /api/v1/query/logs HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            "POST /api/v1/query/logs HTTP/1.1\r\nHost: test\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            s.api_key,
             body.len()
         )
         .as_bytes(),
@@ -489,7 +491,8 @@ async fn every_way_a_connection_ends_releases_its_slot() {
         let body = r#"{"query": ""}"#;
         tcp.write_all(
             format!(
-                "POST /api/v1/query/logs HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                "POST /api/v1/query/logs HTTP/1.1\r\nHost: test\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            s.api_key,
                 body.len()
             )
             .as_bytes(),

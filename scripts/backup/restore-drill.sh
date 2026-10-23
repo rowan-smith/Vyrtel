@@ -33,7 +33,7 @@ trap cleanup EXIT
 start() {
   local dir=$1 a envs=() flags=(); shift
   for a in "$@"; do case $a in --*) flags+=("$a") ;; *) envs+=("$a") ;; esac; done
-  env VYRTEL_AUTH_ENABLED=true ${envs[@]+"${envs[@]}"} "$VYRTEL" --data-dir "$dir" --bind "127.0.0.1:$PORT" \
+  env ${envs[@]+"${envs[@]}"} "$VYRTEL" --data-dir "$dir" --bind "127.0.0.1:$PORT" \
     --log-level warn ${flags[@]+"${flags[@]}"} >"$WORK/stdout.log" 2>>"$WORK/stderr.log" &
   PID=$!
   for _ in $(seq 1 100); do
@@ -138,6 +138,8 @@ rm -rf "$WORK/data"   # the original host is gone
 step "3. Restore on a clean host and start (no admin password configured)"
 mkdir "$WORK/restored"
 tar -C "$WORK/restored" -xzf "$WORK/backup.tar.gz"
+# The restored ingest key protects ingestion again; the admin password is
+# not configured, so the restored user must be used.
 start "$WORK/restored"
 grep -q 'Admin login' "$WORK/stdout.log" && fail "a new admin password was generated: the restored user was not used"
 
@@ -163,7 +165,7 @@ unpack() { rm -rf "${WORK:?}/$1"; mkdir "$WORK/$1"; tar -C "$WORK/$1" -xzf "$WOR
 refused() {
   local dir=$WORK/$1 before code=0
   before=$(cd "$dir" && find . -print | sort)
-  VYRTEL_AUTH_ENABLED=true "$VYRTEL" --data-dir "$dir" --bind "127.0.0.1:$PORT" >/dev/null 2>"$WORK/refused.log" || code=$?
+  "$VYRTEL" --data-dir "$dir" --bind "127.0.0.1:$PORT" >/dev/null 2>"$WORK/refused.log" || code=$?
   [ "$code" = 1 ] || fail "$1: expected exit status 1, got $code"
   grep -qF "$2" "$WORK/refused.log" || fail "$1: unexpected message: $(cat "$WORK/refused.log")"
   [ "$(cd "$dir" && find . -print | sort)" = "$before" ] || fail "$1: the refused directory was changed"

@@ -249,7 +249,8 @@ async fn send_chunked(s: &TestServer, body: &[u8]) -> (u16, String) {
     let addr = s.url.trim_start_matches("http://");
     let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
     let head = format!(
-        "POST /api/v1/events HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\n\r\n"
+        "POST /api/v1/events HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\n\r\n",
+        s.api_key
     );
     tcp.write_all(head.as_bytes()).await.unwrap();
     for chunk in body.chunks(64 << 10) {

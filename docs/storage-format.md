@@ -382,7 +382,7 @@ Limitations:
 ### Blocks and columns
 
 Events in a segment are **sorted by `(timestamp, id)`** and split into blocks
-of at most `block_events` (default 1024) events or ~1 MiB of uncompressed
+of at most 1024 events or ~1 MiB of uncompressed
 column data. Each block stores six column chunks, so a query decompresses
 only the columns it needs:
 

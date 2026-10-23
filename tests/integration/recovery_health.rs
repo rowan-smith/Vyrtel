@@ -63,7 +63,6 @@ async fn clean_restart_does_not_suggest_damage() {
 #[tokio::test(flavor = "multi_thread")]
 async fn torn_wal_tail_is_reported_until_the_quarantine_is_cleared() {
     let s = TestServer::start_with(|c| {
-        c.auth.enabled = true;
         c.auth.admin_password = Some(PASSWORD.into());
     })
     .await;
@@ -113,7 +112,7 @@ async fn torn_wal_tail_is_reported_until_the_quarantine_is_cleared() {
     assert!(!storage_text.contains(&*data_dir.to_string_lossy()), "host path leaked: {storage_text}");
     assert!(!storage_text.contains(&String::from_utf8_lossy(&evidence).into_owned()), "quarantined bytes leaked");
     // The details need a signed-in user; the public probes are unchanged.
-    let anon = s.client.get(s.u("/api/v1/system/storage")).send().await.unwrap();
+    let anon = reqwest::Client::new().get(s.u("/api/v1/system/storage")).send().await.unwrap();
     assert_eq!(anon.status(), 401);
     assert_eq!(public_probes(&s).await, clean_probes, "damage does not change /health or /ready");
 

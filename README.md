@@ -27,7 +27,10 @@ OTLP HTTP           http://0.0.0.0:8080/v1/*
 Storage             0 B
 Memory limit        512 MB
 Durability          normal
-Authentication      disabled (open access; see docs/configuration.md)
+Authentication      login for the UI/API; ingestion open until an ingest API key is created
+
+Admin login         admin / 3f9c2a7d41b08e6c5a2d9f10
+                    (generated once; set auth.admin_password to choose your own)
 
 Ready.
 ```
@@ -183,7 +186,6 @@ cd web && npm test                     # Vitest + React Testing Library
 cd web && npm run build && cd .. && cargo build -p server && cd web && npx playwright install chromium && npm run e2e
 cargo bench -p storage -p query        # Criterion benchmarks
 dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short   # ingest + query over HTTP
-dotnet run --project dotnet/Vyrtel.Profiling -c Release -- --duration 30 --concurrency 4   # latency profile
 dotnet run --project dotnet/Vyrtel.Baseline -c Release -- --runs 5   # reproducible baseline + regression budgets
 ```
 

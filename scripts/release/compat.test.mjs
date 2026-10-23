@@ -307,11 +307,11 @@ describe('AC7: every tagged release needs its gate, prereleases included', () =>
 describe('release workflow wiring', () => {
   const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/release.yml'), 'utf8').replace(/\r\n/g, '\n');
 
-  test('the compat job runs for every tag and blocks the build', () => {
-    assert.match(workflow, /\n {2}compat:\n {4}name: Pre-tag compatibility sign-off\n {4}needs: preflight\n/);
+  test('the compatibility check runs for every tag and blocks the build', () => {
+    assert.match(workflow, /\n {2}signoff:\n {4}name: Performance\/reliability and compatibility gates\n {4}needs: preflight\n/);
     assert.match(workflow, /check-compat --tag "\$TAG" --sha "\$GITHUB_SHA" --evidence evidence "\$\{args\[@\]\}"/);
-    assert.match(workflow, /\n {2}binaries:\n(?: {4}.*\n)*? {4}needs: \[preflight, performance, compat, ci\]\n/);
-    assert.match(workflow, /\n {2}verify:\n(?: {4}.*\n)*? {4}needs: \[preflight, performance, compat, binaries\]\n/);
+    assert.match(workflow, /\n {2}binaries:\n(?: {4}.*\n)*? {4}needs: \[preflight, functional, signoff\]\n/);
+    assert.match(workflow, /\n {2}verify:\n(?: {4}.*\n)*? {4}needs: \[preflight, signoff, binaries\]\n/);
   });
 
   test('verify checks the built artifacts against the reviewed hashes', () => {

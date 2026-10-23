@@ -273,6 +273,18 @@ public sealed class BaselineRunner(BaselineOptions options, string configPath)
         var recordFrom = start + TimeSpan.FromSeconds(options.Warmup);
         var deadline = start + TimeSpan.FromSeconds(options.Duration);
 
+        // Query statistics when the measured window opens, so the hotspots cover it alone.
+        using var statsApi = new ApiClient(BaseUrl.ToString());
+        var statsBefore = Task.Run(async () =>
+        {
+            var wait = recordFrom - DateTime.UtcNow;
+            if (wait > TimeSpan.Zero)
+            {
+                await Task.Delay(wait, ct);
+            }
+            return await TryQueryStatsAsync(statsApi, run, ct);
+        }, ct);
+
         var workers = Enumerable.Range(0, options.Concurrency).Select(async worker =>
         {
             var mine = workerSamples[worker] = [];
@@ -305,13 +317,33 @@ public sealed class BaselineRunner(BaselineOptions options, string configPath)
         {
             samples.AddRange(list ?? []);
         }
+        var before = await statsBefore;
+        var after = await TryQueryStatsAsync(statsApi, run, ct);
+        var hotspots = before is not null && after is not null ? Hotspots.Diff(before, after) : null;
 
         var measured = options.Duration - options.Warmup;
         var operations = ops
             .Select(o => new MixedOperationResult(o.Name, o.Label, tallies[o.Name].Snapshot(), recorders[o.Name].Snapshot()))
             .ToList();
         var requests = RequestTally.Sum(operations.Select(o => o.Requests));
-        return new MixedPhase(measured, options.Concurrency, requests.Total / measured, eventsAccepted, requests, operations);
+        return new MixedPhase(measured, options.Concurrency, requests.Total / measured, eventsAccepted, requests, operations, hotspots);
+    }
+
+    /// <summary>
+    /// A query-stats snapshot, or null with a warning: hotspots are diagnostics, so a missing
+    /// snapshot leaves them out of the report instead of failing the run.
+    /// </summary>
+    private static async Task<string?> TryQueryStatsAsync(ApiClient api, int run, CancellationToken ct)
+    {
+        try
+        {
+            return await api.GetString("api/v1/system/query-stats", ct);
+        }
+        catch (HttpRequestException e)
+        {
+            Console.WriteLine($"run {run}: no index hotspots (query statistics unavailable: {e.Message})");
+            return null;
+        }
     }
 
     private static void TryDelete(string dir)

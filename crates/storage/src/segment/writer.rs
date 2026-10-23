@@ -102,10 +102,10 @@ fn virtual_numbers(e: &TelemetryEvent) -> Option<(&'static str, f64)> {
 }
 
 /// Keys for well-known non-column fields that are cheap to Bloom-index.
-/// Text fields go through [`keys::stored_keys`] like attributes do, so
-/// `name = 5` finds a span named "5" exactly as the evaluator would.
+/// Text fields get the same keys as string attributes, so `name = 5`
+/// finds a span named "5" exactly as the evaluator would.
 fn well_known_keys(e: &TelemetryEvent, out: &mut dyn FnMut(u64)) {
-    let mut text = |path: &str, s: &str| keys::stored_keys(path, &Value::String(s.to_string()), out);
+    let mut text = |path: &str, s: &str| keys::stored_str_keys(path, s, out);
     if let Some(t) = &e.trace_id {
         text(paths::TRACE_ID, t.as_str());
     }
@@ -290,18 +290,26 @@ fn write_file(
     let mut fields: HashMap<String, FieldAcc> = HashMap::new();
     for (i, e) in events.iter().enumerate() {
         visit_indexed(e, &mut |p, v| {
-            if !fields.contains_key(p) && fields.len() >= FIELD_TRACKING_LIMIT {
-                return;
+            // Look up by `&str` first: the path is only copied the first
+            // time it is seen, not once per event.
+            if !fields.contains_key(p) {
+                if fields.len() >= FIELD_TRACKING_LIMIT {
+                    return;
+                }
+                fields.insert(
+                    p.to_string(),
+                    FieldAcc {
+                        present: 0,
+                        last_event: usize::MAX,
+                        types: 0,
+                        min: None,
+                        max: None,
+                        numeric: 0,
+                        hll: Hll::default(),
+                    },
+                );
             }
-            let acc = fields.entry(p.to_string()).or_insert_with(|| FieldAcc {
-                present: 0,
-                last_event: usize::MAX,
-                types: 0,
-                min: None,
-                max: None,
-                numeric: 0,
-                hll: Hll::default(),
-            });
+            let Some(acc) = fields.get_mut(p) else { return };
             if acc.last_event != i {
                 acc.present += 1;
                 acc.last_event = i;
@@ -402,10 +410,12 @@ fn write_file(
         cols.trace.opt_str(e.trace_id.as_ref().map(TraceId::as_str));
         cols.trace.opt_str(e.span_id.as_ref().map(SpanId::as_str));
         cols.msg.str(e.message());
-        if let Some(set) = names.as_mut() {
+        if let Some(set) = names.as_mut()
+            && !set.contains(e.message())
+        {
             if set.len() < opts.max_names {
                 set.insert(e.message().to_string());
-            } else if !set.contains(e.message()) {
+            } else {
                 names = None;
             }
         }

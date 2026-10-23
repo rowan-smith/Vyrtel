@@ -135,6 +135,9 @@ public sealed class VyrtelServer : IAsyncDisposable
         {
             startInfo.ArgumentList.Add(arg);
         }
+        // The UI and API always need a login; ApiClient signs in with this password.
+        // Ingestion is open by default, so the workloads send without a key.
+        startInfo.Environment["VYRTEL_AUTH_ADMIN_PASSWORD"] = ApiClient.AdminPassword;
         // Flags take precedence over a --config file, so the harness always owns these three.
         foreach (var arg in new[] { "--data-dir", dataDir, "--bind", $"127.0.0.1:{port}", "--log-level", options.LogLevel })
         {

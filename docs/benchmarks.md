@@ -24,7 +24,7 @@ it over HTTP with [BenchmarkDotNet](https://benchmarkdotnet.org/).
   data directory on the CI machine.
 - **Data**: a deterministic mix of HTTP request logs across 8 services with a 2% error rate
   and ~10k distinct customers, plus OTLP traces and metric points. The same `EventFactory`
-  backs the load generator, the benchmark and the profiler, so the workload stays realistic.
+  backs the load generator, the benchmark and the baseline, so the workload stays realistic.
 - **Coverage**: ingest throughput (native NDJSON, native JSON array, OTLP traces, OTLP metrics)
   and query latency across filters, full-text scans, counts, histograms, facets, trace
   lookup/search and metric series.
@@ -41,16 +41,17 @@ cargo build --release -p server
 dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short
 ```
 
-For a latency breakdown under a mixed read/write load (p50/p90/p95/p99 per operation, plus
-the server's own index hotspots), use the profiler:
+For a latency breakdown under a mixed read/write load (p50/p90/p95/p99 per operation) and the
+index hotspots of that load, use the [baseline](#reproducible-baselines): its mixed-load phase
+replaces the former `Vyrtel.Profiling` tool.
 
-```shell
-dotnet run --project dotnet/Vyrtel.Profiling -c Release -- --duration 30 --concurrency 4
-```
-
-The profiler discards the first few seconds as warmup (`--warmup`, default 3) and diffs the
-server's query-stats counters across the measured window, so the reported hotspots cover only
-the load test — not dataset seeding.
+The tools sign in as `admin` with the password they launch the server with
+(`VYRTEL_AUTH_ADMIN_PASSWORD`, default `vyrtel-harness`) and use that session for queries. A
+session does not authorize ingestion, which a server they launch leaves open (it has no
+ingest-scoped API keys). Against a server that is already running, set
+`VYRTEL_AUTH_ADMIN_PASSWORD` to its admin password, and if it has ingest keys, pass one
+with `--ingest-key <key>` (benchmark) or `VYRTEL_HARNESS_INGEST_KEY`; it is sent on ingest
+requests only.
 
 ## Reproducible baselines
 
@@ -77,7 +78,7 @@ already listening on that port the run stops, because it could not know that ser
 configuration (use `--port` to choose another).
 
 1. **Seed.** 100,000 log events (NDJSON, 500 per request), 1,000 OTLP traces and 100 metric
-   points from the same `EventFactory` as the benchmark and profiler (seed 42), sent one request
+   points from the same `EventFactory` as the benchmark (seed 42), sent one request
    at a time. A 429 or 503 counts as backpressure and is retried after 200 ms, so the dataset
    always arrives complete. Any other rejection stops the run: an incomplete dataset would make
    every later number wrong. The run then waits until every queue is empty and checks the
@@ -99,6 +100,10 @@ configuration (use `--port` to choose another).
    its own seed, so every run sends the same requests in the same order; only how many fit in
    the time varies. Every request is classified as accepted, backpressure (429/503), too large
    (413), other rejection or transport error, per operation, with p50/p90/p95/p99 latency.
+   The server's query statistics (`GET /api/v1/system/query-stats`) are read when the measured
+   window opens and after it closes; their difference gives the index hotspots of that window
+   alone, without seeding, the cold/warm queries or the warmup. A snapshot that cannot be read
+   leaves the hotspots out of the report with a warning; it does not fail the run.
 4. **Memory.** Server RSS is sampled every 100 ms in every phase, and the OS's own high-water
    mark (`PeakWorkingSet` on Windows, `VmHWM` on Linux) is read before each server stops. The
    report gives the larger of the two and says which it was.
@@ -146,6 +151,7 @@ file starts a new baseline: re-record it before comparing.
 | Memory | **Peak RSS** per run and per phase (seeding, queries, mixed load), idle RSS after start, and whether the peak came from the OS or sampling |
 | Accepted and rejected requests | Per run and phase: requests, accepted, backpressure, too large, other rejections, transport errors, items accepted, throughput and latency percentiles. The JSON also holds the seeded dataset's expected, acknowledged and stored counts per signal |
 | Mixed load by operation | p50/p95/p99 per operation, averaged across runs with the run-to-run spread, and rejections |
+| Index hotspots in the mixed load | Run 1's fields by query time in the measured window: index kind, queries, average time, bytes read, segments scanned and the share skipped. Every run's are in the JSON (`mixed.hotspots`) |
 | Queries: cold and warm | Cold and warm p50/p95, their ratio, and diagnostics: segments skipped of considered, blocks read (skipped), events examined → matched, bytes read cold → warm, the indexes used |
 | Variance and budgets | For every metric: runs, mean, standard deviation, coefficient of variation (CV), min, max, the proposed budget and the arithmetic behind it |
 
@@ -248,7 +254,7 @@ hardware.
 
 [`baselines/2026-10-15-windows-laptop.md`](benchmarks/baselines/2026-10-15-windows-laptop.md)
 (raw data: [`.json`](benchmarks/baselines/2026-10-15-windows-laptop.json) and
-[`.samples.csv`](benchmarks/baselines/2026-10-15-windows-laptop.samples.csv)) is a 5-run baseline
+[`.samples.csv`](https://github.com/rowan-smith/Vyrtel/blob/8250c5be7af16dfbeff5ce6b17fb66174ed29a7c/docs/benchmarks/baselines/2026-10-15-windows-laptop.samples.csv), kept out of the repository)) is a 5-run baseline
 of 0.1.1 with the defaults above, on an Intel Core Ultra 7 155H laptop (22 logical cores, 32 GB,
 NVMe SSD, Windows 11, on AC power with desktop applications open). The server was built from
 `b61cd28`; the working tree differed only in this tool, its tests and docs, which the report

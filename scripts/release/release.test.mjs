@@ -11,17 +11,17 @@ import path from 'node:path';
 import { after, describe, test } from 'node:test';
 
 import {
-  checkIndexHtml,
-  checkTagMatchesWorkspace,
-  EXPECTED_ARTIFACTS,
-  GateError,
-  parseChecksums,
-  parseTag,
-  releasePlan,
-  ROOT,
-  verifyArtifacts,
-  verifyBinary,
-  workspaceVersion,
+    checkIndexHtml,
+    checkTagMatchesWorkspace,
+    EXPECTED_ARTIFACTS,
+    GateError,
+    parseChecksums,
+    parseTag,
+    releasePlan,
+    ROOT,
+    verifyArtifacts,
+    verifyBinary,
+    workspaceVersion,
 } from './release.mjs';
 
 const FAKE = path.join(import.meta.dirname, 'testdata', 'fake-vyrtel.mjs');
@@ -204,7 +204,8 @@ describe('AC3: embedded UI and version output are verified', () => {
   };
 
   test('binary with matching version and embedded UI passes', async () => {
-    assert.deepEqual(await fake('ok').run(), { version: '0.1.2', entry: '/assets/index-abc123.js' });
+    // The fake only lets in the admin password the check starts it with.
+    assert.deepEqual(await fake('ok').run(), { version: '0.1.2', entry: '/assets/index-abc123.js', cookie: 'vyrtel_session=fake' });
   });
 
   test('wrong --version output fails', async () => {
@@ -256,17 +257,17 @@ describe('AC2: nothing is published unless every gate passed', () => {
   const workflow = repoFile('.github/workflows/release.yml');
   const needs = jobNeeds(workflow);
 
-  test('the release and image jobs depend on preflight, performance, CI, binaries and verify', () => {
+  test('the release and image jobs depend on preflight, the three gates, binaries and verify', () => {
     for (const job of ['image', 'release']) {
-      for (const gate of ['preflight', 'performance', 'ci', 'binaries', 'verify']) {
+      for (const gate of ['preflight', 'functional', 'signoff', 'binaries', 'verify']) {
         assert.ok(upstream(needs, job).has(gate), `${job} must (transitively) need ${gate}`);
       }
     }
     assert.ok(upstream(needs, 'release').has('image'), 'the GitHub release is created after the image is pushed');
   });
 
-  test('ci runs the whole CI workflow, which is callable', () => {
-    assert.match(workflow, /\n {2}ci:\n(?: {4}.*\n)*? {4}uses: \.\/\.github\/workflows\/ci\.yml\n/);
+  test('the functional gate runs the whole CI workflow, which is callable', () => {
+    assert.match(workflow, /\n {2}functional:\n(?: {4}.*\n)*? {4}uses: \.\/\.github\/workflows\/ci\.yml\n/);
     const ci = repoFile('.github/workflows/ci.yml');
     assert.match(ci, /\n {2}workflow_call:/);
   });

@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { GateError, run, verifyServer } from './release.mjs';
+import { CHECK_ENV, GateError, run, verifyServer } from './release.mjs';
 
 /** uid/gid of the `nonroot` user the image runs as (crates/server/src/access.rs). */
 export const IMAGE_UID = 65532;
@@ -125,10 +125,10 @@ async function docker(args, { allowFail = false } = {}) {
   return r;
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, cookie) {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
   });
@@ -137,15 +137,16 @@ async function postJson(url, body) {
   return JSON.parse(text);
 }
 
-async function getJson(url) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+async function getJson(url, cookie) {
+  const res = await fetch(url, { headers: { cookie }, signal: AbortSignal.timeout(10_000) });
   if (!res.ok) fail(`GET ${url} answered HTTP ${res.status}`);
   return res.json();
 }
 
 /** Starts a detached container on `mount`, returning its name and loopback base URL. */
 async function start(image, platform, name, mount) {
-  await docker(['run', '-d', '--platform', platform, '--name', name, '-v', mount, '-p', '127.0.0.1::8080', image]);
+  const env = Object.entries(CHECK_ENV).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+  await docker(['run', '-d', '--platform', platform, '--name', name, '-v', mount, '-p', '127.0.0.1::8080', ...env, image]);
   const port = publishedPort((await docker(['port', name, '8080/tcp'])).stdout);
   return `http://127.0.0.1:${port}`;
 }
@@ -161,9 +162,10 @@ async function ready(name, base, version, timeoutMs) {
 }
 
 /** The events tagged with `service`, oldest first, and the storage settings the server reports. */
-async function snapshot(base, service) {
-  const q = await postJson(`${base}/api/v1/query/logs`, { query: `service = "${service}"`, from: '-24h', direction: 'forward', limit: 100 });
-  const info = await getJson(`${base}/api/v1/system/info`);
+async function snapshot(base, service, cookie) {
+  const query = { query: `service = "${service}"`, from: '-24h', direction: 'forward', limit: 100 };
+  const q = await postJson(`${base}/api/v1/query/logs`, query, cookie);
+  const info = await getJson(`${base}/api/v1/system/info`, cookie);
   return { events: q.events, info };
 }
 
@@ -291,14 +293,14 @@ export async function verifyImage(image, version, { platform = hostPlatform(), b
     const events = ['first', 'second', 'third'].map((n, i) => ({ level: 'Information', service, message: `${service} ${n}`, properties: { seq: i } }));
     const accepted = await postJson(`${base}/api/v1/events`, events);
     if (accepted.accepted !== events.length) fail(`ingest accepted ${accepted.accepted} of ${events.length} events`);
-    const before = await snapshot(base, service);
+    const before = await snapshot(base, service, served.cookie);
     if (before.events.length !== events.length) fail(`query found ${before.events.length} of ${events.length} acknowledged events`);
     await stopCleanly(first);
     await docker(['rm', first]);
 
     base = await start(image, platform, second, `${volume}:/data`);
-    await ready(second, base, version, timeoutMs);
-    const after = await snapshot(base, service);
+    const again = await ready(second, base, version, timeoutMs);
+    const after = await snapshot(base, service, again.cookie);
     checkPersisted(before, after);
     await stopCleanly(second);
     note(`persist: ${after.events.length} events (ids ${after.events.map((e) => e.id).join(', ')}), dataDir ${after.info.dataDir} and durability ${after.info.durability} unchanged after recreating the container on volume ${volume}`);

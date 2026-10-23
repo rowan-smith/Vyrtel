@@ -59,7 +59,7 @@ async fn stop_drains_a_full_queue_refuses_new_work_and_keeps_acknowledged_events
     let began = Instant::now();
     // New work is refused: the listener is closed (or, on a connection
     // that is still open, the request gets 503).
-    let late = reqwest::Client::new()
+    let late = authorized_client("authorization", &format!("Bearer {}", s.api_key))
         .post(s.u("/api/v1/events"))
         .json(&batch("late", 1))
         .timeout(Duration::from_secs(5))
@@ -349,7 +349,8 @@ mod process {
         let addr = p.url.trim_start_matches("http://");
         let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
         let head = format!(
-            "POST /api/v1/events HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+            "POST /api/v1/events HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+            p.api_key,
             body.len()
         );
         tcp.write_all(head.as_bytes()).await.unwrap();
