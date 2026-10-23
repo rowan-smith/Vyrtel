@@ -137,6 +137,21 @@ public static class BaselineReportWriter
         }
         Line();
 
+        if (r.Runs.FirstOrDefault()?.Mixed.Hotspots is { Count: > 0 } hotspots)
+        {
+            Line("## Index hotspots in the mixed load (run 1)");
+            Line();
+            Line("The server's query statistics for the measured window only (snapshots at its start and end), by query time.");
+            Line();
+            Line("| Field | Signal | Index | Queries | Avg | Bytes read | Segments scanned | Skipped |");
+            Line("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |");
+            foreach (var h in hotspots)
+            {
+                Line(string.Create(Inv, $"| `{h.Field}` | {h.Signal} | {h.Index} | {h.Queries:N0} | {Ms(h.AvgMs)} | {ByteFormat.Format(h.BytesRead)} | {h.SegmentsScanned:N0} | {h.SkippedRatio * 100:0}% |"));
+            }
+            Line();
+        }
+
         Line("## Queries: cold and warm");
         Line();
         Line("Cold is the first request after a server restart (no index cache, nothing decoded; the OS page cache is not dropped). Warm is the following repetitions. Diagnostics are the server's own, from run 1.");

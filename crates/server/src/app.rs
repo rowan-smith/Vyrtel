@@ -244,7 +244,7 @@ impl App {
             if c.auth.ingest_api_key {
                 "login for the UI/API, API keys for ingestion"
             } else {
-                "login for the UI/API; ingestion open (auth.ingest_api_key = false)"
+                "login for the UI/API; ingestion open (set auth.ingest_api_key to require keys)"
             },
         );
         if let Some(pw) = &self.generated_password {

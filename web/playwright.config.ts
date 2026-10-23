@@ -36,8 +36,8 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
     command: `"${bin}" --data-dir "${dataDir}" --bind 127.0.0.1:${port} --log-level warn`,
-    // The specs ingest without a key and read with the admin session.
-    env: { VYRTEL_AUTH_ADMIN_PASSWORD: E2E_PASSWORD, VYRTEL_AUTH_INGEST_API_KEY: 'false' },
+    // The specs ingest without a key (the default) and read with the admin session.
+    env: { VYRTEL_AUTH_ADMIN_PASSWORD: E2E_PASSWORD },
     url: `http://127.0.0.1:${port}/health`,
     reuseExistingServer: false,
     timeout: 60_000,

@@ -7,7 +7,7 @@
 //!   their SHA-256 is stored.
 //!
 //! The UI and API always need a session or an admin key. Ingestion needs an
-//! API key unless `auth.ingest_api_key = false`. The boundaries are kept
+//! API key only with `auth.ingest_api_key = true`. The boundaries are kept
 //! small so OIDC etc. can be added later as another way of producing a
 //! [`Principal`].
 
@@ -114,8 +114,8 @@ async fn check_session(state: &SharedState, token: String) -> Result<Option<Prin
     Ok(user.map(|u| Principal::User(u.username)))
 }
 
-/// Ingestion endpoints: any valid API key, unless `auth.ingest_api_key`
-/// is off.
+/// Ingestion endpoints: open, or any valid API key with
+/// `auth.ingest_api_key`.
 pub async fn require_ingest(
     State(state): State<SharedState>,
     mut req: Request,

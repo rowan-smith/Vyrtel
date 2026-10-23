@@ -100,7 +100,7 @@ verify() {
 
 step "Populate an instance ($VYRTEL, $("$VYRTEL" --version))"
 # A short segment age, so the backup holds sealed segments as well as WALs.
-start "$WORK/data" VYRTEL_AUTH_ADMIN_PASSWORD="$PASSWORD" VYRTEL_STORAGE_SEGMENT_MAX_AGE=1s
+start "$WORK/data" VYRTEL_AUTH_ADMIN_PASSWORD="$PASSWORD" VYRTEL_AUTH_INGEST_API_KEY=true VYRTEL_STORAGE_SEGMENT_MAX_AGE=1s
 login
 KEY=$(admin -d '{"name":"producers"}' "$URL/api/v1/api-keys" | grep -o '"key":"vyr_[0-9a-f]*"' | cut -d'"' -f4)
 [ -n "$KEY" ] || fail "no API key created"

@@ -48,7 +48,7 @@ max_results = 1000
 max_live_streams = 64
 
 [auth]
-# The harness ingests without a key; queries use the admin login.
+# The default, written out: the harness ingests without a key; queries use the admin login.
 ingest_api_key = false
 
 [alerts]

@@ -68,7 +68,8 @@ export function LogsSidebar({
   onFilter,
 }: {
   facets: Facet[];
-  sampled: number;
+  /** Size of the sample behind the counts; `null` when they come from more than one. */
+  sampled: number | null;
   loading?: boolean;
   query: string;
   columns: string[];
@@ -121,7 +122,11 @@ export function LogsSidebar({
 
       <Section
         title="Filters"
-        action={<span className="side-note">{loading ? 'updating…' : `${formatCount(sampled)} events`}</span>}
+        action={
+          (loading || sampled !== null) && (
+            <span className="side-note">{loading ? 'updating…' : `${formatCount(sampled ?? 0)} events`}</span>
+          )
+        }
       >
         {groups.length === 0 && !loading && (
           <div className="muted small side-empty">No levels or environments yet.</div>

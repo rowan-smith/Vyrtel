@@ -78,11 +78,11 @@ default to the last hour).
 ## Authentication
 
 Always on for the UI and API. Ingestion is configured separately
-(`auth.ingest_api_key`, default `true`):
+(`auth.ingest_api_key`, default `false`):
 
-* **Ingestion** (`/api/v1/events`, `/v1/*`) requires an API key:
-  `Authorization: Bearer <key>` or `X-Api-Key: <key>`. With
-  `auth.ingest_api_key = false` it is open, for trusted networks.
+* **Ingestion** (`/api/v1/events`, `/v1/*`) is open by default, so producers
+  can send without setup. With `auth.ingest_api_key = true` it requires an
+  API key: `Authorization: Bearer <key>` or `X-Api-Key: <key>`.
 * **Everything else under `/api/v1`** requires either the admin session
   cookie (from `/api/v1/auth/login`) or an API key with scope `admin`.
 * `/health`, `/ready`, `/api/v1/auth/*` and the web UI assets are public.

@@ -52,6 +52,7 @@ fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
 fn secure(dir: &Path) -> Config {
     let mut c = base_config(dir);
     c.auth.admin_password = Some(PASSWORD.into());
+    c.auth.ingest_api_key = true;
     c
 }
 

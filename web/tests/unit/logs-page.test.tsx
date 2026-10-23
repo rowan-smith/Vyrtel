@@ -97,6 +97,28 @@ describe('LogsPage', () => {
       { query: 'level = Error and service = api', fields: ['environment'] },
       { query: 'service = api', fields: ['level'] },
     ]);
+    expect(await screen.findByText(/^\d[\d,.]* events$/)).toHaveTextContent('2 events');
+  });
+
+  it('skips the query itself when both sidebar fields are filtered', async () => {
+    const calls = setup();
+    renderWithRouter(<LogsPage />, '/logs?q=level%20%3D%20Error%20and%20environment%20%3D%20production');
+    expect(await screen.findByText('first event')).toBeInTheDocument();
+    await waitFor(() => expect(calls.filter((c) => c.url === '/api/v1/query/logs/facets')).toHaveLength(2));
+    // Let any further request arrive before counting.
+    await new Promise((r) => setTimeout(r, 50));
+    const bodies = calls
+      .filter((c) => c.url === '/api/v1/query/logs/facets')
+      .map((c) => {
+        const b = c.body as { query: string; fields: string[] };
+        return { query: b.query, fields: b.fields };
+      });
+    expect(bodies).toEqual([
+      { query: 'environment = production', fields: ['level'] },
+      { query: 'level = Error', fields: ['environment'] },
+    ]);
+    // The counts come from two samples, so no single sample size is shown.
+    expect(screen.queryByText(/^\d[\d,.]* events$/)).not.toBeInTheDocument();
   });
 
   it('expands a row on click', async () => {

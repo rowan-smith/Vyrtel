@@ -159,10 +159,10 @@ export function verifyArtifacts(dir, expected = EXPECTED_ARTIFACTS) {
 
 /**
  * The admin password the checks start servers with (`CHECK_ENV`) and sign in with. Ingestion
- * is left open so the image check can ingest without first creating a key.
+ * is open by default, so the image check ingests without first creating a key.
  */
 export const CHECK_PASSWORD = 'release-check';
-export const CHECK_ENV = { VYRTEL_AUTH_ADMIN_PASSWORD: CHECK_PASSWORD, VYRTEL_AUTH_INGEST_API_KEY: 'false' };
+export const CHECK_ENV = { VYRTEL_AUTH_ADMIN_PASSWORD: CHECK_PASSWORD };
 
 async function get(url, headers = {}) {
   const res = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });

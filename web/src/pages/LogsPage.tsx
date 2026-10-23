@@ -49,7 +49,7 @@ function LogsView() {
   const [newIds, setNewIds] = useState<Set<string>>(new Set());
   const [live, setLive] = useState(false);
   const [columns, setColumns] = useState<string[]>(loadColumns);
-  const [facets, setFacets] = useState<{ fields: Facet[]; sampled: number }>({ fields: [], sampled: 0 });
+  const [facets, setFacets] = useState<{ fields: Facet[]; sampled: number | null }>({ fields: [], sampled: 0 });
   const [facetsLoading, setFacetsLoading] = useState(false);
   const [runId, setRunId] = useState(0);
   const abort = useRef<AbortController | null>(null);
@@ -100,21 +100,21 @@ function LogsView() {
     const win = rangeWindow(range);
     // Only the sidebar's fields are counted. One of them that you've filtered on lists its values
     // as if that one filter weren't applied (but the others still are), so you can see and switch
-    // to the alternatives; filters on any other field need no extra request.
+    // to the alternatives; filters on any other field need no extra request. When every sidebar
+    // field is filtered, nothing is left for the query itself, so it is not sent (and there is no
+    // one sample size to show).
     const filtered = filteredFields(query);
     const own = FACET_FIELDS.filter((f) => filtered.includes(f));
+    const rest = FACET_FIELDS.filter((f) => !own.includes(f));
     const facetsFor = (q: string, fields: string[]) =>
       api.facets('logs', { query: q, sample: 2000, fields, ...win }, ctrl.signal);
     Promise.all([
-      facetsFor(
-        query,
-        FACET_FIELDS.filter((f) => !own.includes(f)),
-      ),
+      rest.length > 0 ? facetsFor(query, rest) : null,
       ...own.map((field) => facetsFor(setFieldFilter(query, field, null), [field])),
     ])
       .then(([main, ...others]) => {
-        const fields = [...main.fields, ...others.flatMap((o) => o.fields)];
-        setFacets({ fields, sampled: main.sampled });
+        const fields = [...(main?.fields ?? []), ...others.flatMap((o) => o?.fields ?? [])];
+        setFacets({ fields, sampled: main?.sampled ?? null });
       })
       .catch(() => setFacets({ fields: [], sampled: 0 }))
       .finally(() => {

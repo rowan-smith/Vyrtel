@@ -4,9 +4,13 @@ use serde_json::{Value, json};
 
 use crate::common::*;
 
-/// A server whose `client` sends no credentials.
+/// A server that requires ingestion keys, whose `client` sends no credentials.
 async fn start_secure() -> TestServer {
-    let mut s = TestServer::start_with(|c| c.auth.admin_password = Some("correct horse".into())).await;
+    let mut s = TestServer::start_with(|c| {
+        c.auth.admin_password = Some("correct horse".into());
+        c.auth.ingest_api_key = true;
+    })
+    .await;
     s.client = reqwest::Client::new();
     s
 }
@@ -204,11 +208,11 @@ async fn banner_shows_a_browsable_web_ui_url() {
     app.shutdown().await.unwrap();
 }
 
-/// `auth.ingest_api_key = false` opens ingestion only: everything else
-/// still needs a login or an admin key.
+/// By default ingestion is open, and only ingestion: everything else still
+/// needs a login or an admin key.
 #[tokio::test(flavor = "multi_thread")]
 async fn ingestion_without_keys_leaves_the_rest_of_the_api_closed() {
-    let mut s = TestServer::start_with(|c| c.auth.ingest_api_key = false).await;
+    let mut s = TestServer::start().await;
     s.client = reqwest::Client::new();
     assert_eq!(s.post("/api/v1/events", json!({"message": "open"})).await.status(), 200);
     assert_eq!(s.otlp_json("/v1/logs", "{}".into()).await.status(), 200);

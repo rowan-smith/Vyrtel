@@ -50,9 +50,10 @@ max_trace_spans = 50000      # spans one trace may return; 422 beyond
 max_metric_names = 10000     # names GET /api/v1/metrics returns; "truncated": true beyond
 
 [auth]
-# The UI and API always need a login (or an admin API key). Ingestion needs
-# an API key too unless this is false.
-ingest_api_key = true
+# The UI and API always need a login (or an admin API key). Ingestion is
+# open unless this is true; set it before exposing Vyrtel beyond a trusted
+# network.
+ingest_api_key = false
 # admin_username = "admin"
 # admin_password = "change-me"
 

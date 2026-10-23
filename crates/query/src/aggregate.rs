@@ -206,7 +206,8 @@ pub fn facets(
     // The leaf walk cannot return early, so a failed check is parked here
     // and every later value is skipped.
     let failed: Cell<Option<QueryError>> = Cell::new(None);
-    let mut add = |field: &str, v: Value, seen: &mut Vec<usize>| {
+    // The value is built only for a field that is counted.
+    let mut add = |field: &str, v: &dyn Fn() -> Value, seen: &mut Vec<usize>| {
         if !wanted(field) {
             return;
         }
@@ -233,6 +234,7 @@ pub fn facets(
             fc.events += 1;
             seen.push(i);
         }
+        let v = v();
         let key = v.to_display_string();
         if let Some(e) = fc.values.get_mut(&key) {
             e.1 += 1;
@@ -245,30 +247,30 @@ pub fn facets(
     for e in events {
         let mut seen = Vec::new();
         if let Some(l) = e.level() {
-            add("level", Value::from(l.as_str()), &mut seen);
+            add("level", &|| Value::from(l.as_str()), &mut seen);
         }
         if let Some(s) = &e.service {
-            add("service", Value::from(s.as_str()), &mut seen);
+            add("service", &|| Value::from(s.as_str()), &mut seen);
         }
         if let Some(s) = &e.environment {
-            add("environment", Value::from(s.as_str()), &mut seen);
+            add("environment", &|| Value::from(s.as_str()), &mut seen);
         }
         match &e.payload {
             TelemetryPayload::Span(s) => {
-                add("name", Value::from(s.name.as_str()), &mut seen);
-                add("status", Value::from(s.status.code.as_str()), &mut seen);
+                add("name", &|| Value::from(s.name.as_str()), &mut seen);
+                add("status", &|| Value::from(s.status.code.as_str()), &mut seen);
             }
             TelemetryPayload::Log(l) => {
                 if let Some(t) = l.exception.as_ref().and_then(|x| x.kind.as_deref()) {
-                    add("exception.type", Value::from(t), &mut seen);
+                    add("exception.type", &|| Value::from(t), &mut seen);
                 }
             }
-            TelemetryPayload::Metric(m) => add("name", Value::from(m.name.as_str()), &mut seen),
+            TelemetryPayload::Metric(m) => add("name", &|| Value::from(m.name.as_str()), &mut seen),
         }
         if walk_properties {
             e.attributes.for_each_leaf(&mut |p, v| {
                 if !matches!(v, Value::Null) {
-                    add(p, v.clone(), &mut seen);
+                    add(p, &|| v.clone(), &mut seen);
                 }
             });
         }

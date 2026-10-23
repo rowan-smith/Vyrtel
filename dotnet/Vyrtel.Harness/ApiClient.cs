@@ -7,7 +7,9 @@ namespace Vyrtel.Harness;
 /// <summary>
 /// Thin helper over the Vyrtel HTTP API shared by the benchmark and the baseline. Every
 /// call reads the full response body so connection reuse is measured, and throws with
-/// the server's error text when a request fails. Signs in as admin before its first request.
+/// the server's error text when a request fails. Signs in as admin before its first request
+/// (queries use the session), and sends the ingest API key, if any, on ingest requests: a
+/// session cookie does not authorize ingestion on a server with <c>auth.ingest_api_key = true</c>.
 /// </summary>
 public sealed class ApiClient : IDisposable
 {
@@ -18,10 +20,23 @@ public sealed class ApiClient : IDisposable
     public static string AdminPassword =>
         Environment.GetEnvironmentVariable("VYRTEL_AUTH_ADMIN_PASSWORD") ?? "vyrtel-harness";
 
-    private readonly HttpClient _http;
+    /// <summary>
+    /// The API key ingest requests send, from <c>VYRTEL_HARNESS_INGEST_KEY</c>: needed only for a
+    /// running server with <c>auth.ingest_api_key = true</c>. (Not under <c>VYRTEL_INGEST_</c>,
+    /// which a launched server would refuse as an unknown setting.)
+    /// </summary>
+    public static string? IngestApiKeyFromEnvironment =>
+        Environment.GetEnvironmentVariable("VYRTEL_HARNESS_INGEST_KEY") is { Length: > 0 } key ? key : null;
 
-    public ApiClient(string baseUrl)
+    private readonly HttpClient _http;
+    private readonly AuthenticationHeaderValue? _ingestAuth;
+
+    /// <param name="ingestApiKey">Key for ingest requests; defaults to <see cref="IngestApiKeyFromEnvironment"/>.</param>
+    public ApiClient(string baseUrl, string? ingestApiKey = null)
     {
+        _ingestAuth = (ingestApiKey ?? IngestApiKeyFromEnvironment) is { } key
+            ? new AuthenticationHeaderValue("Bearer", key)
+            : null;
         var baseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
         var handler = new SignInHandler(baseAddress) { InnerHandler = new HttpClientHandler { CookieContainer = new() } };
         _http = new HttpClient(handler)
@@ -152,11 +167,21 @@ public sealed class ApiClient : IDisposable
         SendRaw(HttpMethod.Post, path, Json(body), ct);
 
     /// <summary><see cref="SendRaw"/> with a raw ingest payload of the given media type.</summary>
-    public Task<RawResponse> IngestRaw(string path, byte[] payload, string mediaType, CancellationToken ct = default)
+    public async Task<RawResponse> IngestRaw(string path, byte[] payload, string mediaType, CancellationToken ct = default)
+    {
+        using var request = IngestRequest(path, payload, mediaType);
+        using var response = await _http.SendAsync(request, ct);
+        var body = await response.Content.ReadAsByteArrayAsync(ct);
+        return new RawResponse((int)response.StatusCode, body);
+    }
+
+    private HttpRequestMessage IngestRequest(string path, byte[] payload, string mediaType)
     {
         var content = new ByteArrayContent(payload);
         content.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
-        return SendRaw(HttpMethod.Post, path, content, ct);
+        var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = content };
+        request.Headers.Authorization = _ingestAuth;
+        return request;
     }
 
     public async Task<string> GetString(string path, CancellationToken ct = default)
@@ -172,9 +197,8 @@ public sealed class ApiClient : IDisposable
 
     private async Task Ingest(string path, byte[] payload, string mediaType, CancellationToken ct)
     {
-        using var content = new ByteArrayContent(payload);
-        content.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
-        using var response = await _http.PostAsync(path, content, ct);
+        using var request = IngestRequest(path, payload, mediaType);
+        using var response = await _http.SendAsync(request, ct);
         var body = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode)
         {

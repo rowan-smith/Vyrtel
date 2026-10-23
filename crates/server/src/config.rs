@@ -365,8 +365,9 @@ impl Default for QuerySection {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AuthSection {
-    /// Whether ingestion needs an API key. The UI and the rest of the API
-    /// always need a login or an admin key.
+    /// Whether ingestion needs an API key (off by default, so producers
+    /// can send without setup). The UI and the rest of the API always need
+    /// a login or an admin key.
     pub ingest_api_key: bool,
     pub admin_username: String,
     /// Plaintext admin password from config/env. Hashed into the metadata
@@ -380,7 +381,7 @@ pub struct AuthSection {
 impl Default for AuthSection {
     fn default() -> Self {
         Self {
-            ingest_api_key: true,
+            ingest_api_key: false,
             admin_username: "admin".into(),
             admin_password: None,
             session_ttl: Duration::from_secs(7 * 86_400),
@@ -481,8 +482,8 @@ const REMOVED_SETTINGS: &[(&str, &str, &str)] = &[
     (
         "auth",
         "enabled",
-        "the UI and API now always require a login; remove it (to accept ingestion without API keys, set \
-         auth.ingest_api_key = false)",
+        "the UI and API now always require a login; remove it (ingestion is open by default: to keep requiring \
+         API keys for it, set auth.ingest_api_key = true)",
     ),
     ("storage", "zstd_level", "segments are always compressed at level 3; remove it"),
     ("storage", "block_events", "blocks always hold up to 1024 events; remove it"),
@@ -498,7 +499,7 @@ fn removed_setting(section: &str, key: &str) -> Option<String> {
 
 /// Refuse an environment variable that looks like a setting but is not
 /// one, instead of starting with the default it was meant to replace (a
-/// misspelt `VYRTEL_AUTH_INGEST_API_KEY` would start requiring API keys).
+/// misspelt `VYRTEL_AUTH_INGEST_API_KEY` would start with ingestion open).
 /// Other `VYRTEL_*` names (test and release tooling) are not settings and
 /// are left alone.
 pub fn check_env_names<S: AsRef<str>>(names: impl IntoIterator<Item = S>) -> Result<(), String> {
@@ -1023,7 +1024,7 @@ mod tests {
             "VYRTEL_STORAGE_PATH" => Some("/tmp/x".to_string()),
             "VYRTEL_STORAGE_DURABILITY" => Some("strict".to_string()),
             "VYRTEL_RETENTION_LOGS" => Some("forever".to_string()),
-            "VYRTEL_AUTH_INGEST_API_KEY" => Some("false".to_string()),
+            "VYRTEL_AUTH_INGEST_API_KEY" => Some("true".to_string()),
             _ => None,
         };
         c.apply_env(env).unwrap();
@@ -1032,7 +1033,7 @@ mod tests {
         assert_eq!(c.storage.path, PathBuf::from("/tmp/x"));
         assert_eq!(c.storage.durability, Durability::Strict);
         assert_eq!(c.retention.logs, None);
-        assert!(!c.auth.ingest_api_key);
+        assert!(c.auth.ingest_api_key);
         let mut c = Config::default();
         let err = c.apply_env(|k| (k == "VYRTEL_STORAGE_DURABILITY").then(|| "maybe".to_string())).unwrap_err();
         assert!(err.contains("VYRTEL_STORAGE_DURABILITY"));

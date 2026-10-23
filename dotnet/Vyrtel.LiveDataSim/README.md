@@ -52,5 +52,5 @@ The app listens on http://127.0.0.1:5088 and continuously simulates traffic
   too, so it must match the bound URL.
 - **Service name** comes from the host application name.
 - **Environment** comes from the host environment (`Development`, `Production`, …).
-- **Api** is needed unless Vyrtel runs with `auth.ingest_api_key = false`;
+- **Api** is needed only when Vyrtel runs with `auth.ingest_api_key = true`;
   create an ingest key under Settings → API keys. It is sent as `X-Api-Key`.

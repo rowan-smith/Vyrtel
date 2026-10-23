@@ -41,15 +41,17 @@ cargo build --release -p server
 dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short
 ```
 
-For a latency breakdown under a mixed read/write load (p50/p90/p95/p99 per operation), use the
-[baseline](#reproducible-baselines): its mixed-load phase replaces the former
-`Vyrtel.Profiling` tool. The server's own index hotspots are at
-`GET /api/v1/system/query-stats` (Settings → Query statistics in the UI).
+For a latency breakdown under a mixed read/write load (p50/p90/p95/p99 per operation) and the
+index hotspots of that load, use the [baseline](#reproducible-baselines): its mixed-load phase
+replaces the former `Vyrtel.Profiling` tool.
 
 The tools sign in as `admin` with the password they launch the server with
-(`VYRTEL_AUTH_ADMIN_PASSWORD`, default `vyrtel-harness`) and ingest without a key
-(`auth.ingest_api_key = false`). Against a server that is already running, set
-`VYRTEL_AUTH_ADMIN_PASSWORD` to its admin password.
+(`VYRTEL_AUTH_ADMIN_PASSWORD`, default `vyrtel-harness`) and use that session for queries. A
+session does not authorize ingestion, which a server they launch leaves open (the default,
+`auth.ingest_api_key = false`). Against a server that is already running, set
+`VYRTEL_AUTH_ADMIN_PASSWORD` to its admin password, and if it requires ingestion keys, pass one
+with `--ingest-key <key>` (benchmark) or `VYRTEL_HARNESS_INGEST_KEY`; it is sent on ingest
+requests only.
 
 ## Reproducible baselines
 
@@ -98,6 +100,10 @@ configuration (use `--port` to choose another).
    its own seed, so every run sends the same requests in the same order; only how many fit in
    the time varies. Every request is classified as accepted, backpressure (429/503), too large
    (413), other rejection or transport error, per operation, with p50/p90/p95/p99 latency.
+   The server's query statistics (`GET /api/v1/system/query-stats`) are read when the measured
+   window opens and after it closes; their difference gives the index hotspots of that window
+   alone, without seeding, the cold/warm queries or the warmup. A snapshot that cannot be read
+   leaves the hotspots out of the report with a warning; it does not fail the run.
 4. **Memory.** Server RSS is sampled every 100 ms in every phase, and the OS's own high-water
    mark (`PeakWorkingSet` on Windows, `VmHWM` on Linux) is read before each server stops. The
    report gives the larger of the two and says which it was.
@@ -145,6 +151,7 @@ file starts a new baseline: re-record it before comparing.
 | Memory | **Peak RSS** per run and per phase (seeding, queries, mixed load), idle RSS after start, and whether the peak came from the OS or sampling |
 | Accepted and rejected requests | Per run and phase: requests, accepted, backpressure, too large, other rejections, transport errors, items accepted, throughput and latency percentiles. The JSON also holds the seeded dataset's expected, acknowledged and stored counts per signal |
 | Mixed load by operation | p50/p95/p99 per operation, averaged across runs with the run-to-run spread, and rejections |
+| Index hotspots in the mixed load | Run 1's fields by query time in the measured window: index kind, queries, average time, bytes read, segments scanned and the share skipped. Every run's are in the JSON (`mixed.hotspots`) |
 | Queries: cold and warm | Cold and warm p50/p95, their ratio, and diagnostics: segments skipped of considered, blocks read (skipped), events examined → matched, bytes read cold → warm, the indexes used |
 | Variance and budgets | For every metric: runs, mean, standard deviation, coefficient of variation (CV), min, max, the proposed budget and the arithmetic behind it |
 

@@ -341,15 +341,16 @@ since the process started.
 
 | Key              | Default | Env                            | Description                                                                                                                                       |
 |------------------|---------|--------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
-| `ingest_api_key` | `true`  | `VYRTEL_AUTH_INGEST_API_KEY` | Require an API key for ingestion (`/api/v1/events`, `/v1/*`). The UI and the rest of the API always require a login or an admin API key.            |
+| `ingest_api_key` | `false` | `VYRTEL_AUTH_INGEST_API_KEY` | Require an API key for ingestion (`/api/v1/events`, `/v1/*`). The UI and the rest of the API always require a login or an admin API key.            |
 | `admin_username` | `admin` | `VYRTEL_AUTH_ADMIN_USERNAME` |                                                                                                                                                   |
 | `admin_password` | –       | `VYRTEL_AUTH_ADMIN_PASSWORD` | Hashed (Argon2id) into the metadata store at startup. If unset on first start, a random password is generated and printed once.                  |
 | `session_ttl`    | `7d`    | –                              | Login session lifetime.                                                                                                                           |
 
-> **Security note.** The UI and API always need a login, but with
-> `ingest_api_key = false` anyone who can reach the port can write data.
-> Keep that to trusted networks, and put Vyrtel behind TLS (a reverse proxy)
-> before exposing it — Vyrtel itself serves plain HTTP.
+> **Security note.** The UI and API always need a login, but by default
+> (`ingest_api_key = false`) anyone who can reach the port can write data.
+> Set `ingest_api_key = true` before exposing Vyrtel beyond a trusted
+> network, and put it behind TLS (a reverse proxy) — Vyrtel itself serves
+> plain HTTP.
 
 #### Authentication changes in 0.1.2
 
@@ -359,7 +360,8 @@ since the process started.
   is refused at startup with what to do instead, so an upgrade never
   silently changes what it meant.
 * Ingestion is configured on its own: `auth.ingest_api_key` (default
-  `true`). Set it to `false` to keep accepting telemetry without keys.
+  `false`, open). An install that had `auth.enabled = true` must set it to
+  `true` to keep requiring keys for ingestion.
 * `GET /api/v1/auth/me` still returns `authEnabled`, now always `true`;
   `GET /api/v1/system/info` adds `ingestApiKey`.
 
