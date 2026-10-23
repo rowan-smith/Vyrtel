@@ -194,6 +194,7 @@ impl App {
             received_requests: AtomicU64::new(0),
             http,
             key_touch: Mutex::new(Default::default()),
+            key_cache: Mutex::new(Default::default()),
             shutdown: rx.clone(),
             config,
         });

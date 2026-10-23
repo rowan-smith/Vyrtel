@@ -56,6 +56,9 @@ pub struct AppState {
     pub http: reqwest::Client,
     /// Last time each API key's `last_used_at` was persisted.
     pub key_touch: Mutex<HashMap<i64, Instant>>,
+    /// API keys already found valid, so authenticated requests do not each
+    /// queue for the metadata connection (see [`crate::auth::KeyCache`]).
+    pub key_cache: Mutex<crate::auth::KeyCache>,
     /// Flips to `true` when shutdown starts: new ingest, queries and live
     /// streams are refused and live-tail streams end, so the drain only
     /// waits for work that was already accepted.

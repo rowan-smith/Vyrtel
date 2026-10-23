@@ -179,7 +179,12 @@ async fn connection_heap_stays_within_the_transport_estimate() {
         .await
         .unwrap();
     let stalled_per = (settled_heap().await.saturating_sub(base)) / C;
-    wait_until("stalled writes time out", || transport.snapshot().write_timeouts >= write_timeouts + C as u64).await;
+    // A connection stalls once the kernel's socket buffers are full too, and
+    // on loopback Linux grows those to megabytes per connection.
+    wait_until_within("stalled writes time out", Duration::from_secs(30), || {
+        transport.snapshot().write_timeouts >= write_timeouts + C as u64
+    })
+    .await;
     wait_until("idle after write timeouts", || transport.active() == 0).await;
     clients.spawn(async move { drop(stalled) }).await.unwrap();
     let retained_after_stall = settled_heap().await.saturating_sub(base);

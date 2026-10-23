@@ -157,5 +157,6 @@ pub async fn create_api_key(State(state): State<SharedState>, ApiJson(b): ApiJso
 
 pub async fn revoke_api_key(State(state): State<SharedState>, ApiPath(id): ApiPath<i64>) -> ApiResult<StatusCode> {
     state.db(move |m| m.revoke_api_key(id)).await?;
+    state.key_cache.lock().unwrap().revoke(id);
     Ok(StatusCode::NO_CONTENT)
 }

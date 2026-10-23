@@ -11,6 +11,7 @@
 //! small so OIDC etc. can be added later as another way of producing a
 //! [`Principal`].
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use argon2::Argon2;
@@ -83,11 +84,48 @@ pub fn session_from(headers: &HeaderMap) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// Valid API keys by hash, with their id and scope. Revoking a key drops
+/// it and bumps the generation, so a lookup that read the key as valid
+/// before the revocation cannot put it back.
+#[derive(Default)]
+pub struct KeyCache {
+    generation: u64,
+    keys: HashMap<String, (i64, String)>,
+}
+
+impl KeyCache {
+    /// The key's id and scope if it is known valid, and the generation to
+    /// pass to [`KeyCache::insert`] after looking it up.
+    fn get(&self, hash: &str) -> (Option<(i64, String)>, u64) {
+        (self.keys.get(hash).cloned(), self.generation)
+    }
+
+    /// Remember a key found valid, unless a key was revoked since `generation`.
+    fn insert(&mut self, generation: u64, hash: String, key: (i64, String)) {
+        if self.generation == generation {
+            self.keys.insert(hash, key);
+        }
+    }
+
+    pub fn revoke(&mut self, id: i64) {
+        self.generation += 1;
+        self.keys.retain(|_, (key_id, _)| *key_id != id);
+    }
+}
+
 async fn check_api_key(state: &SharedState, key: String) -> Result<Principal, ApiError> {
     let hash = sha256_hex(&key);
-    let found = state.db(move |m| m.find_api_key(&hash)).await?;
-    let Some((id, scope)) = found else {
-        return Err(ApiError::unauthorized("invalid API key"));
+    let (cached, generation) = state.key_cache.lock().unwrap().get(&hash);
+    let (id, scope) = match cached {
+        Some(found) => found,
+        None => {
+            let lookup = hash.clone();
+            let Some(found) = state.db(move |m| m.find_api_key(&lookup)).await? else {
+                return Err(ApiError::unauthorized("invalid API key"));
+            };
+            state.key_cache.lock().unwrap().insert(generation, hash, found.clone());
+            found
+        }
     };
     // Persist last-used at most once a minute per key, so ingestion does
     // not turn into a stream of SQLite writes.
@@ -217,5 +255,26 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert(header::COOKIE, HeaderValue::from_static("a=1; vyrtel_session=tok; b=2"));
         assert_eq!(session_from(&h).as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn revoked_keys_leave_the_cache() {
+        let mut c = KeyCache::default();
+        let (_, g) = c.get("a");
+        c.insert(g, "a".into(), (1, "admin".into()));
+        let (_, g) = c.get("b");
+        c.insert(g, "b".into(), (2, "ingest".into()));
+        assert_eq!(c.get("a").0, Some((1, "admin".into())));
+
+        c.revoke(1);
+        assert_eq!(c.get("a").0, None);
+        assert_eq!(c.get("b").0, Some((2, "ingest".into())));
+
+        // A lookup that read key 3 as valid before it was revoked does not
+        // put it back.
+        let (_, g) = c.get("c");
+        c.revoke(3);
+        c.insert(g, "c".into(), (3, "admin".into()));
+        assert_eq!(c.get("c").0, None);
     }
 }

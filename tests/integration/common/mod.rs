@@ -266,7 +266,12 @@ pub fn ingest_in_flight(s: &TestServer) -> usize {
 
 /// Poll `cond` until it holds; panic after 10 s.
 pub async fn wait_until(what: &str, cond: impl Fn() -> bool) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    wait_until_within(what, Duration::from_secs(10), cond).await
+}
+
+/// Poll `cond` until it holds; panic after `timeout`.
+pub async fn wait_until_within(what: &str, timeout: Duration, cond: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + timeout;
     while !cond() {
         assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
         tokio::time::sleep(Duration::from_millis(5)).await;
