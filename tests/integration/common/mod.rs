@@ -77,8 +77,7 @@ impl TestServer {
             }
         };
         let state = app.state.clone();
-        let (api_key, prefix, hash) = server::auth::new_api_key();
-        state.metadata.create_api_key(HARNESS_KEY, &prefix, &hash, "admin").unwrap();
+        let (_, api_key) = server::auth::create_api_key(&state, HARNESS_KEY, "admin").unwrap();
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (tx, rx) = oneshot::channel::<()>();

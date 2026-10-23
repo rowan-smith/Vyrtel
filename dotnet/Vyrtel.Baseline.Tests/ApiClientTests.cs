@@ -7,7 +7,7 @@ namespace Vyrtel.Baseline.Tests;
 
 /// <summary>
 /// Review finding: a session cookie does not authorize ingestion on a server with
-/// <c>auth.ingest_api_key = true</c>, so the harness sends a separate ingest key, and only on
+/// ingest-scoped API keys, so the harness sends a separate ingest key, and only on
 /// ingest requests.
 /// </summary>
 public class ApiClientTests

@@ -365,10 +365,6 @@ impl Default for QuerySection {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AuthSection {
-    /// Whether ingestion needs an API key (off by default, so producers
-    /// can send without setup). The UI and the rest of the API always need
-    /// a login or an admin key.
-    pub ingest_api_key: bool,
     pub admin_username: String,
     /// Plaintext admin password from config/env. Hashed into the metadata
     /// store at startup; never logged or returned by the API.
@@ -380,12 +376,7 @@ pub struct AuthSection {
 
 impl Default for AuthSection {
     fn default() -> Self {
-        Self {
-            ingest_api_key: false,
-            admin_username: "admin".into(),
-            admin_password: None,
-            session_ttl: Duration::from_secs(7 * 86_400),
-        }
+        Self { admin_username: "admin".into(), admin_password: None, session_ttl: Duration::from_secs(7 * 86_400) }
     }
 }
 
@@ -453,7 +444,6 @@ pub const ENV_VARS: &[&str] = &[
     "VYRTEL_INGEST_MAX_CONCURRENT",
     "VYRTEL_QUERY_TIMEOUT",
     "VYRTEL_QUERY_MAX_CONCURRENT",
-    "VYRTEL_AUTH_INGEST_API_KEY",
     "VYRTEL_AUTH_ADMIN_USERNAME",
     "VYRTEL_AUTH_ADMIN_PASSWORD",
     "VYRTEL_ALERTS_ENABLED",
@@ -482,8 +472,14 @@ const REMOVED_SETTINGS: &[(&str, &str, &str)] = &[
     (
         "auth",
         "enabled",
-        "the UI and API now always require a login; remove it (ingestion is open by default: to keep requiring \
-         API keys for it, set auth.ingest_api_key = true)",
+        "the UI and API now always require a login; remove it (ingestion requires an API key once an \
+         ingest-scoped key exists)",
+    ),
+    (
+        "auth",
+        "ingest_api_key",
+        "ingestion requires an API key automatically while an ingest-scoped key exists, and is open while none \
+         does; remove it",
     ),
     ("storage", "zstd_level", "segments are always compressed at level 3; remove it"),
     ("storage", "block_events", "blocks always hold up to 1024 events; remove it"),
@@ -499,7 +495,7 @@ fn removed_setting(section: &str, key: &str) -> Option<String> {
 
 /// Refuse an environment variable that looks like a setting but is not
 /// one, instead of starting with the default it was meant to replace (a
-/// misspelt `VYRTEL_AUTH_INGEST_API_KEY` would start with ingestion open).
+/// misspelt `VYRTEL_AUTH_ADMIN_PASSWORD` would start with a generated one).
 /// Other `VYRTEL_*` names (test and release tooling) are not settings and
 /// are left alone.
 pub fn check_env_names<S: AsRef<str>>(names: impl IntoIterator<Item = S>) -> Result<(), String> {
@@ -599,7 +595,6 @@ impl Config {
                     "VYRTEL_QUERY_MAX_CONCURRENT" => {
                         self.query.max_concurrent = v.trim().parse().map_err(|_| "must be a number".to_string())?
                     }
-                    "VYRTEL_AUTH_INGEST_API_KEY" => self.auth.ingest_api_key = parse_bool(&v)?,
                     "VYRTEL_AUTH_ADMIN_USERNAME" => self.auth.admin_username = v.clone(),
                     "VYRTEL_AUTH_ADMIN_PASSWORD" => self.auth.admin_password = Some(v.clone()),
                     "VYRTEL_ALERTS_ENABLED" => self.alerts.enabled = parse_bool(&v)?,
@@ -968,7 +963,7 @@ mod tests {
             e.starts_with(
                 "unknown environment variable VYRTEL_AUTH_ENABLE: not a setting Vyrtel reads from the environment. \
                  Remove it, or set the option in the configuration file instead (see \
-                 docs/configuration.md#environment-variables for the 28 supported variables)"
+                 docs/configuration.md#environment-variables for the 27 supported variables)"
             ),
             "{e}"
         );
@@ -1013,6 +1008,10 @@ mod tests {
         assert!(e.starts_with("storage.zstd_level is no longer a setting"), "{e}");
         let e = check_env_names(["VYRTEL_AUTH_ENABLED"]).unwrap_err();
         assert!(e.starts_with("VYRTEL_AUTH_ENABLED: auth.enabled is no longer a setting"), "{e}");
+        let e = Config::from_toml("[auth]\ningest_api_key = true").unwrap_err();
+        assert!(e.contains("automatically while an ingest-scoped key exists"), "{e}");
+        let e = check_env_names(["VYRTEL_AUTH_INGEST_API_KEY"]).unwrap_err();
+        assert!(e.starts_with("VYRTEL_AUTH_INGEST_API_KEY: auth.ingest_api_key is no longer a setting"), "{e}");
     }
 
     #[test]
@@ -1024,7 +1023,6 @@ mod tests {
             "VYRTEL_STORAGE_PATH" => Some("/tmp/x".to_string()),
             "VYRTEL_STORAGE_DURABILITY" => Some("strict".to_string()),
             "VYRTEL_RETENTION_LOGS" => Some("forever".to_string()),
-            "VYRTEL_AUTH_INGEST_API_KEY" => Some("true".to_string()),
             _ => None,
         };
         c.apply_env(env).unwrap();
@@ -1033,7 +1031,6 @@ mod tests {
         assert_eq!(c.storage.path, PathBuf::from("/tmp/x"));
         assert_eq!(c.storage.durability, Durability::Strict);
         assert_eq!(c.retention.logs, None);
-        assert!(c.auth.ingest_api_key);
         let mut c = Config::default();
         let err = c.apply_env(|k| (k == "VYRTEL_STORAGE_DURABILITY").then(|| "maybe".to_string())).unwrap_err();
         assert!(err.contains("VYRTEL_STORAGE_DURABILITY"));

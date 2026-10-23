@@ -7,9 +7,9 @@
 //!   their SHA-256 is stored.
 //!
 //! The UI and API always need a session or an admin key. Ingestion needs an
-//! API key only with `auth.ingest_api_key = true`. The boundaries are kept
-//! small so OIDC etc. can be added later as another way of producing a
-//! [`Principal`].
+//! API key while at least one ingest-scoped key exists, and is open while
+//! none does (see [`ApiKeys`]). The boundaries are kept small so OIDC etc.
+//! can be added later as another way of producing a [`Principal`].
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -20,11 +20,12 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderMap, header};
 use axum::middleware::Next;
 use axum::response::Response;
+use metadata::Metadata;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 use crate::error::ApiError;
-use crate::state::SharedState;
+use crate::state::{AppState, SharedState};
 
 pub const SESSION_COOKIE: &str = "vyrtel_session";
 
@@ -84,48 +85,75 @@ pub fn session_from(headers: &HeaderMap) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// Valid API keys by hash, with their id and scope. Revoking a key drops
-/// it and bumps the generation, so a lookup that read the key as valid
-/// before the revocation cannot put it back.
+/// Every active API key, by SHA-256 of the key with its id and scope.
+/// Loaded at startup and changed only by [`create_api_key`] and
+/// [`revoke_api_key`], so authenticating a request never reads SQLite.
+/// Ingestion is protected while it holds an ingest-scoped key; admin keys
+/// do not count.
 #[derive(Default)]
-pub struct KeyCache {
-    generation: u64,
-    keys: HashMap<String, (i64, String)>,
+pub struct ApiKeys {
+    by_hash: HashMap<String, (i64, String)>,
+    ingest: usize,
 }
 
-impl KeyCache {
-    /// The key's id and scope if it is known valid, and the generation to
-    /// pass to [`KeyCache::insert`] after looking it up.
-    fn get(&self, hash: &str) -> (Option<(i64, String)>, u64) {
-        (self.keys.get(hash).cloned(), self.generation)
-    }
-
-    /// Remember a key found valid, unless a key was revoked since `generation`.
-    fn insert(&mut self, generation: u64, hash: String, key: (i64, String)) {
-        if self.generation == generation {
-            self.keys.insert(hash, key);
+impl ApiKeys {
+    pub fn load(m: &Metadata) -> metadata::Result<Self> {
+        let mut keys = Self::default();
+        for (id, hash, scope) in m.active_api_keys()? {
+            keys.add(hash, id, scope);
         }
+        Ok(keys)
     }
 
-    pub fn revoke(&mut self, id: i64) {
-        self.generation += 1;
-        self.keys.retain(|_, (key_id, _)| *key_id != id);
+    /// Whether ingestion needs an API key.
+    pub fn ingest_protected(&self) -> bool {
+        self.ingest > 0
+    }
+
+    fn add(&mut self, hash: String, id: i64, scope: String) {
+        self.ingest += usize::from(scope == "ingest");
+        self.by_hash.insert(hash, (id, scope));
+    }
+
+    fn remove(&mut self, id: i64) {
+        let Self { by_hash, ingest } = self;
+        by_hash.retain(|_, (key_id, scope)| {
+            let revoked = *key_id == id;
+            if revoked && scope == "ingest" {
+                *ingest -= 1;
+            }
+            !revoked
+        });
     }
 }
 
-async fn check_api_key(state: &SharedState, key: String) -> Result<Principal, ApiError> {
-    let hash = sha256_hex(&key);
-    let (cached, generation) = state.key_cache.lock().unwrap().get(&hash);
-    let (id, scope) = match cached {
-        Some(found) => found,
-        None => {
-            let lookup = hash.clone();
-            let Some(found) = state.db(move |m| m.find_api_key(&lookup)).await? else {
-                return Err(ApiError::unauthorized("invalid API key"));
-            };
-            state.key_cache.lock().unwrap().insert(generation, hash, found.clone());
-            found
-        }
+/// Store a new key and accept it; an ingest key also protects ingestion
+/// from here on. Returns the record and the plaintext key. Blocking.
+///
+/// The registry stays locked across the SQLite write, so it never holds a
+/// key that is revoked in SQLite, even if the revocation races the
+/// creation. Requests wait for that write only while a key is created or
+/// revoked.
+pub fn create_api_key(state: &AppState, name: &str, scope: &str) -> metadata::Result<(metadata::ApiKey, String)> {
+    let (key, prefix, hash) = new_api_key();
+    let mut keys = state.api_keys.write().unwrap();
+    let rec = state.metadata.create_api_key(name, &prefix, &hash, scope)?;
+    keys.add(hash, rec.id, rec.scope.clone());
+    Ok((rec, key))
+}
+
+/// Revoke a key; revoking the last ingest key opens ingestion. Blocking.
+pub fn revoke_api_key(state: &AppState, id: i64) -> metadata::Result<()> {
+    let mut keys = state.api_keys.write().unwrap();
+    state.metadata.revoke_api_key(id)?;
+    keys.remove(id);
+    Ok(())
+}
+
+fn check_api_key(state: &AppState, key: &str) -> Result<Principal, ApiError> {
+    let found = state.api_keys.read().unwrap().by_hash.get(&sha256_hex(key)).cloned();
+    let Some((id, scope)) = found else {
+        return Err(ApiError::unauthorized("invalid API key"));
     };
     // Persist last-used at most once a minute per key, so ingestion does
     // not turn into a stream of SQLite writes.
@@ -152,14 +180,14 @@ async fn check_session(state: &SharedState, token: String) -> Result<Option<Prin
     Ok(user.map(|u| Principal::User(u.username)))
 }
 
-/// Ingestion endpoints: open, or any valid API key with
-/// `auth.ingest_api_key`.
+/// Ingestion endpoints: open while no ingest-scoped key exists, otherwise
+/// any valid API key.
 pub async fn require_ingest(
     State(state): State<SharedState>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if !state.config.auth.ingest_api_key {
+    if !state.api_keys.read().unwrap().ingest_protected() {
         return Ok(next.run(req).await);
     }
     let Some(key) = api_key_from(req.headers()) else {
@@ -167,7 +195,7 @@ pub async fn require_ingest(
             "missing API key; send 'Authorization: Bearer <key>' or 'X-Api-Key: <key>'",
         ));
     };
-    let p = check_api_key(&state, key).await?;
+    let p = check_api_key(&state, &key)?;
     req.extensions_mut().insert(p);
     Ok(next.run(req).await)
 }
@@ -185,7 +213,7 @@ pub async fn require_user(
         return Ok(next.run(req).await);
     }
     if let Some(key) = api_key_from(req.headers()) {
-        let p = check_api_key(&state, key).await?;
+        let p = check_api_key(&state, &key)?;
         if let Principal::ApiKey { scope, .. } = &p
             && scope != "admin"
         {
@@ -258,23 +286,20 @@ mod tests {
     }
 
     #[test]
-    fn revoked_keys_leave_the_cache() {
-        let mut c = KeyCache::default();
-        let (_, g) = c.get("a");
-        c.insert(g, "a".into(), (1, "admin".into()));
-        let (_, g) = c.get("b");
-        c.insert(g, "b".into(), (2, "ingest".into()));
-        assert_eq!(c.get("a").0, Some((1, "admin".into())));
-
-        c.revoke(1);
-        assert_eq!(c.get("a").0, None);
-        assert_eq!(c.get("b").0, Some((2, "ingest".into())));
-
-        // A lookup that read key 3 as valid before it was revoked does not
-        // put it back.
-        let (_, g) = c.get("c");
-        c.revoke(3);
-        c.insert(g, "c".into(), (3, "admin".into()));
-        assert_eq!(c.get("c").0, None);
+    fn only_ingest_keys_protect_ingestion() {
+        let mut k = ApiKeys::default();
+        k.add("a".into(), 1, "admin".into());
+        assert!(!k.ingest_protected());
+        k.add("i1".into(), 2, "ingest".into());
+        k.add("i2".into(), 3, "ingest".into());
+        assert!(k.ingest_protected());
+        k.remove(2);
+        assert!(k.ingest_protected());
+        k.remove(1);
+        k.remove(99);
+        assert!(k.ingest_protected());
+        k.remove(3);
+        assert!(!k.ingest_protected());
+        assert!(k.by_hash.is_empty());
     }
 }

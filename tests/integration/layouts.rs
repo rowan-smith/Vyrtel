@@ -457,11 +457,12 @@ async fn make_datadir_fixture() {
     // Observer 0.1.0 reads OBSERVER_* variables.
     let prefix = if written_by.starts_with("observer ") { "OBSERVER" } else { "VYRTEL" };
     // Releases before 0.1.2 have authentication off unless enabled; later
-    // ones always require a login and refuse the setting.
+    // ones always require a login, refuse the setting, and protect ingestion
+    // once the fixture's ingest key exists.
     let legacy_auth = ["observer 0.1.0", "vyrtel 0.1.1"].iter().any(|v| written_by.starts_with(v));
-    let auth_enabled = if legacy_auth { ("AUTH_ENABLED", "true") } else { ("AUTH_INGEST_API_KEY", "true") };
+    let auth = if legacy_auth { ("AUTH_ENABLED", "true") } else { ("AUTH_ADMIN_USERNAME", "admin") };
     let settings = [
-        auth_enabled,
+        auth,
         ("AUTH_ADMIN_PASSWORD", PASSWORD),
         // Seal the first batches into segments; later ones stay in the WAL.
         ("STORAGE_SEGMENT_MAX_AGE", "1s"),

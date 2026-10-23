@@ -51,9 +51,8 @@ max_metric_names = 10000     # names GET /api/v1/metrics returns; "truncated": t
 
 [auth]
 # The UI and API always need a login (or an admin API key). Ingestion is
-# open unless this is true; set it before exposing Vyrtel beyond a trusted
-# network.
-ingest_api_key = false
+# open until an ingest-scoped API key exists (Settings → API keys), and then
+# needs one; create one before exposing Vyrtel beyond a trusted network.
 # admin_username = "admin"
 # admin_password = "change-me"
 

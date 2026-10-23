@@ -341,16 +341,16 @@ since the process started.
 
 | Key              | Default | Env                            | Description                                                                                                                                       |
 |------------------|---------|--------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
-| `ingest_api_key` | `false` | `VYRTEL_AUTH_INGEST_API_KEY` | Require an API key for ingestion (`/api/v1/events`, `/v1/*`). The UI and the rest of the API always require a login or an admin API key.            |
 | `admin_username` | `admin` | `VYRTEL_AUTH_ADMIN_USERNAME` |                                                                                                                                                   |
 | `admin_password` | –       | `VYRTEL_AUTH_ADMIN_PASSWORD` | Hashed (Argon2id) into the metadata store at startup. If unset on first start, a random password is generated and printed once.                  |
 | `session_ttl`    | `7d`    | –                              | Login session lifetime.                                                                                                                           |
 
-> **Security note.** The UI and API always need a login, but by default
-> (`ingest_api_key = false`) anyone who can reach the port can write data.
-> Set `ingest_api_key = true` before exposing Vyrtel beyond a trusted
-> network, and put it behind TLS (a reverse proxy) — Vyrtel itself serves
-> plain HTTP.
+> **Security note.** The UI and API always need a login, but until an
+> ingest-scoped API key exists anyone who can reach the port can write
+> data. Create one (Settings → API keys) before exposing Vyrtel beyond a
+> trusted network: ingestion then requires a valid key, until the last
+> ingest key is revoked. Put Vyrtel behind TLS (a reverse proxy) — it
+> serves plain HTTP itself.
 
 #### Authentication changes in 0.1.2
 
@@ -359,11 +359,14 @@ since the process started.
   A configuration that still sets `auth.enabled` (or `VYRTEL_AUTH_ENABLED`)
   is refused at startup with what to do instead, so an upgrade never
   silently changes what it meant.
-* Ingestion is configured on its own: `auth.ingest_api_key` (default
-  `false`, open). An install that had `auth.enabled = true` must set it to
-  `true` to keep requiring keys for ingestion.
+* Ingestion follows the API keys: open while no ingest-scoped key exists,
+  and requiring a valid key while one does. An install that had
+  `auth.enabled = true` and ingest keys keeps requiring them with no
+  change. There is no setting for it; `auth.ingest_api_key` is refused like
+  `auth.enabled`.
 * `GET /api/v1/auth/me` still returns `authEnabled`, now always `true`;
-  `GET /api/v1/system/info` adds `ingestApiKey`.
+  `GET /api/v1/system/info` and `GET /api/v1/api-keys` add
+  `ingestKeyRequired`.
 
 ### `[alerts]`
 
@@ -414,11 +417,11 @@ set in the TOML file. A variable under a section's prefix
 (`VYRTEL_SERVER_`, `VYRTEL_STORAGE_`, `VYRTEL_RETENTION_`,
 `VYRTEL_INGEST_`, `VYRTEL_QUERY_`, `VYRTEL_AUTH_`, `VYRTEL_ALERTS_`,
 `VYRTEL_LOG_`) that is not one of them stops Vyrtel at startup (exit
-status 1) instead of being ignored, so a misspelt `VYRTEL_AUTH_INGEST_API_KEY`
+status 1) instead of being ignored, so a misspelt `VYRTEL_AUTH_ADMIN_PASSWORD`
 never starts a server with a setting other than the one meant:
 
 ```text
-vyrtel: unknown environment variable VYRTEL_AUTH_ENABLE: not a setting Vyrtel reads from the environment. Remove it, or set the option in the configuration file instead (see docs/configuration.md#environment-variables for the 28 supported variables)
+vyrtel: unknown environment variable VYRTEL_AUTH_ENABLE: not a setting Vyrtel reads from the environment. Remove it, or set the option in the configuration file instead (see docs/configuration.md#environment-variables for the 27 supported variables)
 ```
 
 Other `VYRTEL_*` names, such as those the test and release scripts use,
@@ -1111,8 +1114,8 @@ has no export or import step.
 | `tmp/`, `indexes/`, `.lock` | Scratch space and the process lock; recreated at start                                    | not needed   |
 
 The configuration file and `VYRTEL_*` environment variables are not in the
-data directory. Back them up separately; in particular keep
-`auth.ingest_api_key` the same on the restored host.
+data directory. Back them up separately. Whether ingestion needs a key is
+not configuration: it follows the restored API keys.
 
 **Protect backups like credentials.** They hold the password and key
 hashes, session tokens (hashed) and alert webhook URLs in plain text. A

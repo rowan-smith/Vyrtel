@@ -9,7 +9,7 @@ namespace Vyrtel.Harness;
 /// call reads the full response body so connection reuse is measured, and throws with
 /// the server's error text when a request fails. Signs in as admin before its first request
 /// (queries use the session), and sends the ingest API key, if any, on ingest requests: a
-/// session cookie does not authorize ingestion on a server with <c>auth.ingest_api_key = true</c>.
+/// session cookie does not authorize ingestion on a server that has ingest-scoped API keys.
 /// </summary>
 public sealed class ApiClient : IDisposable
 {
@@ -22,7 +22,7 @@ public sealed class ApiClient : IDisposable
 
     /// <summary>
     /// The API key ingest requests send, from <c>VYRTEL_HARNESS_INGEST_KEY</c>: needed only for a
-    /// running server with <c>auth.ingest_api_key = true</c>. (Not under <c>VYRTEL_INGEST_</c>,
+    /// running server that has ingest-scoped API keys. (Not under <c>VYRTEL_INGEST_</c>,
     /// which a launched server would refuse as an unknown setting.)
     /// </summary>
     public static string? IngestApiKeyFromEnvironment =>

@@ -147,7 +147,7 @@ export const api = {
   deleteAlert: (id: number) => del(`/api/v1/alerts/${id}`),
   evaluateAlert: (id: number) => post<Alert>(`/api/v1/alerts/${id}/evaluate`, {}),
 
-  apiKeys: () => get<{ apiKeys: ApiKey[] }>('/api/v1/api-keys'),
+  apiKeys: () => get<{ apiKeys: ApiKey[]; ingestKeyRequired: boolean }>('/api/v1/api-keys'),
   createApiKey: (name: string, scope: 'ingest' | 'admin') => post<ApiKey>('/api/v1/api-keys', { name, scope }),
   revokeApiKey: (id: number) => del(`/api/v1/api-keys/${id}`),
 

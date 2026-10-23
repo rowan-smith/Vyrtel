@@ -27,7 +27,7 @@ OTLP HTTP           http://0.0.0.0:8080/v1/*
 Storage             0 B
 Memory limit        512 MB
 Durability          normal
-Authentication      login for the UI/API; ingestion open (set auth.ingest_api_key to require keys)
+Authentication      login for the UI/API; ingestion open until an ingest API key is created
 
 Admin login         admin / 3f9c2a7d41b08e6c5a2d9f10
                     (generated once; set auth.admin_password to choose your own)

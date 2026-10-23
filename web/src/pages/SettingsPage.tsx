@@ -113,7 +113,7 @@ function SystemTab() {
         </tr>
         <tr>
           <th>Ingestion</th>
-          <td>{i.ingestApiKey ? 'API key required' : 'open (no API key needed)'}</td>
+          <td>{i.ingestKeyRequired ? 'API key required' : 'open (no ingest key yet)'}</td>
         </tr>
         <tr>
           <th>Events</th>
@@ -158,6 +158,7 @@ function SystemTab() {
 
 function KeysTab() {
   const [keys, setKeys] = useState<ApiKey[] | null>(null);
+  const [protectedIngest, setProtectedIngest] = useState<boolean | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [name, setName] = useState('');
   const [scope, setScope] = useState<'ingest' | 'admin'>('ingest');
@@ -165,7 +166,10 @@ function KeysTab() {
   const load = useCallback(() => {
     api
       .apiKeys()
-      .then((r) => setKeys(r.apiKeys))
+      .then((r) => {
+        setKeys(r.apiKeys);
+        setProtectedIngest(r.ingestKeyRequired);
+      })
       .catch(setError);
   }, []);
   useEffect(load, [load]);
@@ -173,8 +177,15 @@ function KeysTab() {
     <div>
       <p className="muted">
         Send keys as <code>Authorization: Bearer &lt;key&gt;</code> or <code>X-Api-Key</code>. Ingest keys can only send
-        data; admin keys can use the whole API. Keys are enforced when authentication is enabled.
+        data; admin keys can use the whole API.
       </p>
+      {protectedIngest !== null && (
+        <p className="notice" data-testid="ingest-protection">
+          {protectedIngest
+            ? 'Ingestion requires an API key. Revoking the last ingest key opens it again.'
+            : 'Ingestion is open: anyone who can reach Vyrtel can send data. Creating an ingest key protects it.'}
+        </p>
+      )}
       <form
         className="inline-form"
         onSubmit={async (e) => {

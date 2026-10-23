@@ -72,8 +72,8 @@ internal sealed record CliOptions
               --job <name>       BenchmarkDotNet job: dry, short, medium, default (default short)
               --out <path>       Where to write results.json (default docs/benchmarks/results.json)
               --label <name>     Version label for a version snapshot (default: server version)
-              --ingest-key <key> API key for ingestion, for a running server with
-                                 auth.ingest_api_key = true (or VYRTEL_HARNESS_INGEST_KEY)
+              --ingest-key <key> API key for ingestion, for a running server that has
+                                 ingest-scoped API keys (or VYRTEL_HARNESS_INGEST_KEY)
               --no-launch        Require an already-running server instead of launching one
               --keep-data        Keep the temporary data directory after the run
               --list             List the benchmarks and exit

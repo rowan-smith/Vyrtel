@@ -272,12 +272,11 @@ fn alert_state_transitions_and_history() {
 fn api_keys_store_hashes_only() {
     let m = Metadata::open_in_memory().unwrap();
     let k = m.create_api_key("ci", "vyr_abcd", "hash-1", "ingest").unwrap();
-    assert_eq!(m.find_api_key("hash-1").unwrap(), Some((k.id, "ingest".to_string())));
-    assert_eq!(m.find_api_key("nope").unwrap(), None);
+    assert_eq!(m.active_api_keys().unwrap(), vec![(k.id, "hash-1".to_string(), "ingest".to_string())]);
     m.touch_api_key(k.id).unwrap();
     assert!(m.list_api_keys().unwrap()[0].last_used_at.is_some());
     m.revoke_api_key(k.id).unwrap();
-    assert_eq!(m.find_api_key("hash-1").unwrap(), None);
+    assert_eq!(m.active_api_keys().unwrap(), vec![]);
     assert_eq!(m.count_api_keys().unwrap(), 0);
     assert!(matches!(m.revoke_api_key(k.id), Err(MetadataError::NotFound)));
 }

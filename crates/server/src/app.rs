@@ -13,7 +13,7 @@
 use std::future::Future;
 use std::pin::{Pin, pin};
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -120,6 +120,7 @@ impl App {
             Metadata::open(&dir.join(crate::datadir::METADATA_DB))
                 .map_err(|e| anyhow::anyhow!("opening metadata store: {e}"))?,
         );
+        let api_keys = crate::auth::ApiKeys::load(&metadata).map_err(|e| anyhow::anyhow!("loading API keys: {e}"))?;
         // Record the layout before storage recovery changes any telemetry
         // file, and before a new directory gets its first one.
         crate::datadir::record(dir, &layout).context("writing the data directory manifest")?;
@@ -194,7 +195,7 @@ impl App {
             received_requests: AtomicU64::new(0),
             http,
             key_touch: Mutex::new(Default::default()),
-            key_cache: Mutex::new(Default::default()),
+            api_keys: RwLock::new(api_keys),
             shutdown: rx.clone(),
             config,
         });
@@ -242,10 +243,10 @@ impl App {
             },
             c.server.max_connections,
             human_bytes(c.transport_limits().estimated_peak()),
-            if c.auth.ingest_api_key {
+            if self.state.api_keys.read().unwrap().ingest_protected() {
                 "login for the UI/API, API keys for ingestion"
             } else {
-                "login for the UI/API; ingestion open (set auth.ingest_api_key to require keys)"
+                "login for the UI/API; ingestion open until an ingest API key is created"
             },
         );
         if let Some(pw) = &self.generated_password {
@@ -709,8 +710,7 @@ mod tests {
         config.storage.path = dir.path().to_path_buf();
         config.alerts.enabled = false;
         let app = App::build(config).unwrap();
-        let (key, prefix, hash) = crate::auth::new_api_key();
-        app.state.metadata.create_api_key("test", &prefix, &hash, "admin").unwrap();
+        let (_, key) = crate::auth::create_api_key(&app.state, "test", "admin").unwrap();
         let bearer = format!("Bearer {key}");
         let request = |method: &str, uri: &str, body: &'static str| {
             Request::builder()
