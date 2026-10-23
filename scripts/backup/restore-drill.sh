@@ -138,7 +138,9 @@ rm -rf "$WORK/data"   # the original host is gone
 step "3. Restore on a clean host and start (no admin password configured)"
 mkdir "$WORK/restored"
 tar -C "$WORK/restored" -xzf "$WORK/backup.tar.gz"
-start "$WORK/restored"
+# Configuration is not in the data directory: the new host is given the
+# original's ingest setting, but not its admin password.
+start "$WORK/restored" VYRTEL_AUTH_INGEST_API_KEY=true
 grep -q 'Admin login' "$WORK/stdout.log" && fail "a new admin password was generated: the restored user was not used"
 
 step "4. Verification queries"
