@@ -22,3 +22,8 @@ path = "src/main.rs"
 [[bin]]
 name = "connload"
 path = "src/connload.rs"
+
+# Authenticated ingest under API key churn (AUTH-PERF-01).
+[[bin]]
+name = "keychurn"
+path = "src/keychurn.rs"

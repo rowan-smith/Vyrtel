@@ -172,6 +172,32 @@ one transaction, prepared statements) stores product metadata only: settings, AP
 and sessions, dashboards and panels, saved queries, alerts with state and
 history, aggregated query statistics. Telemetry never goes to SQLite.
 
+### API keys and request authentication
+
+Authenticating a request never reads SQLite. The active API keys (hash →
+id and scope, plus the count of ingest-scoped keys that decides whether
+ingestion is protected) are loaded at startup into an immutable `KeySet`
+(`crates/server/src/auth.rs`). Requests clone an `Arc` to the current set
+under a read lock that is only ever held for a pointer copy or swap, and
+take every part of one decision (is ingestion open, is this key valid,
+which scope) from that one set.
+
+A create or revoke (`ApiKeys::change`):
+
+1. takes one of 16 change permits, or fails with `503` at once;
+2. waits on an async mutex for its turn, holding no thread (dropping the
+   request here cancels it);
+3. on the blocking pool, writes SQLite, then builds the next set from the
+   current one and swaps it in, then releases its turn. A failed or
+   panicking write publishes nothing. Once started, this step runs to the
+   end even if the client goes away, so the store and the published set
+   never diverge and a late write cannot overtake a later change.
+
+The change is linearised at the swap, which follows the SQLite commit and
+precedes the response. Lock order is change mutex → set pointer; the set
+pointer is never held across anything else, and the per-key last-used
+throttle (`key_touch`) is a separate lock never held with either.
+
 ## Background jobs
 
 | Job                             | Where                         | Interval                                  |

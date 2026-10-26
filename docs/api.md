@@ -108,6 +108,23 @@ DELETE /api/v1/api-keys/{id}
 The create response contains the plaintext `key` — it is shown once; only a
 SHA-256 hash is stored.
 
+Key changes take effect when their response is sent:
+
+* A `201` create or `204` revoke has been committed to the metadata store,
+  and every request that starts afterwards is authenticated against it
+  (including the first-key/last-key change to ingest protection). Requests
+  already admitted before the change finish as admitted; nothing is
+  cancelled retroactively.
+* A failed change (`4xx`/`5xx`) changes nothing: a create that fails
+  accepts no key and does not protect ingestion; a revoke that fails leaves
+  the key working. Retry it.
+* Changes run one at a time. While 16 are already waiting or running,
+  another gets `503 unavailable` with `Retry-After: 1`. A change whose
+  client disconnects before its turn is dropped; once its write has started
+  it completes.
+* Writing a change never delays ingestion or other requests: they are
+  authenticated against the keys in force until the change commits.
+
 ## Native event ingestion
 
 ```

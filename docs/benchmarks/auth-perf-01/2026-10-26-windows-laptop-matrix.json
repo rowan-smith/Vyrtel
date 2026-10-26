@@ -1,0 +1,1819 @@
+{
+  "report": {
+    "high-batched-churn": {
+      "events/s": {
+        "baseline": [
+          143293.86486076063,
+          134639.5699212336,
+          147067.75109903904
+        ],
+        "candidate": [
+          119352.00677960049,
+          145417.30496890232,
+          119172.81753451454
+        ],
+        "baselineMedian": 143293.86486076063,
+        "candidateMedian": 119352.00677960049
+      },
+      "requests/s": {
+        "baseline": [
+          1432.9386486076062,
+          1346.395699212336,
+          1470.6775109903906
+        ],
+        "candidate": [
+          1193.520067796005,
+          1454.1730496890232,
+          1191.7281753451455
+        ],
+        "baselineMedian": 1432.9386486076062,
+        "candidateMedian": 1193.520067796005
+      },
+      "CPU µs/event": {
+        "baseline": [
+          41.75237962414142,
+          47.26598702502317,
+          40.42936241040796
+        ],
+        "candidate": [
+          44.86184155605643,
+          40.652472527472526,
+          46.04331615768087
+        ],
+        "baselineMedian": 41.75237962414142,
+        "candidateMedian": 44.86184155605643
+      },
+      "ACK p50 ms": {
+        "baseline": [
+          3.991,
+          3.94,
+          3.889
+        ],
+        "candidate": [
+          4.141,
+          3.877,
+          4.24
+        ],
+        "baselineMedian": 3.94,
+        "candidateMedian": 4.141
+      },
+      "ACK p95 ms": {
+        "baseline": [
+          8.955,
+          7.959,
+          8.229
+        ],
+        "candidate": [
+          10.284,
+          8.404,
+          10.644
+        ],
+        "baselineMedian": 8.229,
+        "candidateMedian": 10.284
+      },
+      "ACK p99 ms": {
+        "baseline": [
+          21.247,
+          14.415,
+          20.233
+        ],
+        "candidate": [
+          22.515,
+          19.949,
+          26.029
+        ],
+        "baselineMedian": 20.233,
+        "candidateMedian": 22.515
+      },
+      "ACK max ms": {
+        "baseline": [
+          139.499,
+          315.246,
+          191.953
+        ],
+        "candidate": [
+          366.28,
+          230.377,
+          303.511
+        ],
+        "baselineMedian": 191.953,
+        "candidateMedian": 303.511
+      },
+      "auth p50 ms": {
+        "baseline": [
+          2.354,
+          2.407,
+          2.276
+        ],
+        "candidate": [
+          2.537,
+          2.339,
+          2.624
+        ],
+        "baselineMedian": 2.354,
+        "candidateMedian": 2.537
+      },
+      "auth p99 ms": {
+        "baseline": [
+          16.55,
+          10.498,
+          14.414
+        ],
+        "candidate": [
+          16.978,
+          13.857,
+          19.063
+        ],
+        "baselineMedian": 14.414,
+        "candidateMedian": 16.978
+      },
+      "auth max ms": {
+        "baseline": [
+          107.834,
+          29.578,
+          56.769
+        ],
+        "candidate": [
+          71.167,
+          159.665,
+          57.92
+        ],
+        "baselineMedian": 56.769,
+        "candidateMedian": 71.167
+      },
+      "heartbeat p99 ms": {
+        "baseline": [
+          12.683,
+          9.658,
+          14.231
+        ],
+        "candidate": [
+          15.962,
+          15.173,
+          15.82
+        ],
+        "baselineMedian": 12.683,
+        "candidateMedian": 15.82
+      },
+      "429s": {
+        "baseline": [
+          374152,
+          398822,
+          391260
+        ],
+        "candidate": [
+          343961,
+          386850,
+          334711
+        ],
+        "baselineMedian": 391260,
+        "candidateMedian": 343961
+      },
+      "key pairs": {
+        "baseline": [
+          660,
+          673,
+          659
+        ],
+        "candidate": [
+          621,
+          663,
+          619
+        ],
+        "baselineMedian": 660,
+        "candidateMedian": 621
+      },
+      "create p99 ms": {
+        "baseline": [
+          18.118,
+          17.821,
+          31.207
+        ],
+        "candidate": [
+          35.892,
+          22.519,
+          33.847
+        ],
+        "baselineMedian": 18.118,
+        "candidateMedian": 33.847
+      },
+      "revoke p99 ms": {
+        "baseline": [
+          18.143,
+          12.536,
+          25.679
+        ],
+        "candidate": [
+          37.39,
+          21.948,
+          26.263
+        ],
+        "baselineMedian": 18.143,
+        "candidateMedian": 26.263
+      },
+      "peak MiB": {
+        "baseline": [
+          175.09375,
+          183.66015625,
+          175.08984375
+        ],
+        "candidate": [
+          184.66796875,
+          182.70703125,
+          180.62109375
+        ],
+        "baselineMedian": 175.09375,
+        "candidateMedian": 182.70703125
+      }
+    },
+    "high-batched-steady": {
+      "events/s": {
+        "baseline": [
+          163115.29580645481,
+          112657.69027783925,
+          166805.3505412918
+        ],
+        "candidate": [
+          145316.6767212374,
+          132278.96016322103,
+          151142.87309021427
+        ],
+        "baselineMedian": 163115.29580645481,
+        "candidateMedian": 145316.6767212374
+      },
+      "requests/s": {
+        "baseline": [
+          1631.152958064548,
+          1126.5769027783927,
+          1668.053505412918
+        ],
+        "candidate": [
+          1453.166767212374,
+          1322.7896016322102,
+          1511.428730902143
+        ],
+        "baselineMedian": 1631.152958064548,
+        "candidateMedian": 1453.166767212374
+      },
+      "CPU µs/event": {
+        "baseline": [
+          38.18950723216474,
+          45.51020408163265,
+          37.73025429059215
+        ],
+        "candidate": [
+          43.299075378957134,
+          42.148416836696136,
+          41.18191739144813
+        ],
+        "baselineMedian": 38.18950723216474,
+        "candidateMedian": 42.148416836696136
+      },
+      "ACK p50 ms": {
+        "baseline": [
+          3.72,
+          4.216,
+          3.702
+        ],
+        "candidate": [
+          3.819,
+          4.106,
+          3.801
+        ],
+        "baselineMedian": 3.72,
+        "candidateMedian": 3.819
+      },
+      "ACK p95 ms": {
+        "baseline": [
+          7.219,
+          10.575,
+          7.038
+        ],
+        "candidate": [
+          7.66,
+          8.622,
+          7.886
+        ],
+        "baselineMedian": 7.219,
+        "candidateMedian": 7.886
+      },
+      "ACK p99 ms": {
+        "baseline": [
+          13.498,
+          27.841,
+          13.96
+        ],
+        "candidate": [
+          15.923,
+          18.656,
+          17.302
+        ],
+        "baselineMedian": 13.96,
+        "candidateMedian": 17.302
+      },
+      "ACK max ms": {
+        "baseline": [
+          98.991,
+          305.465,
+          124.957
+        ],
+        "candidate": [
+          195.418,
+          262.374,
+          128.25
+        ],
+        "baselineMedian": 124.957,
+        "candidateMedian": 195.418
+      },
+      "auth p50 ms": {
+        "baseline": [
+          2.13,
+          2.668,
+          2.2
+        ],
+        "candidate": [
+          2.339,
+          2.47,
+          2.18
+        ],
+        "baselineMedian": 2.2,
+        "candidateMedian": 2.339
+      },
+      "auth p99 ms": {
+        "baseline": [
+          9.966,
+          21.977,
+          8.968
+        ],
+        "candidate": [
+          9.686,
+          15.718,
+          11.257
+        ],
+        "baselineMedian": 9.966,
+        "candidateMedian": 11.257
+      },
+      "auth max ms": {
+        "baseline": [
+          68.811,
+          51.098,
+          22.903
+        ],
+        "candidate": [
+          32.77,
+          75.606,
+          38.331
+        ],
+        "baselineMedian": 51.098,
+        "candidateMedian": 38.331
+      },
+      "heartbeat p99 ms": {
+        "baseline": [
+          8.542,
+          20.71,
+          8.773
+        ],
+        "candidate": [
+          11.006,
+          14.242,
+          11.611
+        ],
+        "baselineMedian": 8.773,
+        "candidateMedian": 11.611
+      },
+      "429s": {
+        "baseline": [
+          429972,
+          324783,
+          433935
+        ],
+        "candidate": [
+          414296,
+          365634,
+          424171
+        ],
+        "baselineMedian": 429972,
+        "candidateMedian": 414296
+      },
+      "key pairs": {
+        "baseline": [
+          0,
+          0,
+          0
+        ],
+        "candidate": [
+          0,
+          0,
+          0
+        ],
+        "baselineMedian": 0,
+        "candidateMedian": 0
+      },
+      "create p99 ms": {
+        "baseline": [
+          null,
+          null,
+          null
+        ],
+        "candidate": [
+          null,
+          null,
+          null
+        ],
+        "baselineMedian": null,
+        "candidateMedian": null
+      },
+      "revoke p99 ms": {
+        "baseline": [
+          null,
+          null,
+          null
+        ],
+        "candidate": [
+          null,
+          null,
+          null
+        ],
+        "baselineMedian": null,
+        "candidateMedian": null
+      },
+      "peak MiB": {
+        "baseline": [
+          178.94921875,
+          179.3515625,
+          177.10546875
+        ],
+        "candidate": [
+          181.00390625,
+          179.2421875,
+          170.1015625
+        ],
+        "baselineMedian": 178.94921875,
+        "candidateMedian": 179.2421875
+      }
+    },
+    "high-small-churn": {
+      "events/s": {
+        "baseline": [
+          6095.454153222761,
+          4847.483476932665,
+          6735.441690738181
+        ],
+        "candidate": [
+          6937.765857338131,
+          4930.233399527855,
+          6858.433580246105
+        ],
+        "baselineMedian": 6095.454153222761,
+        "candidateMedian": 6858.433580246105
+      },
+      "requests/s": {
+        "baseline": [
+          6095.454153222761,
+          4847.483476932665,
+          6735.441690738181
+        ],
+        "candidate": [
+          6937.765857338131,
+          4930.233399527855,
+          6858.433580246105
+        ],
+        "baselineMedian": 6095.454153222761,
+        "candidateMedian": 6858.433580246105
+      },
+      "CPU µs/event": {
+        "baseline": [
+          1099.3660972749562,
+          1071.3329626655134,
+          1056.7014130869945
+        ],
+        "candidate": [
+          999.9351533622981,
+          1087.3707682951551,
+          977.8490236082773
+        ],
+        "baselineMedian": 1071.3329626655134,
+        "candidateMedian": 999.9351533622981
+      },
+      "ACK p50 ms": {
+        "baseline": [
+          2.084,
+          2.358,
+          1.93
+        ],
+        "candidate": [
+          1.861,
+          2.314,
+          1.882
+        ],
+        "baselineMedian": 2.084,
+        "candidateMedian": 1.882
+      },
+      "ACK p95 ms": {
+        "baseline": [
+          3.548,
+          4.858,
+          3.202
+        ],
+        "candidate": [
+          3.128,
+          4.79,
+          3.188
+        ],
+        "baselineMedian": 3.548,
+        "candidateMedian": 3.188
+      },
+      "ACK p99 ms": {
+        "baseline": [
+          4.756,
+          7.903,
+          4.109
+        ],
+        "candidate": [
+          4.026,
+          8.284,
+          4.175
+        ],
+        "baselineMedian": 4.756,
+        "candidateMedian": 4.175
+      },
+      "ACK max ms": {
+        "baseline": [
+          29.875,
+          159.945,
+          45.935
+        ],
+        "candidate": [
+          40.233,
+          118.352,
+          22.181
+        ],
+        "baselineMedian": 45.935,
+        "candidateMedian": 40.233
+      },
+      "auth p50 ms": {
+        "baseline": [
+          1.656,
+          1.94,
+          1.549
+        ],
+        "candidate": [
+          1.495,
+          1.934,
+          1.514
+        ],
+        "baselineMedian": 1.656,
+        "candidateMedian": 1.514
+      },
+      "auth p99 ms": {
+        "baseline": [
+          4.652,
+          9.327,
+          3.745
+        ],
+        "candidate": [
+          3.779,
+          10.055,
+          3.703
+        ],
+        "baselineMedian": 4.652,
+        "candidateMedian": 3.779
+      },
+      "auth max ms": {
+        "baseline": [
+          20.616,
+          37.298,
+          8.542
+        ],
+        "candidate": [
+          12.207,
+          21.935,
+          7.955
+        ],
+        "baselineMedian": 20.616,
+        "candidateMedian": 12.207
+      },
+      "heartbeat p99 ms": {
+        "baseline": [
+          4.37,
+          9.708,
+          3.606
+        ],
+        "candidate": [
+          3.54,
+          10.596,
+          3.827
+        ],
+        "baselineMedian": 4.37,
+        "candidateMedian": 3.827
+      },
+      "429s": {
+        "baseline": [
+          537375,
+          432543,
+          582690
+        ],
+        "candidate": [
+          603002,
+          442542,
+          595723
+        ],
+        "baselineMedian": 537375,
+        "candidateMedian": 595723
+      },
+      "key pairs": {
+        "baseline": [
+          770,
+          717,
+          783
+        ],
+        "candidate": [
+          786,
+          716,
+          786
+        ],
+        "baselineMedian": 770,
+        "candidateMedian": 786
+      },
+      "create p99 ms": {
+        "baseline": [
+          5.423,
+          10.882,
+          4.63
+        ],
+        "candidate": [
+          4.235,
+          13.332,
+          4.655
+        ],
+        "baselineMedian": 5.423,
+        "candidateMedian": 4.655
+      },
+      "revoke p99 ms": {
+        "baseline": [
+          5.827,
+          16.045,
+          4.185
+        ],
+        "candidate": [
+          4.358,
+          12.712,
+          4.11
+        ],
+        "baselineMedian": 5.827,
+        "candidateMedian": 4.358
+      },
+      "peak MiB": {
+        "baseline": [
+          109.69140625,
+          98.53515625,
+          111.12109375
+        ],
+        "candidate": [
+          112.57421875,
+          99.41796875,
+          110.79296875
+        ],
+        "baselineMedian": 109.69140625,
+        "candidateMedian": 110.79296875
+      }
+    },
+    "high-small-steady": {
+      "events/s": {
+        "baseline": [
+          3709.7363556947025,
+          5885.992801744371,
+          5747.492008145305
+        ],
+        "candidate": [
+          6303.98780459961,
+          5598.314662412518,
+          6240.7243807201785
+        ],
+        "baselineMedian": 5747.492008145305,
+        "candidateMedian": 6240.7243807201785
+      },
+      "requests/s": {
+        "baseline": [
+          3709.7363556947025,
+          5885.992801744371,
+          5747.492008145305
+        ],
+        "candidate": [
+          6303.98780459961,
+          5598.314662412518,
+          6240.7243807201785
+        ],
+        "baselineMedian": 5747.492008145305,
+        "candidateMedian": 6240.7243807201785
+      },
+      "CPU µs/event": {
+        "baseline": [
+          1205.6536912028241,
+          1107.3366680537745,
+          1027.9357790185948
+        ],
+        "candidate": [
+          991.0881354857124,
+          1031.2407924929241,
+          1042.581141264298
+        ],
+        "baselineMedian": 1107.3366680537745,
+        "candidateMedian": 1031.2407924929241
+      },
+      "ACK p50 ms": {
+        "baseline": [
+          2.646,
+          2.132,
+          2.13
+        ],
+        "candidate": [
+          2.054,
+          2.156,
+          2.037
+        ],
+        "baselineMedian": 2.132,
+        "candidateMedian": 2.054
+      },
+      "ACK p95 ms": {
+        "baseline": [
+          6.482,
+          3.811,
+          3.999
+        ],
+        "candidate": [
+          3.607,
+          4.09,
+          3.514
+        ],
+        "baselineMedian": 3.999,
+        "candidateMedian": 3.607
+      },
+      "ACK p99 ms": {
+        "baseline": [
+          11.771,
+          5.314,
+          5.743
+        ],
+        "candidate": [
+          4.95,
+          6.168,
+          4.799
+        ],
+        "baselineMedian": 5.743,
+        "candidateMedian": 4.95
+      },
+      "ACK max ms": {
+        "baseline": [
+          141.848,
+          44.057,
+          41.98
+        ],
+        "candidate": [
+          27.873,
+          62.862,
+          27.379
+        ],
+        "baselineMedian": 44.057,
+        "candidateMedian": 27.873
+      },
+      "auth p50 ms": {
+        "baseline": [
+          2.272,
+          1.701,
+          1.738
+        ],
+        "candidate": [
+          1.643,
+          1.764,
+          1.631
+        ],
+        "baselineMedian": 1.738,
+        "candidateMedian": 1.643
+      },
+      "auth p99 ms": {
+        "baseline": [
+          13.873,
+          4.457,
+          4.645
+        ],
+        "candidate": [
+          4.399,
+          5.692,
+          4.361
+        ],
+        "baselineMedian": 4.645,
+        "candidateMedian": 4.399
+      },
+      "auth max ms": {
+        "baseline": [
+          60.316,
+          14.439,
+          30.505
+        ],
+        "candidate": [
+          14.118,
+          16.007,
+          8.934
+        ],
+        "baselineMedian": 30.505,
+        "candidateMedian": 14.118
+      },
+      "heartbeat p99 ms": {
+        "baseline": [
+          13.12,
+          4.736,
+          5.27
+        ],
+        "candidate": [
+          4.609,
+          6.325,
+          4.46
+        ],
+        "baselineMedian": 5.27,
+        "candidateMedian": 4.609
+      },
+      "429s": {
+        "baseline": [
+          371080,
+          520814,
+          510595
+        ],
+        "candidate": [
+          531528,
+          496443,
+          546127
+        ],
+        "baselineMedian": 510595,
+        "candidateMedian": 531528
+      },
+      "key pairs": {
+        "baseline": [
+          0,
+          0,
+          0
+        ],
+        "candidate": [
+          0,
+          0,
+          0
+        ],
+        "baselineMedian": 0,
+        "candidateMedian": 0
+      },
+      "create p99 ms": {
+        "baseline": [
+          null,
+          null,
+          null
+        ],
+        "candidate": [
+          null,
+          null,
+          null
+        ],
+        "baselineMedian": null,
+        "candidateMedian": null
+      },
+      "revoke p99 ms": {
+        "baseline": [
+          null,
+          null,
+          null
+        ],
+        "candidate": [
+          null,
+          null,
+          null
+        ],
+        "baselineMedian": null,
+        "candidateMedian": null
+      },
+      "peak MiB": {
+        "baseline": [
+          79.1171875,
+          110.26953125,
+          111.48828125
+        ],
+        "candidate": [
+          110.62890625,
+          110.25,
+          111.71484375
+        ],
+        "baselineMedian": 110.26953125,
+        "candidateMedian": 110.62890625
+      }
+    },
+    "low-batched-churn": {
+      "events/s": {
+        "baseline": [
+          233290.48124437185,
+          372047.42679758824,
+          236535.4930660995
+        ],
+        "candidate": [
+          267089.1946731819,
+          347674.5657570748,
+          276151.74018218025
+        ],
+        "baselineMedian": 236535.4930660995,
+        "candidateMedian": 276151.74018218025
+      },
+      "requests/s": {
+        "baseline": [
+          2332.9048124437186,
+          3720.4742679758824,
+          2365.3549306609953
+        ],
+        "candidate": [
+          2670.891946731819,
+          3476.7456575707483,
+          2761.5174018218027
+        ],
+        "baselineMedian": 2365.3549306609953,
+        "candidateMedian": 2761.5174018218027
+      },
+      "CPU µs/event": {
+        "baseline": [
+          14.593726581736432,
+          9.576140256599718,
+          14.477993534346146
+        ],
+        "candidate": [
+          13.252380863285124,
+          10.16048158843728,
+          12.752637197604358
+        ],
+        "baselineMedian": 14.477993534346146,
+        "candidateMedian": 12.752637197604358
+      },
+      "ACK p50 ms": {
+        "baseline": [
+          1.15,
+          0.798,
+          1.175
+        ],
+        "candidate": [
+          1.041,
+          0.846,
+          1.01
+        ],
+        "baselineMedian": 1.15,
+        "candidateMedian": 1.01
+      },
+      "ACK p95 ms": {
+        "baseline": [
+          2.502,
+          1.203,
+          2.367
+        ],
+        "candidate": [
+          2.053,
+          1.323,
+          1.982
+        ],
+        "baselineMedian": 2.367,
+        "candidateMedian": 1.982
+      },
+      "ACK p99 ms": {
+        "baseline": [
+          4.819,
+          1.657,
+          4.633
+        ],
+        "candidate": [
+          3.501,
+          1.837,
+          3.313
+        ],
+        "baselineMedian": 4.633,
+        "candidateMedian": 3.313
+      },
+      "ACK max ms": {
+        "baseline": [
+          75.16,
+          37.898,
+          60.053
+        ],
+        "candidate": [
+          42.817,
+          76.341,
+          45.33
+        ],
+        "baselineMedian": 60.053,
+        "candidateMedian": 45.33
+      },
+      "auth p50 ms": {
+        "baseline": [
+          0.402,
+          0.23,
+          0.405
+        ],
+        "candidate": [
+          0.354,
+          0.263,
+          0.34
+        ],
+        "baselineMedian": 0.402,
+        "candidateMedian": 0.34
+      },
+      "auth p99 ms": {
+        "baseline": [
+          1.624,
+          0.577,
+          1.389
+        ],
+        "candidate": [
+          1.295,
+          0.653,
+          1.088
+        ],
+        "baselineMedian": 1.389,
+        "candidateMedian": 1.088
+      },
+      "auth max ms": {
+        "baseline": [
+          13.116,
+          3.983,
+          11.49
+        ],
+        "candidate": [
+          7.717,
+          32.648,
+          5.682
+        ],
+        "baselineMedian": 11.49,
+        "candidateMedian": 7.717
+      },
+      "heartbeat p99 ms": {
+        "baseline": [
+          1.33,
+          0.561,
+          1.233
+        ],
+        "candidate": [
+          1.008,
+          0.684,
+          0.976
+        ],
+        "baselineMedian": 1.233,
+        "candidateMedian": 0.976
+      },
+      "429s": {
+        "baseline": [
+          27068,
+          42720,
+          26055
+        ],
+        "candidate": [
+          30506,
+          38714,
+          31049
+        ],
+        "baselineMedian": 27068,
+        "candidateMedian": 31049
+      },
+      "key pairs": {
+        "baseline": [
+          868,
+          906,
+          869
+        ],
+        "candidate": [
+          879,
+          899,
+          885
+        ],
+        "baselineMedian": 869,
+        "candidateMedian": 885
+      },
+      "create p99 ms": {
+        "baseline": [
+          5.814,
+          1.412,
+          4.237
+        ],
+        "candidate": [
+          4.3,
+          2.099,
+          3.188
+        ],
+        "baselineMedian": 4.237,
+        "candidateMedian": 3.188
+      },
+      "revoke p99 ms": {
+        "baseline": [
+          2.547,
+          1.095,
+          3.331
+        ],
+        "candidate": [
+          2.931,
+          1.18,
+          2.203
+        ],
+        "baselineMedian": 2.547,
+        "candidateMedian": 2.203
+      },
+      "peak MiB": {
+        "baseline": [
+          152.53515625,
+          148.41015625,
+          150.3671875
+        ],
+        "candidate": [
+          146.05859375,
+          155.6328125,
+          146.0234375
+        ],
+        "baselineMedian": 150.3671875,
+        "candidateMedian": 146.05859375
+      }
+    },
+    "low-batched-steady": {
+      "events/s": {
+        "baseline": [
+          219276.99526831874,
+          330499.03421043133,
+          255818.30801012812
+        ],
+        "candidate": [
+          184662.22711602613,
+          360334.15529360325,
+          242472.78122726287
+        ],
+        "baselineMedian": 255818.30801012812,
+        "candidateMedian": 242472.78122726287
+      },
+      "requests/s": {
+        "baseline": [
+          2192.7699526831875,
+          3304.9903421043136,
+          2558.1830801012816
+        ],
+        "candidate": [
+          1846.6222711602613,
+          3603.3415529360323,
+          2424.7278122726284
+        ],
+        "baselineMedian": 2558.1830801012816,
+        "candidateMedian": 2424.7278122726284
+      },
+      "CPU µs/event": {
+        "baseline": [
+          15.038982355354944,
+          10.749047820567077,
+          13.344268056938668
+        ],
+        "candidate": [
+          17.411898446381205,
+          9.797372214214436,
+          14.224182346516086
+        ],
+        "baselineMedian": 13.344268056938668,
+        "candidateMedian": 14.224182346516086
+      },
+      "ACK p50 ms": {
+        "baseline": [
+          1.221,
+          0.878,
+          1.087
+        ],
+        "candidate": [
+          1.524,
+          0.82,
+          1.124
+        ],
+        "baselineMedian": 1.087,
+        "candidateMedian": 1.124
+      },
+      "ACK p95 ms": {
+        "baseline": [
+          2.554,
+          1.446,
+          2.188
+        ],
+        "candidate": [
+          3.057,
+          1.24,
+          2.382
+        ],
+        "baselineMedian": 2.188,
+        "candidateMedian": 2.382
+      },
+      "ACK p99 ms": {
+        "baseline": [
+          5.18,
+          2.002,
+          3.654
+        ],
+        "candidate": [
+          7.795,
+          1.673,
+          4.617
+        ],
+        "baselineMedian": 3.654,
+        "candidateMedian": 4.617
+      },
+      "ACK max ms": {
+        "baseline": [
+          53.047,
+          41.205,
+          46.516
+        ],
+        "candidate": [
+          76.972,
+          36.42,
+          70.994
+        ],
+        "baselineMedian": 46.516,
+        "candidateMedian": 70.994
+      },
+      "auth p50 ms": {
+        "baseline": [
+          0.422,
+          0.276,
+          0.367
+        ],
+        "candidate": [
+          0.477,
+          0.243,
+          0.386
+        ],
+        "baselineMedian": 0.367,
+        "candidateMedian": 0.386
+      },
+      "auth p99 ms": {
+        "baseline": [
+          1.325,
+          0.789,
+          1.166
+        ],
+        "candidate": [
+          1.885,
+          0.625,
+          1.525
+        ],
+        "baselineMedian": 1.166,
+        "candidateMedian": 1.525
+      },
+      "auth max ms": {
+        "baseline": [
+          3.116,
+          3.511,
+          2.863
+        ],
+        "candidate": [
+          40.787,
+          5.068,
+          7.867
+        ],
+        "baselineMedian": 3.116,
+        "candidateMedian": 7.867
+      },
+      "heartbeat p99 ms": {
+        "baseline": [
+          1.416,
+          0.688,
+          1.064
+        ],
+        "candidate": [
+          1.496,
+          0.599,
+          1.306
+        ],
+        "baselineMedian": 1.064,
+        "candidateMedian": 1.306
+      },
+      "429s": {
+        "baseline": [
+          27289,
+          37258,
+          28779
+        ],
+        "candidate": [
+          22002,
+          41180,
+          27317
+        ],
+        "baselineMedian": 28779,
+        "candidateMedian": 27317
+      },
+      "key pairs": {
+        "baseline": [
+          0,
+          0,
+          0
+        ],
+        "candidate": [
+          0,
+          0,
+          0
+        ],
+        "baselineMedian": 0,
+        "candidateMedian": 0
+      },
+      "create p99 ms": {
+        "baseline": [
+          null,
+          null,
+          null
+        ],
+        "candidate": [
+          null,
+          null,
+          null
+        ],
+        "baselineMedian": null,
+        "candidateMedian": null
+      },
+      "revoke p99 ms": {
+        "baseline": [
+          null,
+          null,
+          null
+        ],
+        "candidate": [
+          null,
+          null,
+          null
+        ],
+        "baselineMedian": null,
+        "candidateMedian": null
+      },
+      "peak MiB": {
+        "baseline": [
+          158.46875,
+          148.84375,
+          145.5625
+        ],
+        "candidate": [
+          152.765625,
+          148.5,
+          144.06640625
+        ],
+        "baselineMedian": 148.84375,
+        "candidateMedian": 148.5
+      }
+    },
+    "low-small-churn": {
+      "events/s": {
+        "baseline": [
+          9957.650277344039,
+          8683.698091938199,
+          11036.803407813873
+        ],
+        "candidate": [
+          8304.21599226688,
+          9703.969441087735,
+          9502.789048915536
+        ],
+        "baselineMedian": 9957.650277344039,
+        "candidateMedian": 9502.789048915536
+      },
+      "requests/s": {
+        "baseline": [
+          9957.650277344039,
+          8683.698091938199,
+          11036.803407813873
+        ],
+        "candidate": [
+          8304.21599226688,
+          9703.969441087735,
+          9502.789048915536
+        ],
+        "baselineMedian": 9957.650277344039,
+        "candidateMedian": 9502.789048915536
+      },
+      "CPU µs/event": {
+        "baseline": [
+          270.6239845959444,
+          305.4067583040374,
+          242.98532585825404
+        ],
+        "candidate": [
+          323.9445938061986,
+          281.3580958655905,
+          285.9532564268468
+        ],
+        "baselineMedian": 270.6239845959444,
+        "candidateMedian": 285.9532564268468
+      },
+      "ACK p50 ms": {
+        "baseline": [
+          0.357,
+          0.393,
+          0.325
+        ],
+        "candidate": [
+          0.411,
+          0.363,
+          0.372
+        ],
+        "baselineMedian": 0.357,
+        "candidateMedian": 0.372
+      },
+      "ACK p95 ms": {
+        "baseline": [
+          0.596,
+          0.747,
+          0.524
+        ],
+        "candidate": [
+          0.793,
+          0.622,
+          0.638
+        ],
+        "baselineMedian": 0.596,
+        "candidateMedian": 0.638
+      },
+      "ACK p99 ms": {
+        "baseline": [
+          0.761,
+          1.044,
+          0.662
+        ],
+        "candidate": [
+          1.113,
+          0.817,
+          0.844
+        ],
+        "baselineMedian": 0.761,
+        "candidateMedian": 0.844
+      },
+      "ACK max ms": {
+        "baseline": [
+          18.33,
+          11.299,
+          11.697
+        ],
+        "candidate": [
+          14.754,
+          16.589,
+          17.235
+        ],
+        "baselineMedian": 11.697,
+        "candidateMedian": 16.589
+      },
+      "auth p50 ms": {
+        "baseline": [
+          0.256,
+          0.286,
+          0.231
+        ],
+        "candidate": [
+          0.307,
+          0.265,
+          0.265
+        ],
+        "baselineMedian": 0.256,
+        "candidateMedian": 0.265
+      },
+      "auth p99 ms": {
+        "baseline": [
+          0.659,
+          0.878,
+          0.542
+        ],
+        "candidate": [
+          0.909,
+          0.725,
+          0.699
+        ],
+        "baselineMedian": 0.659,
+        "candidateMedian": 0.725
+      },
+      "auth max ms": {
+        "baseline": [
+          3.274,
+          4.222,
+          5.757
+        ],
+        "candidate": [
+          9.979,
+          14.07,
+          1.697
+        ],
+        "baselineMedian": 4.222,
+        "candidateMedian": 9.979
+      },
+      "heartbeat p99 ms": {
+        "baseline": [
+          0.558,
+          0.775,
+          0.509
+        ],
+        "candidate": [
+          0.849,
+          0.649,
+          0.636
+        ],
+        "baselineMedian": 0.558,
+        "candidateMedian": 0.649
+      },
+      "429s": {
+        "baseline": [
+          10787,
+          10877,
+          10411
+        ],
+        "candidate": [
+          10102,
+          10489,
+          11155
+        ],
+        "baselineMedian": 10787,
+        "candidateMedian": 10489
+      },
+      "key pairs": {
+        "baseline": [
+          907,
+          897,
+          908
+        ],
+        "candidate": [
+          893,
+          904,
+          903
+        ],
+        "baselineMedian": 907,
+        "candidateMedian": 903
+      },
+      "create p99 ms": {
+        "baseline": [
+          1.312,
+          3.063,
+          1.201
+        ],
+        "candidate": [
+          4.248,
+          1.813,
+          1.628
+        ],
+        "baselineMedian": 1.312,
+        "candidateMedian": 1.813
+      },
+      "revoke p99 ms": {
+        "baseline": [
+          1.068,
+          1.775,
+          0.942
+        ],
+        "candidate": [
+          1.848,
+          1.333,
+          1.324
+        ],
+        "baselineMedian": 1.068,
+        "candidateMedian": 1.333
+      },
+      "peak MiB": {
+        "baseline": [
+          102.4375,
+          101.1796875,
+          103.3671875
+        ],
+        "candidate": [
+          104.26953125,
+          105.8359375,
+          102.390625
+        ],
+        "baselineMedian": 102.4375,
+        "candidateMedian": 104.26953125
+      }
+    },
+    "low-small-steady": {
+      "events/s": {
+        "baseline": [
+          11436.291762206887,
+          7690.878465160096,
+          9919.808341514528
+        ],
+        "candidate": [
+          10057.555286310053,
+          7514.604564879727,
+          11820.698959249983
+        ],
+        "baselineMedian": 9919.808341514528,
+        "candidateMedian": 10057.555286310053
+      },
+      "requests/s": {
+        "baseline": [
+          11436.291762206887,
+          7690.878465160096,
+          9919.808341514528
+        ],
+        "candidate": [
+          10057.555286310053,
+          7514.604564879727,
+          11820.698959249983
+        ],
+        "baselineMedian": 9919.808341514528,
+        "candidateMedian": 10057.555286310053
+      },
+      "CPU µs/event": {
+        "baseline": [
+          230.28385653359436,
+          334.16050617781184,
+          271.27898016026916
+        ],
+        "candidate": [
+          260.5403579200493,
+          354.54533367017245,
+          226.63775577055569
+        ],
+        "baselineMedian": 271.27898016026916,
+        "candidateMedian": 260.5403579200493
+      },
+      "ACK p50 ms": {
+        "baseline": [
+          0.312,
+          0.438,
+          0.36
+        ],
+        "candidate": [
+          0.359,
+          0.442,
+          0.305
+        ],
+        "baselineMedian": 0.36,
+        "candidateMedian": 0.359
+      },
+      "ACK p95 ms": {
+        "baseline": [
+          0.525,
+          0.87,
+          0.642
+        ],
+        "candidate": [
+          0.586,
+          0.893,
+          0.49
+        ],
+        "baselineMedian": 0.642,
+        "candidateMedian": 0.586
+      },
+      "ACK p99 ms": {
+        "baseline": [
+          0.663,
+          1.217,
+          0.841
+        ],
+        "candidate": [
+          0.73,
+          1.267,
+          0.621
+        ],
+        "baselineMedian": 0.841,
+        "candidateMedian": 0.73
+      },
+      "ACK max ms": {
+        "baseline": [
+          16.327,
+          31.888,
+          12.795
+        ],
+        "candidate": [
+          15.402,
+          47.058,
+          16.712
+        ],
+        "baselineMedian": 16.327,
+        "candidateMedian": 16.712
+      },
+      "auth p50 ms": {
+        "baseline": [
+          0.225,
+          0.339,
+          0.258
+        ],
+        "candidate": [
+          0.249,
+          0.333,
+          0.218
+        ],
+        "baselineMedian": 0.258,
+        "candidateMedian": 0.249
+      },
+      "auth p99 ms": {
+        "baseline": [
+          0.556,
+          0.993,
+          0.623
+        ],
+        "candidate": [
+          0.615,
+          1.051,
+          0.502
+        ],
+        "baselineMedian": 0.623,
+        "candidateMedian": 0.615
+      },
+      "auth max ms": {
+        "baseline": [
+          3.244,
+          3.427,
+          1.029
+        ],
+        "candidate": [
+          3.304,
+          3.426,
+          2.575
+        ],
+        "baselineMedian": 3.244,
+        "candidateMedian": 3.304
+      },
+      "heartbeat p99 ms": {
+        "baseline": [
+          0.504,
+          0.869,
+          0.657
+        ],
+        "candidate": [
+          0.566,
+          0.889,
+          0.487
+        ],
+        "baselineMedian": 0.657,
+        "candidateMedian": 0.566
+      },
+      "429s": {
+        "baseline": [
+          11474,
+          10109,
+          9040
+        ],
+        "candidate": [
+          10133,
+          10737,
+          11859
+        ],
+        "baselineMedian": 10109,
+        "candidateMedian": 10737
+      },
+      "key pairs": {
+        "baseline": [
+          0,
+          0,
+          0
+        ],
+        "candidate": [
+          0,
+          0,
+          0
+        ],
+        "baselineMedian": 0,
+        "candidateMedian": 0
+      },
+      "create p99 ms": {
+        "baseline": [
+          null,
+          null,
+          null
+        ],
+        "candidate": [
+          null,
+          null,
+          null
+        ],
+        "baselineMedian": null,
+        "candidateMedian": null
+      },
+      "revoke p99 ms": {
+        "baseline": [
+          null,
+          null,
+          null
+        ],
+        "candidate": [
+          null,
+          null,
+          null
+        ],
+        "baselineMedian": null,
+        "candidateMedian": null
+      },
+      "peak MiB": {
+        "baseline": [
+          101.85546875,
+          100.1875,
+          101.19921875
+        ],
+        "candidate": [
+          100.84765625,
+          102.01953125,
+          101.640625
+        ],
+        "baselineMedian": 101.19921875,
+        "candidateMedian": 101.640625
+      }
+    }
+  },
+  "failures": [
+    "high-batched-churn: events/s 119352 < 90% of 143294",
+    "high-batched-churn: auth p99 ms 16.98 > max(110%, +1 ms) of 14.41",
+    "high-batched-steady: events/s 145317 < 90% of 163115",
+    "high-batched-steady: CPU µs/event 42.15 > 110% of 38.19",
+    "high-batched-steady: auth p99 ms 11.26 > max(110%, +1 ms) of 9.97"
+  ]
+}

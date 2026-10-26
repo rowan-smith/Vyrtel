@@ -1,0 +1,231 @@
+{
+  "report": {
+    "high-batched-steady": {
+      "events/s": {
+        "baseline": [
+          159012.99257913374,
+          182262.09988741827,
+          212861.86598439442
+        ],
+        "candidate": [
+          175346.6060478396,
+          193661.5978144027,
+          204858.16210292457
+        ],
+        "baselineMedian": 182262.09988741827,
+        "candidateMedian": 193661.5978144027
+      },
+      "requests/s": {
+        "baseline": [
+          1590.1299257913377,
+          1822.6209988741828,
+          2128.6186598439444
+        ],
+        "candidate": [
+          1753.4660604783958,
+          1936.615978144027,
+          2048.5816210292455
+        ],
+        "baselineMedian": 1822.6209988741828,
+        "candidateMedian": 1936.615978144027
+      },
+      "CPU µs/event": {
+        "baseline": [
+          40.07292845467119,
+          41.067902588854764,
+          35.79496090356212
+        ],
+        "candidate": [
+          38.61304298255615,
+          39.88591487494515,
+          35.753849156967526
+        ],
+        "baselineMedian": 40.07292845467119,
+        "candidateMedian": 38.61304298255615
+      },
+      "ACK p50 ms": {
+        "baseline": [
+          3.72,
+          3.4,
+          3.021
+        ],
+        "candidate": [
+          3.569,
+          3.17,
+          3.131
+        ],
+        "baselineMedian": 3.4,
+        "candidateMedian": 3.17
+      },
+      "ACK p95 ms": {
+        "baseline": [
+          7.14,
+          5.709,
+          4.652
+        ],
+        "candidate": [
+          6.325,
+          4.995,
+          4.936
+        ],
+        "baselineMedian": 5.709,
+        "candidateMedian": 4.995
+      },
+      "ACK p99 ms": {
+        "baseline": [
+          13.582,
+          9.578,
+          6.2
+        ],
+        "candidate": [
+          10.88,
+          7.245,
+          6.878
+        ],
+        "baselineMedian": 9.578,
+        "candidateMedian": 7.245
+      },
+      "ACK max ms": {
+        "baseline": [
+          164.271,
+          38.889,
+          66.299
+        ],
+        "candidate": [
+          79.23,
+          103.112,
+          44.736
+        ],
+        "baselineMedian": 66.299,
+        "candidateMedian": 79.23
+      },
+      "auth p50 ms": {
+        "baseline": [
+          2.175,
+          1.872,
+          1.661
+        ],
+        "candidate": [
+          2.044,
+          1.77,
+          1.7
+        ],
+        "baselineMedian": 1.872,
+        "candidateMedian": 1.77
+      },
+      "auth p99 ms": {
+        "baseline": [
+          8.973,
+          5.637,
+          3.632
+        ],
+        "candidate": [
+          7.386,
+          4.13,
+          4.116
+        ],
+        "baselineMedian": 5.637,
+        "candidateMedian": 4.13
+      },
+      "auth max ms": {
+        "baseline": [
+          82.184,
+          16.437,
+          5.649
+        ],
+        "candidate": [
+          31.453,
+          10.603,
+          9.554
+        ],
+        "baselineMedian": 16.437,
+        "candidateMedian": 10.603
+      },
+      "heartbeat p99 ms": {
+        "baseline": [
+          8.85,
+          5.776,
+          3.854
+        ],
+        "candidate": [
+          6.179,
+          4.639,
+          4.554
+        ],
+        "baselineMedian": 5.776,
+        "candidateMedian": 4.639
+      },
+      "429s": {
+        "baseline": [
+          434813,
+          518512,
+          585595
+        ],
+        "candidate": [
+          463431,
+          549581,
+          562952
+        ],
+        "baselineMedian": 518512,
+        "candidateMedian": 549581
+      },
+      "key pairs": {
+        "baseline": [
+          0,
+          0,
+          0
+        ],
+        "candidate": [
+          0,
+          0,
+          0
+        ],
+        "baselineMedian": 0,
+        "candidateMedian": 0
+      },
+      "create p99 ms": {
+        "baseline": [
+          null,
+          null,
+          null
+        ],
+        "candidate": [
+          null,
+          null,
+          null
+        ],
+        "baselineMedian": null,
+        "candidateMedian": null
+      },
+      "revoke p99 ms": {
+        "baseline": [
+          null,
+          null,
+          null
+        ],
+        "candidate": [
+          null,
+          null,
+          null
+        ],
+        "baselineMedian": null,
+        "candidateMedian": null
+      },
+      "peak MiB": {
+        "baseline": [
+          180.33984375,
+          166.9140625,
+          179.19140625
+        ],
+        "candidate": [
+          182.97265625,
+          180.46875,
+          175.30078125
+        ],
+        "baselineMedian": 179.19140625,
+        "candidateMedian": 180.46875
+      }
+    }
+  },
+  "failures": []
+}

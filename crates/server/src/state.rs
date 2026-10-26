@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use metadata::Metadata;
@@ -57,7 +57,7 @@ pub struct AppState {
     /// Last time each API key's `last_used_at` was persisted.
     pub key_touch: Mutex<HashMap<i64, Instant>>,
     /// Every active API key; decides whether ingestion is protected.
-    pub api_keys: RwLock<crate::auth::ApiKeys>,
+    pub api_keys: Arc<crate::auth::ApiKeys>,
     /// Flips to `true` when shutdown starts: new ingest, queries and live
     /// streams are refused and live-tail streams end, so the drain only
     /// waits for work that was already accepted.

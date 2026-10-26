@@ -420,3 +420,43 @@ async fn ingest_protection_changes_are_immediate_under_concurrent_requests() {
     assert_eq!(ingest(&s, None).await, 200);
     Arc::into_inner(s).unwrap().stop().await;
 }
+
+/// AUTH-PERF-01: a key write stalled in SQLite (another connection holds
+/// the write lock) holds up only key changes. Ingestion keeps being
+/// decided by the keys in force; the revoke applies once it commits; a
+/// write that cannot commit fails and changes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stalled_key_writes_do_not_hold_up_ingestion() {
+    let s = Arc::new(TestServer::start().await);
+    let (id, key) = create_key(&s, "producers", "ingest").await;
+    let db = rusqlite::Connection::open(s.data_dir().join(server::datadir::METADATA_DB)).unwrap();
+
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let revoking = tokio::spawn({
+        let s = s.clone();
+        async move { s.client.delete(s.u(&format!("/api/v1/api-keys/{id}"))).send().await.unwrap().status().as_u16() }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    for _ in 0..20 {
+        assert_eq!(ingest(&s, Some(&key)).await, 200);
+        assert_eq!(ingest(&s, None).await, 401, "still protected: the revoke has not committed");
+    }
+    assert!(!revoking.is_finished(), "requests did not wait for the stalled revoke");
+    db.execute_batch("COMMIT").unwrap();
+    assert_eq!(revoking.await.unwrap(), 204);
+    assert!(!key_required(&s).await);
+    assert_eq!(ingest(&s, None).await, 200, "open once the revoke committed");
+
+    // Held past the store's 5 s busy timeout: the create fails, and no key
+    // is accepted or protects ingestion.
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let r = s.post("/api/v1/api-keys", json!({"name": "never", "scope": "ingest"})).await;
+    assert_eq!(r.status(), 500);
+    db.execute_batch("ROLLBACK").unwrap();
+    assert!(!key_required(&s).await);
+    assert_eq!(ingest(&s, None).await, 200);
+    let keys: Value = s.client.get(s.u("/api/v1/api-keys")).send().await.unwrap().json().await.unwrap();
+    assert!(keys["apiKeys"].as_array().unwrap().iter().all(|k| k["name"] != "never"));
+    drop(db);
+    Arc::into_inner(s).unwrap().stop().await;
+}

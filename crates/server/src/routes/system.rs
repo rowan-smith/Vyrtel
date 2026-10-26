@@ -271,7 +271,7 @@ pub async fn info(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
         "dataDir": state.config.storage.path,
         "durability": state.config.storage.durability,
         "authEnabled": true,
-        "ingestKeyRequired": state.api_keys.read().unwrap().ingest_protected(),
+        "ingestKeyRequired": state.api_keys.ingest_protected(),
         "eventCounts": {
             "logs": stats.logs.segment_events + stats.logs.active_events + stats.logs.frozen_events,
             "traces": stats.traces.segment_events + stats.traces.active_events + stats.traces.frozen_events,

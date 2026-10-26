@@ -13,7 +13,7 @@
 use std::future::Future;
 use std::pin::{Pin, pin};
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -195,7 +195,7 @@ impl App {
             received_requests: AtomicU64::new(0),
             http,
             key_touch: Mutex::new(Default::default()),
-            api_keys: RwLock::new(api_keys),
+            api_keys: Arc::new(api_keys),
             shutdown: rx.clone(),
             config,
         });
@@ -243,7 +243,7 @@ impl App {
             },
             c.server.max_connections,
             human_bytes(c.transport_limits().estimated_peak()),
-            if self.state.api_keys.read().unwrap().ingest_protected() {
+            if self.state.api_keys.ingest_protected() {
                 "login for the UI/API, API keys for ingestion"
             } else {
                 "login for the UI/API; ingestion open until an ingest API key is created"
@@ -710,7 +710,7 @@ mod tests {
         config.storage.path = dir.path().to_path_buf();
         config.alerts.enabled = false;
         let app = App::build(config).unwrap();
-        let (_, key) = crate::auth::create_api_key(&app.state, "test", "admin").unwrap();
+        let (_, key) = crate::auth::create_api_key(&app.state, "test", "admin").await.unwrap();
         let bearer = format!("Bearer {key}");
         let request = |method: &str, uri: &str, body: &'static str| {
             Request::builder()
