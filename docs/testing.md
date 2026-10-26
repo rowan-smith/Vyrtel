@@ -35,6 +35,7 @@ Next to the code (`#[cfg(test)]` modules). Highlights:
 | Metadata store (schema and identity created in one transaction, an interrupted creation leaves nothing, CRUD, alert transitions, read-only identity inspection, 0.1.1-style, foreign, other-layout and other-schema databases refused with every byte unchanged) | `crates/metadata/tests/store.rs`, `crates/metadata/src/lib.rs` |
 | Data-directory check: new and interrupted first-start directories accepted; missing parts, inventory files missing or truncated, an empty metadata database refused as incomplete; manifests, metadata and telemetry of another layout or without one, and unidentified telemetry, refused and never accepted; `accept_incomplete` returns the incomplete problems instead; the inventory is dropped on start; the `check-data-dir` report | `crates/server/src/datadir.rs` |
 | Environment variables under a settings prefix that are not settings stop startup (TC2) | `crates/server/src/config.rs` |
+| API key registry (AUTH-PERF-01): key writes off the request path, bounded serialised changes, failure/cancellation ordering, one admission decision per request, parity with the stored keys across restarts ([details](#api-key-changes-and-authentication-auth-perf-01)) | `crates/server/src/auth.rs` |
 
 ## Property tests (proptest)
 
@@ -270,6 +271,8 @@ talks HTTP to it:
 * query budgets and cancellation (`query_budgets.rs`, REL-12; see
   [below](#query-budget-and-cancellation-tests));
 * missing auth, bad auth, ingest-only keys, sessions, logout, revocation;
+  a key write stalled in SQLite holds up no request (AUTH-PERF-01, see
+  [below](#api-key-changes-and-authentication-auth-perf-01));
 * pagination, time ranges, empty results, facets, histograms;
 * live stream (SSE) delivery and filtering, and that open streams do not
   block shutdown;
@@ -870,6 +873,146 @@ against the 12.75 MB fixed overhead (32 drains × hyper's 408 KB read
 buffer). Measured drain peaks: 2.9–6.7 MB in release runs, 6.8 MB in a debug
 run.
 
+### API key changes and authentication (AUTH-PERF-01)
+
+Creating and revoking API keys writes SQLite on the blocking pool and then
+publishes a new immutable key set; requests authenticate against the
+current set without waiting for those writes
+([design](architecture.md#api-keys-and-request-authentication),
+[API semantics](api.md#api-keys)).
+
+```bash
+cargo test -p server --lib auth::                         # registry: slow, failed, cancelled, concurrent changes
+cargo test -p server --test integration auth::            # over HTTP, including a write stalled in SQLite
+```
+
+| Acceptance criterion (AUTH-PERF-01) | Tests and evidence |
+|---|---|
+| AC1: key writes on blocking execution; requests never wait behind SQLite; mutations serialised and bounded | `auth::tests::slow_key_writes_block_neither_requests_nor_the_runtime` (a runtime with 1 worker and 2 blocking threads: while one key write is stalled behind a barrier, 15 more changes queue without taking a blocking thread, the 17th is refused `503 unavailable`, a heartbeat keeps ticking, another `spawn_blocking` runs at once, and requests are decided from the published set); integration `auth::stalled_key_writes_do_not_hold_up_ingestion` (a second SQLite connection holds the write lock: 40 ingest requests are decided by the keys in force while the revoke waits, which fails on the pre-change code because requests waited for the revoke) |
+| AC2: linearisation, failure and cancellation ordering | `auth::tests::failed_key_writes_publish_nothing` (failed, invalid and panicking writes publish nothing and release their turn; a failed first ingest key leaves ingestion open; a failed revoke keeps the key accepted and ingestion protected); `cancelled_key_changes_finish_or_never_start` (a create whose caller is gone mid-write still commits and is published; a change cancelled while waiting never writes; every permit returns); `no_admission_with_a_key_after_its_revoke_returns` (50 first/last ingest-key rounds against 3 concurrent checkers); integration `stalled_key_writes_do_not_hold_up_ingestion` (a create that cannot commit within the store's 5 s busy timeout returns 500 and accepts nothing) |
+| AC3: open/protected policy unchanged; one admission decision | `auth::tests::only_ingest_keys_protect_ingestion`, `concurrent_key_changes_match_the_store_across_restarts` (only ingest keys toggle protection), `no_admission_with_a_key_after_its_revoke_returns` (policy and key from one set: keyless is admitted exactly when the set is open, a revoked key never yields a principal, a valid admin key is always admitted); integration `ingest_protection_follows_the_ingest_keys`, `ingest_protection_changes_are_immediate_under_concurrent_requests`, `ui_api_requires_session_or_admin_key`, `ingestion_without_keys_leaves_the_rest_of_the_api_closed` (unchanged) |
+| AC4: concurrent create/create/revoke, first/last transitions, slow/failed writes, restart parity | `concurrent_key_changes_match_the_store_across_restarts` (16 concurrent creates, then 8 revokes with 8 creates at once; scopes and the refused revoked keys checked; the published set equals what a reload of the database gives, before and after reopening it); every registry test ends with `assert_matches_store`; integration `ingest_protection_survives_restarts` |
+| AC5: matched steady vs churn benchmark | `scripts/bench/keychurn.sh` with `tools/loadgen` `keychurn`, below; `scripts/bench/keychurn-report.test.mjs` (empty, partial, short, unmatched and non-finite evidence fails; each budget at and past its limit) |
+
+No per-request database read was added: authentication still only reads
+the in-memory set, and last-used is still persisted at most once a minute
+per key.
+
+#### API key churn benchmark
+
+`keychurn` logs in as the admin, creates one ingest key so every ingest
+request is authenticated, and for the duration runs closed-loop producers
+with that key, an auth probe (a keyless ingest request every 10 ms,
+answered 401 by the authentication layer alone, so its latency is the time
+to an authentication decision including scheduler wait), a `/health`
+heartbeat every 10 ms, and, in churn cells, one admin that creates and
+revokes an ingest key every 20 ms. At the end it counts the acknowledged
+events back with a query. `scripts/bench/keychurn.sh` runs a matched
+baseline and candidate on fresh data directories for every cell of
+producers {4, 64} × events per request {1, 100} × churn {off, on},
+alternating the binaries within each repetition, and records the server's
+CPU seconds and peak memory around each run (Linux `/proc`, or PowerShell
+`Get-Process` under Git Bash on Windows):
+
+```bash
+git worktree add ../vyrtel-baseline <baseline-sha> && (cd ../vyrtel-baseline && cargo build --release -p server)
+cargo build --release -p server -p loadgen
+RUNS=3 DURATION=20s scripts/bench/keychurn.sh ../vyrtel-baseline/target/release/vyrtel target/release/vyrtel
+node scripts/bench/keychurn-report.mjs target/keychurn --json target/keychurn/report.json
+# a subset, e.g. a rerun of two cells with 5 repetitions:
+CELLS='^high-batched' RUNS=5 OUT=target/keychurn-rerun scripts/bench/keychurn.sh BASELINE CANDIDATE
+node scripts/bench/keychurn-report.mjs target/keychurn-rerun --cells '^high-batched' --min-runs 5
+```
+
+Settings: `RUNS`, `DURATION`, `LOW`/`HIGH` (producers), `SMALL`/`BATCHED`
+(events per request), `CHURN` (pause between create/revoke pairs), `CELLS`
+(a regex of cells to run), `OUT`, `KEYCHURN`. The server runs with its default configuration plus a random
+admin password and alerts off; the generator runs on the same host.
+
+**Evidence completeness**, checked by `keychurn-report.mjs` before any
+budget (exit 1 when incomplete): every expected cell (all 8, or those
+matching `--cells`) has results for both binaries and no other cell is
+present; each has at least `--min-runs` (default 3) usable runs per binary,
+the same number for both, with the same workload settings; a run is usable
+when both its files parse, its gated values are finite, it acknowledged
+events and measured the auth probe, and it changed keys exactly when its
+cell is a churn cell. An empty or partial results directory therefore
+fails rather than reporting “All budgets met”. The report's own tests:
+`node --test scripts/bench/*.test.mjs` (CI job **Release gate tests**).
+
+**Budgets**, fixed before the first run and checked by
+`keychurn-report.mjs` (exit 1 when missed):
+
+* every run, both binaries: every acknowledged event persisted; no ingest
+  401, 5xx, timeout or transport error; every key create and revoke
+  succeeded; every auth probe answered 401 (429s from ingest admission are
+  reported, not failures: the high-concurrency cells exceed
+  `ingest.max_concurrent` by design);
+* per cell, candidate median against baseline median: accepted events/s at
+  least 90%; server CPU per accepted event at most 110%; auth probe p99 at
+  most max(110%, +1 ms); peak memory at most 110%.
+
+**Results, 2026-10-26** (raw per-run values in
+[`docs/benchmarks/auth-perf-01/`](benchmarks/auth-perf-01/)). Baseline
+`ad346b6` (main before this change), candidate: this change on top of it;
+both `cargo build --release` with Rust 1.96.1 on Windows 11, Intel Core
+Ultra 7 155H (16 cores, 22 threads), 31.5 GB, generator on the same host,
+20 s per run, uninstrumented (no profiler attached). Medians of 3 runs:
+
+| Cell (producers-size-churn) | events/s base → cand | auth p99 ms base → cand | ACK p99 ms base → cand | CPU µs/event base → cand | peak MiB base → cand |
+|---|---|---|---|---|---|
+| low-small-steady | 9,920 → 10,058 | 0.62 → 0.61 | 0.84 → 0.73 | 271 → 261 | 101 → 102 |
+| low-small-churn | 9,958 → 9,503 | 0.66 → 0.72 | 0.76 → 0.84 | 271 → 286 | 102 → 104 |
+| low-batched-steady | 255,818 → 242,473 | 1.17 → 1.52 | 3.65 → 4.62 | 13.3 → 14.2 | 149 → 149 |
+| low-batched-churn | 236,535 → 276,152 | 1.39 → 1.09 | 4.63 → 3.31 | 14.5 → 12.8 | 150 → 146 |
+| high-small-steady | 5,747 → 6,241 | 4.64 → 4.40 | 5.74 → 4.95 | 1,107 → 1,031 | 110 → 111 |
+| high-small-churn | 6,095 → 6,858 | 4.65 → 3.78 | 4.76 → 4.17 | 1,071 → 1,000 | 110 → 111 |
+| high-batched-steady | 163,115 → 145,317 | 9.97 → 11.26 | 13.96 → 17.30 | 38.2 → 42.2 | 179 → 179 |
+| high-batched-churn | 143,294 → 119,352 | 14.41 → 16.98 | 20.23 → 22.52 | 41.8 → 44.9 | 175 → 183 |
+
+Every run of both binaries passed the correctness budgets: all
+acknowledged events persisted; no ingest 401, 5xx, timeout or transport
+error; all 19,171 create/revoke pairs succeeded. The first pass missed
+five throughput/latency budgets, all in the two `high-batched` cells, one
+of which has no key changes at all. Those cells were rerun with 5 more
+repetitions each:
+
+| Rerun (5 runs) | events/s base → cand | auth p99 ms base → cand | CPU µs/event base → cand | Budgets |
+|---|---|---|---|---|
+| high-batched-steady | 154,778 → 159,617 | 7.32 → 6.22 | 42.9 → 43.9 | met |
+| high-batched-churn | 166,843 → 159,848 | 8.45 → 9.80 | 39.7 → 40.5 | auth p99 missed (+1.35 ms; allowed +1 ms) |
+
+and the baseline was run against an identical copy of itself (A/A, 3 runs
+of `high-batched-steady`): events/s 182,262 vs 193,662 (+6.3%), auth p99
+5.64 vs 4.13 ms (−27%). On this host the run-to-run spread of the
+high-concurrency cells is larger than the budgets, so these runs neither
+show nor rule out a difference there; in the six other cells the candidate
+is within budget, and lower-latency in the churn cells for small requests.
+The budgets stay as declared; the missed one is recorded, not waived.
+
+**Open before 0.1.2 performance sign-off:** the `high-batched-churn` auth
+p99 budget is neither met nor shown to be a regression. It is to be rerun
+on the dedicated Linux benchmark host, with the generator on a separate
+machine, comparing a quiet baseline with the exact candidate build
+(`CELLS='^high-batched-churn' RUNS=5`, `--min-runs 5`), and must pass or be
+explicitly dispositioned by the reviewer as part of
+[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170).
+
+**Limitations.** One laptop, generator and server sharing 22 threads, no
+CPU pinning; the A/A spread above bounds what these numbers can resolve.
+The closed-loop producers retry immediately, so in every cell most requests
+are 429s from ingest admission (even 4 producers exceed the derived
+`ingest.max_concurrent` on this host): the throughput figures are of
+an admission-saturated server. Lock and scheduler wait are not measured
+directly: the auth probe and heartbeat latencies stand in for them; a
+profile, taken separately from these runs, would be needed to attribute
+time. CPU is process time from `Get-Process` and memory is the Windows peak
+working set. This is not the release profile: as a candidate-affecting
+change, it invalidates earlier
+[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170)
+evidence, which must be taken again on the final candidate, preferably on a
+quiet Linux host with this harness included.
+
 ## Frontend tests
 
 Vitest + React Testing Library in `web/tests/unit/`:
@@ -1054,6 +1197,20 @@ Options: `--attempts`, `--wave-interval`, `--wave-patience`,
 `--ingest-clients`, `--batch`, `--ingest-interval`, `--query-clients`,
 `--query-interval`, `--sample-interval`, `--no-waves`, `--out`, `--label`.
 It writes `summary.json` and `samples.csv`, and exits with status 1 if any
+acknowledged event is missing afterwards.
+
+`keychurn`, in the same package, measures authenticated ingest while an
+admin creates and revokes API keys (see
+[API key churn benchmark](#api-key-churn-benchmark)):
+
+```bash
+cargo run --release -p loadgen --bin keychurn -- --target http://localhost:8080   --duration 20s --concurrency 64 --batch 1 --churn-interval 20ms
+```
+
+Options: `--admin-password` (or `VYRTEL_AUTH_ADMIN_PASSWORD`),
+`--admin-username`, `--duration`, `--concurrency`, `--batch`,
+`--churn-interval` (0 = no churn), `--probe-interval`, `--timeout`,
+`--out`, `--label`. It writes `summary.json` and exits with status 1 if any
 acknowledged event is missing afterwards.
 
 Observed on the same laptop with a release build (`--rate 10000 --duration

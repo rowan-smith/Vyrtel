@@ -105,6 +105,7 @@ jobs:
         with:
           node-version: 22
       - run: node --test scripts/release/*.test.mjs
+      - run: node --test scripts/bench/*.test.mjs
 
   e2e:
     name: End-to-end (Playwright)
