@@ -29,9 +29,9 @@ metadata = { path = "crates/metadata" }
 # External
 anyhow = "1"
 async-compression = { version = "0.4", default-features = false, features = ["tokio", "gzip"] }
-argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash", "std"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "getrandom", "password-hash"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "macros"] }
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 clap = { version = "4", features = ["derive", "env"] }
 crc32fast = "1"
@@ -43,27 +43,27 @@ http-body = "1"
 hyper = { version = "1", default-features = false, features = ["server", "http1"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 mime_guess = { version = "2", default-features = false }
-prost = { version = "0.13", default-features = false, features = ["std", "derive"] }
-rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+prost = { version = "0.14", default-features = false, features = ["std", "derive"] }
+rand = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs"] }
 tokio-util = { version = "0.7", default-features = false, features = ["io"] }
-toml = { version = "0.8", default-features = false, features = ["parse"] }
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
-tower-http = { version = "0.6", default-features = false, features = ["decompression-gzip", "trace", "set-header"] }
+tower-http = { version = "0.7", default-features = false, features = ["decompression-gzip", "trace", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "json"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-zstd = { version = "0.13", default-features = false }
+zstd = { version = "0.14", default-features = false }
 
 # Dev
-criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 http-body-util = "0.1"
 proptest = "1"
 tempfile = "3"

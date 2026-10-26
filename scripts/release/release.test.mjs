@@ -279,7 +279,7 @@ describe('AC2: nothing is published unless every gate passed', () => {
     // tagging of those digests. Both run only when publishing.
     assert.doesNotMatch(workflow, /push: true/);
     assert.equal((workflow.match(/push=true/g) ?? []).length, 1, 'one push by digest');
-    assert.match(workflow, /if: env\.PUBLISH == 'true'\n {8}uses: docker\/build-push-action@v6\n(?: {8}.*\n)*? {10}outputs: type=image,[^\n]*push-by-digest=true[^\n]*push=true\n/);
+    assert.match(workflow, /if: env\.PUBLISH == 'true'\n {8}uses: docker\/build-push-action@v7\n(?: {8}.*\n)*? {10}outputs: type=image,[^\n]*push-by-digest=true[^\n]*push=true\n/);
     assert.equal((workflow.match(/imagetools create/g) ?? []).length, 1, 'one tagging step');
     assert.match(workflow, /if: env\.PUBLISH == 'true'\n {8}env:\n(?: {10}.*\n)+(?: {8}run: \|\n)(?: {10}.*\n)*? {10}docker buildx imagetools create/);
   });

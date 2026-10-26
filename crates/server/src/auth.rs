@@ -14,14 +14,14 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use argon2::Argon2;
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::phc::PasswordHash;
+use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, header};
 use axum::middleware::Next;
 use axum::response::Response;
 use metadata::Metadata;
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 
 use crate::error::ApiError;
@@ -41,7 +41,7 @@ pub fn sha256_hex(s: &str) -> String {
 
 pub fn random_token(bytes: usize) -> String {
     let mut b = vec![0u8; bytes];
-    rand::thread_rng().fill_bytes(&mut b);
+    rand::rng().fill_bytes(&mut b);
     hex::encode(b)
 }
 
@@ -54,12 +54,13 @@ pub fn new_api_key() -> (String, String, String) {
 }
 
 pub fn hash_password(password: &str) -> Result<String, String> {
-    let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
-    Argon2::default().hash_password(password.as_bytes(), &salt).map(|h| h.to_string()).map_err(|e| e.to_string())
+    PasswordHasher::<PasswordHash>::hash_password(&Argon2::default(), password.as_bytes())
+        .map(|h| h.to_string())
+        .map_err(|e| e.to_string())
 }
 
 pub fn verify_password(password: &str, hash: &str) -> bool {
-    PasswordHash::new(hash).map(|h| Argon2::default().verify_password(password.as_bytes(), &h).is_ok()).unwrap_or(false)
+    Argon2::default().verify_password(password.as_bytes(), hash).is_ok()
 }
 
 /// `Authorization: Bearer <key>` or `X-Api-Key: <key>`.
