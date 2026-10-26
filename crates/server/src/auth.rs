@@ -146,7 +146,8 @@ impl KeySet {
 }
 
 /// The API key registry. Loaded at startup and changed only through
-/// [`ApiKeys::change`], so authenticating a request never reads SQLite.
+/// [`ApiKeys::change`], so authenticating a request by API key never reads
+/// SQLite. (Sessions are still looked up in SQLite: see `check_session`.)
 ///
 /// Requests read the current [`KeySet`] by cloning an `Arc` under a read
 /// lock that is only ever held for a pointer copy or swap, so they never
@@ -279,6 +280,9 @@ fn check_api_key(state: &AppState, key: &str) -> Result<Principal, ApiError> {
     Ok(Principal::ApiKey { id, scope })
 }
 
+/// Looks the session up in SQLite, through the metadata store's one
+/// connection, so it can wait behind any metadata write, a key change's
+/// included.
 async fn check_session(state: &SharedState, token: String) -> Result<Option<Principal>, ApiError> {
     let hash = sha256_hex(&token);
     let user = state.db(move |m| m.find_session(&hash)).await?;

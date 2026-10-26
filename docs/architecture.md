@@ -174,7 +174,7 @@ history, aggregated query statistics. Telemetry never goes to SQLite.
 
 ### API keys and request authentication
 
-Authenticating a request never reads SQLite. The active API keys (hash →
+Authenticating a request by API key never reads SQLite. The active API keys (hash →
 id and scope, plus the count of ingest-scoped keys that decides whether
 ingestion is protected) are loaded at startup into an immutable `KeySet`
 (`crates/server/src/auth.rs`). Requests clone an `Arc` to the current set
@@ -197,6 +197,13 @@ The change is linearised at the swap, which follows the SQLite commit and
 precedes the response. Lock order is change mutex → set pointer; the set
 pointer is never held across anything else, and the per-key last-used
 throttle (`key_touch`) is a separate lock never held with either.
+
+Session cookies are not covered: `require_user` looks each session up in
+SQLite (`find_session`) through the metadata store's single connection,
+which a key write also holds, so a session-authenticated UI/API request can
+still wait for a key change to commit. This predates the key registry; a
+separate read connection or a session cache would remove it if it matters
+in practice.
 
 ## Background jobs
 

@@ -122,8 +122,11 @@ Key changes take effect when their response is sent:
   another gets `503 unavailable` with `Retry-After: 1`. A change whose
   client disconnects before its turn is dropped; once its write has started
   it completes.
-* Writing a change never delays ingestion or other requests: they are
-  authenticated against the keys in force until the change commits.
+* Writing a change does not delay requests authenticated by an API key,
+  or ingestion while it is open: they are checked against the keys in
+  force until the change commits. Requests authenticated by a session
+  cookie look the session up in the same metadata database, so they can
+  still wait while a key change is being written, as before.
 
 ## Native event ingestion
 

@@ -1,4 +1,8 @@
 {
+  "options": {
+    "cells": "^high-batched-steady",
+    "minRuns": 3
+  },
   "report": {
     "high-batched-steady": {
       "events/s": {

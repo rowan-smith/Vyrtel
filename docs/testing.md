@@ -892,7 +892,7 @@ cargo test -p server --test integration auth::            # over HTTP, including
 | AC2: linearisation, failure and cancellation ordering | `auth::tests::failed_key_writes_publish_nothing` (failed, invalid and panicking writes publish nothing and release their turn; a failed first ingest key leaves ingestion open; a failed revoke keeps the key accepted and ingestion protected); `cancelled_key_changes_finish_or_never_start` (a create whose caller is gone mid-write still commits and is published; a change cancelled while waiting never writes; every permit returns); `no_admission_with_a_key_after_its_revoke_returns` (50 first/last ingest-key rounds against 3 concurrent checkers); integration `stalled_key_writes_do_not_hold_up_ingestion` (a create that cannot commit within the store's 5 s busy timeout returns 500 and accepts nothing) |
 | AC3: open/protected policy unchanged; one admission decision | `auth::tests::only_ingest_keys_protect_ingestion`, `concurrent_key_changes_match_the_store_across_restarts` (only ingest keys toggle protection), `no_admission_with_a_key_after_its_revoke_returns` (policy and key from one set: keyless is admitted exactly when the set is open, a revoked key never yields a principal, a valid admin key is always admitted); integration `ingest_protection_follows_the_ingest_keys`, `ingest_protection_changes_are_immediate_under_concurrent_requests`, `ui_api_requires_session_or_admin_key`, `ingestion_without_keys_leaves_the_rest_of_the_api_closed` (unchanged) |
 | AC4: concurrent create/create/revoke, first/last transitions, slow/failed writes, restart parity | `concurrent_key_changes_match_the_store_across_restarts` (16 concurrent creates, then 8 revokes with 8 creates at once; scopes and the refused revoked keys checked; the published set equals what a reload of the database gives, before and after reopening it); every registry test ends with `assert_matches_store`; integration `ingest_protection_survives_restarts` |
-| AC5: matched steady vs churn benchmark | `scripts/bench/keychurn.sh` with `tools/loadgen` `keychurn`, below |
+| AC5: matched steady vs churn benchmark | `scripts/bench/keychurn.sh` with `tools/loadgen` `keychurn`, below; `scripts/bench/keychurn-report.test.mjs` (empty, partial, short, unmatched and non-finite evidence fails; each budget at and past its limit) |
 
 No per-request database read was added: authentication still only reads
 the in-memory set, and last-used is still persisted at most once a minute
@@ -919,12 +919,26 @@ git worktree add ../vyrtel-baseline <baseline-sha> && (cd ../vyrtel-baseline && 
 cargo build --release -p server -p loadgen
 RUNS=3 DURATION=20s scripts/bench/keychurn.sh ../vyrtel-baseline/target/release/vyrtel target/release/vyrtel
 node scripts/bench/keychurn-report.mjs target/keychurn --json target/keychurn/report.json
+# a subset, e.g. a rerun of two cells with 5 repetitions:
+CELLS='^high-batched' RUNS=5 OUT=target/keychurn-rerun scripts/bench/keychurn.sh BASELINE CANDIDATE
+node scripts/bench/keychurn-report.mjs target/keychurn-rerun --cells '^high-batched' --min-runs 5
 ```
 
 Settings: `RUNS`, `DURATION`, `LOW`/`HIGH` (producers), `SMALL`/`BATCHED`
-(events per request), `CHURN` (pause between create/revoke pairs), `OUT`,
-`KEYCHURN`. The server runs with its default configuration plus a random
+(events per request), `CHURN` (pause between create/revoke pairs), `CELLS`
+(a regex of cells to run), `OUT`, `KEYCHURN`. The server runs with its default configuration plus a random
 admin password and alerts off; the generator runs on the same host.
+
+**Evidence completeness**, checked by `keychurn-report.mjs` before any
+budget (exit 1 when incomplete): every expected cell (all 8, or those
+matching `--cells`) has results for both binaries and no other cell is
+present; each has at least `--min-runs` (default 3) usable runs per binary,
+the same number for both, with the same workload settings; a run is usable
+when both its files parse, its gated values are finite, it acknowledged
+events and measured the auth probe, and it changed keys exactly when its
+cell is a churn cell. An empty or partial results directory therefore
+fails rather than reporting “All budgets met”. The report's own tests:
+`node --test scripts/bench/*.test.mjs` (CI job **Release gate tests**).
 
 **Budgets**, fixed before the first run and checked by
 `keychurn-report.mjs` (exit 1 when missed):
@@ -975,6 +989,14 @@ high-concurrency cells is larger than the budgets, so these runs neither
 show nor rule out a difference there; in the six other cells the candidate
 is within budget, and lower-latency in the churn cells for small requests.
 The budgets stay as declared; the missed one is recorded, not waived.
+
+**Open before 0.1.2 performance sign-off:** the `high-batched-churn` auth
+p99 budget is neither met nor shown to be a regression. It is to be rerun
+on the dedicated Linux benchmark host, with the generator on a separate
+machine, comparing a quiet baseline with the exact candidate build
+(`CELLS='^high-batched-churn' RUNS=5`, `--min-runs 5`), and must pass or be
+explicitly dispositioned by the reviewer as part of
+[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170).
 
 **Limitations.** One laptop, generator and server sharing 22 threads, no
 CPU pinning; the A/A spread above bounds what these numbers can resolve.
