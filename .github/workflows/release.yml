@@ -68,8 +68,8 @@ jobs:
       image_ref: ${{ steps.plan.outputs.image_ref }}
       image_repo: ${{ steps.plan.outputs.image_repo }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - id: plan
@@ -88,8 +88,8 @@ jobs:
     needs: preflight
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Fetch approval records
@@ -115,7 +115,7 @@ jobs:
           args=()
           if [ "$PUBLISH" = "true" ]; then args=(--tag-date "${{ steps.tag.outputs.date }}"); fi
           node scripts/release/release.mjs check-compat --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence "${args[@]}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: signoff-evidence
           path: |
@@ -136,9 +136,9 @@ jobs:
           - { os: windows-latest, target: x86_64-pc-windows-msvc, name: vyrtel-windows-x86_64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The UI that passed lint, unit and E2E tests in the functional gate.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: web-dist
           path: web/dist
@@ -153,7 +153,7 @@ jobs:
         env:
           VYRTEL_REQUIRE_WEB_UI: '1'
         run: cargo build --release --locked -p server --target ${{ matrix.target }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Package
@@ -172,7 +172,7 @@ jobs:
           ext=""
           if [[ "${{ matrix.target }}" == *windows* ]]; then ext=".exe"; fi
           node scripts/release/release.mjs verify-binary "dist/${{ matrix.name }}${ext}" --version "${{ needs.preflight.outputs.version }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: dist/*
@@ -182,16 +182,16 @@ jobs:
     needs: [preflight, signoff, binaries]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: vyrtel-*
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: signoff-evidence
           path: evidence
@@ -213,7 +213,7 @@ jobs:
           mkdir -p evidence
           node scripts/release/release.mjs check-performance --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence --artifacts artifacts
           node scripts/release/release.mjs check-compat --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence --artifacts artifacts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-artifacts
           path: artifacts/*
@@ -233,19 +233,19 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ needs.preflight.outputs.image_repo }}
           # The version label is the release version (from the Dockerfile build arg), not the tag.
           labels: org.opencontainers.image.version=${{ needs.preflight.outputs.version }}
       - name: Build candidate
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
@@ -261,7 +261,7 @@ jobs:
       # image's layers only if every check passes.
       - name: Smoke-test persistent deployment
         run: node scripts/release/release.mjs verify-image vyrtel:release-candidate --version "${{ needs.preflight.outputs.version }}" --platform "${{ matrix.platform }}" --bind-mount on --record tested
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         if: env.PUBLISH == 'true'
         with:
           registry: ghcr.io
@@ -272,7 +272,7 @@ jobs:
       - name: Push the tested image by digest
         id: push
         if: env.PUBLISH == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
@@ -285,7 +285,7 @@ jobs:
         run: |
           node scripts/release/release.mjs verify-pushed-image "${{ needs.preflight.outputs.image_repo }}@${{ steps.push.outputs.digest }}" --version "${{ needs.preflight.outputs.version }}" --tested tested
           echo "${{ steps.push.outputs.digest }}" > "tested/$(echo '${{ matrix.platform }}' | tr / -).digest"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: image-tested-${{ strategy.job-index }}
           path: tested/
@@ -298,17 +298,17 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: docker/setup-buildx-action@v3
-      - uses: actions/download-artifact@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: image-tested-*
           path: tested
           merge-multiple: true
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         if: env.PUBLISH == 'true'
         with:
           registry: ghcr.io
@@ -344,17 +344,17 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-artifacts
           path: artifacts
       - name: Re-check checksums before publishing
         run: node scripts/release/release.mjs verify-artifacts artifacts
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: artifacts/*
           fail_on_unmatched_files: true

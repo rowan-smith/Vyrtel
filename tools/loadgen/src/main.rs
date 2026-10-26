@@ -14,9 +14,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 use clap::Parser;
-use rand::Rng;
+use rand::RngExt;
 use rand::rngs::StdRng;
-use rand::{SeedableRng, seq::SliceRandom};
+use rand::{SeedableRng, seq::IndexedRandom};
 use serde_json::json;
 
 #[derive(Parser, Clone)]
@@ -109,26 +109,26 @@ fn now_nanos() -> u128 {
 
 impl Gen {
     fn trace_id(&mut self) -> String {
-        format!("{:032x}", self.rng.r#gen::<u128>())
+        format!("{:032x}", self.rng.random::<u128>())
     }
 
     fn log(&mut self) -> serde_json::Value {
-        let svc = SERVICES[self.rng.gen_range(0..self.args.services.min(SERVICES.len()).max(1))];
-        let customer = self.rng.gen_range(0..self.args.cardinality.max(1));
+        let svc = SERVICES[self.rng.random_range(0..self.args.services.min(SERVICES.len()).max(1))];
+        let customer = self.rng.random_range(0..self.args.cardinality.max(1));
         let route = *ROUTES.choose(&mut self.rng).unwrap();
-        let duration = (self.rng.r#gen::<f64>().powi(3) * 2000.0).round();
-        let is_error = self.rng.r#gen::<f64>() < self.args.error_rate;
+        let duration = (self.rng.random::<f64>().powi(3) * 2000.0).round();
+        let is_error = self.rng.random::<f64>() < self.args.error_rate;
         let mut ev = json!({
             "service": svc,
-            "environment": if self.rng.gen_bool(0.9) { "production" } else { "staging" },
+            "environment": if self.rng.random_bool(0.9) { "production" } else { "staging" },
             "traceId": self.trace_id(),
             "properties": {
                 "customerId": customer,
-                "requestId": format!("req-{:016x}", self.rng.r#gen::<u64>()),
+                "requestId": format!("req-{:016x}", self.rng.random::<u64>()),
                 "durationMs": duration,
                 "region": REGIONS.choose(&mut self.rng).unwrap(),
                 "http": { "method": if route == "/api/search" { "GET" } else { "POST" }, "route": route,
-                          "statusCode": if is_error { 500 } else if self.rng.gen_bool(0.05) { 404 } else { 200 } },
+                          "statusCode": if is_error { 500 } else if self.rng.random_bool(0.05) { 404 } else { 200 } },
             },
         });
         if is_error {
@@ -139,7 +139,7 @@ impl Gen {
             ev["exception"] = json!({
                 "type": kind,
                 "message": msg,
-                "stackTrace": format!("{kind}: {msg}\n   at {svc}.Handler.Handle() in Handler.cs:line {}\n   at {svc}.Pipeline.Run()", self.rng.gen_range(10..400)),
+                "stackTrace": format!("{kind}: {msg}\n   at {svc}.Handler.Handle() in Handler.cs:line {}\n   at {svc}.Pipeline.Run()", self.rng.random_range(10..400)),
             });
             if svc == "payments" {
                 ev["properties"]["paymentProvider"] = json!(PROVIDERS.choose(&mut self.rng).unwrap());
@@ -147,7 +147,7 @@ impl Gen {
         } else {
             let level = if duration > 1500.0 {
                 "Warning"
-            } else if self.rng.gen_bool(0.1) {
+            } else if self.rng.random_bool(0.1) {
                 "Debug"
             } else {
                 "Information"
@@ -165,7 +165,7 @@ impl Gen {
     fn trace(&mut self) -> serde_json::Value {
         let trace = self.trace_id();
         let now = now_nanos();
-        let total = self.rng.gen_range(5_000_000u128..900_000_000);
+        let total = self.rng.random_range(5_000_000u128..900_000_000);
         let start = now - total;
         let span = |id: &str, parent: Option<&str>, name: &str, s: u128, e: u128, err: bool| {
             let mut v = json!({
@@ -178,11 +178,11 @@ impl Gen {
             }
             v
         };
-        let err = self.rng.r#gen::<f64>() < self.args.error_rate;
-        let a = format!("{:016x}", self.rng.r#gen::<u64>());
-        let b = format!("{:016x}", self.rng.r#gen::<u64>());
-        let c = format!("{:016x}", self.rng.r#gen::<u64>());
-        let svc = SERVICES[self.rng.gen_range(0..self.args.services.min(SERVICES.len()).max(1))];
+        let err = self.rng.random::<f64>() < self.args.error_rate;
+        let a = format!("{:016x}", self.rng.random::<u64>());
+        let b = format!("{:016x}", self.rng.random::<u64>());
+        let c = format!("{:016x}", self.rng.random::<u64>());
+        let svc = SERVICES[self.rng.random_range(0..self.args.services.min(SERVICES.len()).max(1))];
         json!({ "resourceSpans": [
             { "resource": { "attributes": [ { "key": "service.name", "value": { "stringValue": "gateway" } } ] },
               "scopeSpans": [ { "spans": [ span(&a, None, "POST /api", start, now, err) ] } ] },
