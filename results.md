@@ -1,39 +1,39 @@
 # Vyrtel benchmarks
 
-- Generated: 2026-10-23 11:19:46 UTC
+- Generated: 2026-10-26 11:29:31 UTC
 - Vyrtel: 0.1.1
 - BenchmarkDotNet job: short
 - Dataset: 200,000 seeded log events
 - Machine: Ubuntu 24.04.5 LTS (X64), 4 logical cores
-- Runtime: .NET 10.0.13
-- Executable: 10.8 MB (release)
-- Data directory: 21.9 MB on disk after seeding
-- Storage: 203,200 events in 3 segments · 113.17 bytes/event · 4.09x compression · 7.5% index overhead
+- Runtime: .NET 10.0.14
+- Executable: 12.8 MB (release)
+- Data directory: 22.0 MB on disk after seeding
+- Storage: 203,200 events in 3 segments · 113.40 bytes/event · 4.07x compression · 7.5% index overhead
 
 ## Ingest
 
 | Benchmark | Mean | Median | Min | Max | StdDev | Throughput |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Ingest native JSON array | 2.49 ms | 2.47 ms | 2.40 ms | 2.60 ms | 0.103 ms | 200,939 events/s |
-| Ingest native NDJSON batch | 2.53 ms | 2.59 ms | 2.21 ms | 2.78 ms | 0.290 ms | 197,745 events/s |
-| Ingest OTLP metrics (500 points) | 1.54 ms | 1.53 ms | 1.53 ms | 1.55 ms | 0.011 ms | 325,662 points/s |
-| Ingest OTLP trace (3 spans) | 0.126 ms | 0.125 ms | 0.123 ms | 0.131 ms | 0.004 ms | 23,757 spans/s |
+| Ingest native JSON array | 3.79 ms | 3.79 ms | 3.72 ms | 3.86 ms | 0.071 ms | 132,010 events/s |
+| Ingest native NDJSON batch | 3.40 ms | 3.55 ms | 3.09 ms | 3.56 ms | 0.267 ms | 146,917 events/s |
+| Ingest OTLP metrics (500 points) | 2.39 ms | 2.33 ms | 2.28 ms | 2.57 ms | 0.156 ms | 208,881 points/s |
+| Ingest OTLP trace (3 spans) | 0.281 ms | 0.281 ms | 0.279 ms | 0.283 ms | 0.002 ms | 10,664 spans/s |
 
 ## Query
 
 | Benchmark | Mean | Median | Min | Max | StdDev | Throughput |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Count: level = Error | 4.28 ms | 4.28 ms | 4.26 ms | 4.31 ms | 0.024 ms | 233 ops/s |
-| Facets: sampled field values | 14.12 ms | 14.29 ms | 13.22 ms | 14.83 ms | 0.821 ms | 71 ops/s |
-| Filter: level = Error | 7.10 ms | 6.97 ms | 6.78 ms | 7.55 ms | 0.399 ms | 141 ops/s |
-| Filter: service = payments | 2.77 ms | 2.83 ms | 2.63 ms | 2.84 ms | 0.120 ms | 362 ops/s |
-| Full-text: message contains error (scan) | 25.40 ms | 26.04 ms | 23.06 ms | 27.11 ms | 2.09 ms | 39 ops/s |
-| Histogram: all logs (60 buckets) | 4.31 ms | 4.29 ms | 4.26 ms | 4.37 ms | 0.060 ms | 232 ops/s |
-| Latest logs (limit 200) | 2.33 ms | 2.32 ms | 2.30 ms | 2.38 ms | 0.045 ms | 429 ops/s |
-| List metric names | 0.113 ms | 0.112 ms | 0.112 ms | 0.114 ms | 0.001 ms | 8,869 ops/s |
-| Lookup: traceId = ... (bloom filter) | 1.13 ms | 1.11 ms | 1.07 ms | 1.21 ms | 0.070 ms | 886 ops/s |
-| Metric series (avg over range) | 0.163 ms | 0.166 ms | 0.153 ms | 0.169 ms | 0.008 ms | 6,153 ops/s |
-| Range: durationMs > 1990 (block skip) | 86.54 ms | 84.30 ms | 82.64 ms | 92.68 ms | 5.38 ms | 12 ops/s |
-| Trace by id (all spans) | 0.169 ms | 0.170 ms | 0.164 ms | 0.174 ms | 0.005 ms | 5,904 ops/s |
-| Trace search (limit 50) | 1.77 ms | 1.76 ms | 1.75 ms | 1.80 ms | 0.028 ms | 564 ops/s |
+| Count: level = Error | 7.33 ms | 7.35 ms | 7.24 ms | 7.41 ms | 0.084 ms | 136 ops/s |
+| Facets: sampled field values | 18.57 ms | 18.74 ms | 18.13 ms | 18.83 ms | 0.380 ms | 54 ops/s |
+| Filter: level = Error | 10.46 ms | 10.25 ms | 10.18 ms | 10.94 ms | 0.423 ms | 96 ops/s |
+| Filter: service = payments | 4.40 ms | 4.36 ms | 4.36 ms | 4.48 ms | 0.069 ms | 227 ops/s |
+| Full-text: message contains error (scan) | 37.05 ms | 37.09 ms | 36.92 ms | 37.14 ms | 0.112 ms | 27 ops/s |
+| Histogram: all logs (60 buckets) | 7.74 ms | 7.74 ms | 7.70 ms | 7.80 ms | 0.049 ms | 129 ops/s |
+| Latest logs (limit 200) | 3.81 ms | 3.80 ms | 3.78 ms | 3.84 ms | 0.030 ms | 263 ops/s |
+| List metric names | 0.289 ms | 0.289 ms | 0.289 ms | 0.290 ms | 0.001 ms | 3,459 ops/s |
+| Lookup: traceId = ... (bloom filter) | 2.31 ms | 2.26 ms | 2.21 ms | 2.45 ms | 0.130 ms | 434 ops/s |
+| Metric series (avg over range) | 0.384 ms | 0.384 ms | 0.382 ms | 0.385 ms | 0.002 ms | 2,606 ops/s |
+| Range: durationMs > 1990 (block skip) | 123.74 ms | 123.87 ms | 123.03 ms | 124.32 ms | 0.654 ms | 8 ops/s |
+| Trace by id (all spans) | 0.383 ms | 0.387 ms | 0.373 ms | 0.389 ms | 0.009 ms | 2,610 ops/s |
+| Trace search (limit 50) | 4.96 ms | 4.95 ms | 4.94 ms | 4.97 ms | 0.014 ms | 202 ops/s |
 
