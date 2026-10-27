@@ -58,6 +58,8 @@ pub struct AppState {
     pub key_touch: Mutex<HashMap<i64, Instant>>,
     /// Every active API key; decides whether ingestion is protected.
     pub api_keys: Arc<crate::auth::ApiKeys>,
+    /// Session cache and lookup timings (AUTH-PERF-02).
+    pub sessions: crate::auth::Sessions,
     /// Flips to `true` when shutdown starts: new ingest, queries and live
     /// streams are refused and live-tail streams end, so the drain only
     /// waits for work that was already accepted.

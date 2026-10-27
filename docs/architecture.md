@@ -198,12 +198,55 @@ precedes the response. Lock order is change mutex → set pointer; the set
 pointer is never held across anything else, and the per-key last-used
 throttle (`key_touch`) is a separate lock never held with either.
 
-Session cookies are not covered: `require_user` looks each session up in
-SQLite (`find_session`) through the metadata store's single connection,
-which a key write also holds, so a session-authenticated UI/API request can
-still wait for a key change to commit. This predates the key registry; a
-separate read connection or a session cache would remove it if it matters
-in practice.
+### Session authentication
+
+Sessions are stored in SQLite (`sessions`: the token's SHA-256, user,
+expiry), and every metadata read and write goes through the store's one
+connection. Until AUTH-PERF-02 `require_user` read SQLite for every
+session-cookie request, so under concurrency those requests queued for that
+connection and behind any metadata write: AUTH-PERF-02 measured a mean
+2.4 ms lock wait per lookup and 70% lower throughput than admin-key
+requests on an auth-only endpoint at 32 clients
+([results](testing.md#session-authentication-benchmark)).
+
+`require_user` now checks `auth::Sessions` first, a bounded in-memory
+cache of sessions found valid:
+
+* **Key and contents.** The token's SHA-256 (as stored) → user name and the
+  session's expiry. The token is never kept.
+* **Bounds.** At most `SESSION_CACHE_ENTRIES` (4096, under about 1 MB).
+  Only valid sessions are cached, so unknown tokens cannot grow it; when
+  full, expired entries are evicted first, then an arbitrary one. A miss
+  reads SQLite on the blocking pool, at most `MAX_SESSION_FILLS` (16) at
+  once; further misses wait asynchronously, holding no thread, and are
+  bounded by the connection limit.
+* **Expiry.** An entry is used only while `expires_at > now`, the same test
+  as the SQL lookup, so no cached session outlives its expiry.
+* **Logout.** The blocking task that deletes the session row then
+  invalidates the cache entry, before the response; it runs to the end even
+  if the client disconnects. From the response on, no request is admitted
+  with that session.
+* **Fill against logout.** Each invalidation advances an epoch. A miss
+  notes the epoch before it reads SQLite and caches its result only if the
+  epoch is unchanged, so a lookup that read the row before a logout's
+  delete can be admitted (it is ordered before the logout) but can never
+  put the session back. Any logout makes all in-flight fills skip caching;
+  the next request just reads SQLite again.
+* **Failures.** A database error in a lookup fails the request with `500`,
+  even when an API key is also sent, and caches nothing. A cache hit does
+  not read SQLite, so a cached session keeps working while the metadata
+  database is briefly unavailable, until its expiry or logout.
+* **What does not change.** Sessions are still created only by login and
+  ended only by logout or expiry; there is no API to change a user or
+  password while the server runs (the admin password is set at startup,
+  before any request). The cache is per process and starts empty, so a
+  restart reads SQLite again. Session TTL, cookie attributes and
+  key fallback are unchanged; `/api/v1/auth/me` still reads SQLite.
+
+`/api/v1/system/info` reports `sessionAuth`: cache hits and size, SQLite
+lookups, and their time waiting for a turn and thread (`queue`), for the
+metadata connection (`lock`) and in the query itself, so authentication
+delay can be told apart from query-engine time.
 
 ## Background jobs
 

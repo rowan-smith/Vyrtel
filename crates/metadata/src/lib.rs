@@ -589,15 +589,28 @@ impl Metadata {
     }
 
     pub fn find_session(&self, token_hash: &str) -> Result<Option<User>> {
+        self.find_session_timed(token_hash).map(|(found, _)| found.map(|(user, _)| user))
+    }
+
+    /// [`Metadata::find_session`] with the session's expiry (ms since the
+    /// epoch), also returning how long it waited for the connection, so
+    /// request authentication can tell waiting behind other metadata work
+    /// from the lookup itself.
+    #[allow(clippy::type_complexity)]
+    pub fn find_session_timed(&self, token_hash: &str) -> Result<(Option<(User, i64)>, std::time::Duration)> {
+        let waiting = std::time::Instant::now();
         let c = self.conn.lock().unwrap();
-        Ok(c.prepare_cached(
-            "SELECT u.id, u.username, u.password_hash FROM sessions s JOIN users u ON u.id = s.user_id \
-             WHERE s.token_hash = ?1 AND s.expires_at > ?2",
-        )?
-        .query_row(params![token_hash, now_ms()], |r| {
-            Ok(User { id: r.get(0)?, username: r.get(1)?, password_hash: r.get(2)? })
-        })
-        .optional()?)
+        let lock_wait = waiting.elapsed();
+        let found = c
+            .prepare_cached(
+                "SELECT u.id, u.username, u.password_hash, s.expires_at FROM sessions s \
+                 JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?1 AND s.expires_at > ?2",
+            )?
+            .query_row(params![token_hash, now_ms()], |r| {
+                Ok((User { id: r.get(0)?, username: r.get(1)?, password_hash: r.get(2)? }, r.get(3)?))
+            })
+            .optional()?;
+        Ok((found, lock_wait))
     }
 
     pub fn delete_session(&self, token_hash: &str) -> Result<()> {
