@@ -568,6 +568,24 @@ impl Metadata {
         Ok(c.query_row("SELECT id FROM users WHERE username = ?1", [username], |r| r.get(0))?)
     }
 
+    /// Set the password hash of `username` (creating the user if needed)
+    /// and end all of that user's sessions, in one transaction, so no
+    /// session issued under the old password outlives the change. Returns
+    /// the user id and how many sessions were ended.
+    pub fn rotate_password(&self, username: &str, password_hash: &str) -> Result<(i64, usize)> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        tx.prepare_cached(
+            "INSERT INTO users (username, password_hash, created_at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash",
+        )?
+        .execute(params![username, password_hash, now_ms()])?;
+        let id: i64 = tx.query_row("SELECT id FROM users WHERE username = ?1", [username], |r| r.get(0))?;
+        let ended = tx.prepare_cached("DELETE FROM sessions WHERE user_id = ?1")?.execute([id])?;
+        tx.commit()?;
+        Ok((id, ended))
+    }
+
     pub fn find_user(&self, username: &str) -> Result<Option<User>> {
         let c = self.conn.lock().unwrap();
         Ok(c.prepare_cached("SELECT id, username, password_hash FROM users WHERE username = ?1")?
@@ -589,15 +607,28 @@ impl Metadata {
     }
 
     pub fn find_session(&self, token_hash: &str) -> Result<Option<User>> {
+        self.find_session_timed(token_hash).map(|(found, _)| found.map(|(user, _)| user))
+    }
+
+    /// [`Metadata::find_session`] with the session's expiry (ms since the
+    /// epoch), also returning how long it waited for the connection, so
+    /// request authentication can tell waiting behind other metadata work
+    /// from the lookup itself.
+    #[allow(clippy::type_complexity)]
+    pub fn find_session_timed(&self, token_hash: &str) -> Result<(Option<(User, i64)>, std::time::Duration)> {
+        let waiting = std::time::Instant::now();
         let c = self.conn.lock().unwrap();
-        Ok(c.prepare_cached(
-            "SELECT u.id, u.username, u.password_hash FROM sessions s JOIN users u ON u.id = s.user_id \
-             WHERE s.token_hash = ?1 AND s.expires_at > ?2",
-        )?
-        .query_row(params![token_hash, now_ms()], |r| {
-            Ok(User { id: r.get(0)?, username: r.get(1)?, password_hash: r.get(2)? })
-        })
-        .optional()?)
+        let lock_wait = waiting.elapsed();
+        let found = c
+            .prepare_cached(
+                "SELECT u.id, u.username, u.password_hash, s.expires_at FROM sessions s \
+                 JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?1 AND s.expires_at > ?2",
+            )?
+            .query_row(params![token_hash, now_ms()], |r| {
+                Ok((User { id: r.get(0)?, username: r.get(1)?, password_hash: r.get(2)? }, r.get(3)?))
+            })
+            .optional()?;
+        Ok((found, lock_wait))
     }
 
     pub fn delete_session(&self, token_hash: &str) -> Result<()> {

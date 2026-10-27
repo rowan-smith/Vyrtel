@@ -27,3 +27,8 @@ path = "src/connload.rs"
 [[bin]]
 name = "keychurn"
 path = "src/keychurn.rs"
+
+# Session-cookie vs admin-key authentication under load (AUTH-PERF-02).
+[[bin]]
+name = "sessionauth"
+path = "src/sessionauth.rs"

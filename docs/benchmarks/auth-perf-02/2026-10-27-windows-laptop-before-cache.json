@@ -1,0 +1,2223 @@
+{
+  "options": {
+    "cells": ".",
+    "minRuns": 3
+  },
+  "report": {
+    "auth-low": {
+      "requests/s": {
+        "key": [
+          17248.176037702262,
+          24655.12801990041,
+          18910.11318468913
+        ],
+        "session": [
+          9969.328812790334,
+          14621.157455620474,
+          12350.77871473055
+        ],
+        "keyMedian": 18910.11318468913,
+        "sessionMedian": 12350.77871473055
+      },
+      "load p50 ms": {
+        "key": [
+          0.207,
+          0.139,
+          0.189
+        ],
+        "session": [
+          0.378,
+          0.257,
+          0.308
+        ],
+        "keyMedian": 0.189,
+        "sessionMedian": 0.308
+      },
+      "load p95 ms": {
+        "key": [
+          0.403,
+          0.271,
+          0.373
+        ],
+        "session": [
+          0.614,
+          0.406,
+          0.511
+        ],
+        "keyMedian": 0.373,
+        "sessionMedian": 0.511
+      },
+      "load p99 ms": {
+        "key": [
+          0.517,
+          0.358,
+          0.528
+        ],
+        "session": [
+          0.761,
+          0.496,
+          0.713
+        ],
+        "keyMedian": 0.517,
+        "sessionMedian": 0.713
+      },
+      "load max ms": {
+        "key": [
+          1.453,
+          3.602,
+          22.781
+        ],
+        "session": [
+          1.909,
+          4.506,
+          14.316
+        ],
+        "keyMedian": 3.602,
+        "sessionMedian": 4.506
+      },
+      "cold load p99 ms": {
+        "key": [
+          0.499,
+          0.339,
+          0.454
+        ],
+        "session": [
+          0.717,
+          0.49,
+          0.555
+        ],
+        "keyMedian": 0.454,
+        "sessionMedian": 0.555
+      },
+      "search p99 ms": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          null,
+          null,
+          null
+        ],
+        "keyMedian": null,
+        "sessionMedian": null
+      },
+      "facets p99 ms": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          null,
+          null,
+          null
+        ],
+        "keyMedian": null,
+        "sessionMedian": null
+      },
+      "dashboard p99 ms": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          null,
+          null,
+          null
+        ],
+        "keyMedian": null,
+        "sessionMedian": null
+      },
+      "probe p50 ms": {
+        "key": [
+          0.247,
+          0.172,
+          0.219
+        ],
+        "session": [
+          0.441,
+          0.301,
+          0.354
+        ],
+        "keyMedian": 0.219,
+        "sessionMedian": 0.354
+      },
+      "probe p99 ms": {
+        "key": [
+          0.58,
+          0.421,
+          0.746
+        ],
+        "session": [
+          0.881,
+          0.607,
+          1.148
+        ],
+        "keyMedian": 0.58,
+        "sessionMedian": 0.881
+      },
+      "probe max ms": {
+        "key": [
+          1.191,
+          0.765,
+          6.605
+        ],
+        "session": [
+          1.267,
+          1.167,
+          3.216
+        ],
+        "keyMedian": 1.191,
+        "sessionMedian": 1.267
+      },
+      "heartbeat p99 ms": {
+        "key": [
+          0.568,
+          0.381,
+          0.65
+        ],
+        "session": [
+          0.501,
+          0.338,
+          0.458
+        ],
+        "keyMedian": 0.568,
+        "sessionMedian": 0.458
+      },
+      "503s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "ingest events/s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "ingest 429s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "write pairs": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "cache hits": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "lookups/s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          10069.313410365445,
+          14721.150059865638,
+          12450.82408713185
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 12450.82408713185
+      },
+      "lookup queue µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          14.88850623765619,
+          10.57925198240278,
+          16.644851181393257
+        ],
+        "keyMedian": null,
+        "sessionMedian": 14.88850623765619
+      },
+      "lookup lock µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          43.13491102531784,
+          28.237565853791004,
+          37.65652858313121
+        ],
+        "keyMedian": null,
+        "sessionMedian": 37.65652858313121
+      },
+      "lookup query µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          71.99593584692187,
+          49.4925592005214,
+          55.50198371267488
+        ],
+        "keyMedian": null,
+        "sessionMedian": 55.50198371267488
+      },
+      "lookup max lock µs": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          1062,
+          889,
+          9780
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 1062
+      },
+      "lookups in flight (peak)": {
+        "key": [
+          1,
+          1,
+          1
+        ],
+        "session": [
+          5,
+          5,
+          5
+        ],
+        "keyMedian": 1,
+        "sessionMedian": 5
+      },
+      "CPU µs/request": {
+        "key": [
+          115.71143410908859,
+          84.13634548208098,
+          98.25073502971847
+        ],
+        "session": [
+          269.9519339204178,
+          185.68582082155638,
+          209.69367720937387
+        ],
+        "keyMedian": 98.25073502971847,
+        "sessionMedian": 209.69367720937387
+      },
+      "peak MiB": {
+        "key": [
+          31.04296875,
+          31.03515625,
+          31.1484375
+        ],
+        "session": [
+          31.05078125,
+          31.0390625,
+          32.58984375
+        ],
+        "keyMedian": 31.04296875,
+        "sessionMedian": 31.05078125
+      }
+    },
+    "auth-high": {
+      "requests/s": {
+        "key": [
+          35987.4571312641,
+          41422.54605847217,
+          37615.546347989046
+        ],
+        "session": [
+          11412.842756210948,
+          14562.527774643764,
+          11104.749326696061
+        ],
+        "keyMedian": 37615.546347989046,
+        "sessionMedian": 11412.842756210948
+      },
+      "load p50 ms": {
+        "key": [
+          0.865,
+          0.753,
+          0.688
+        ],
+        "session": [
+          2.578,
+          2.061,
+          2.436
+        ],
+        "keyMedian": 0.753,
+        "sessionMedian": 2.436
+      },
+      "load p95 ms": {
+        "key": [
+          1.341,
+          1.153,
+          1.56
+        ],
+        "session": [
+          6.962,
+          5.407,
+          7.134
+        ],
+        "keyMedian": 1.341,
+        "sessionMedian": 6.962
+      },
+      "load p99 ms": {
+        "key": [
+          1.648,
+          1.387,
+          2.511
+        ],
+        "session": [
+          10.339,
+          8.06,
+          12.387
+        ],
+        "keyMedian": 1.648,
+        "sessionMedian": 10.339
+      },
+      "load max ms": {
+        "key": [
+          7.358,
+          4.666,
+          220.216
+        ],
+        "session": [
+          34.699,
+          69.75,
+          1012.83
+        ],
+        "keyMedian": 7.358,
+        "sessionMedian": 69.75
+      },
+      "cold load p99 ms": {
+        "key": [
+          1.456,
+          1.24,
+          4.357
+        ],
+        "session": [
+          9.121,
+          6.745,
+          10.168
+        ],
+        "keyMedian": 1.456,
+        "sessionMedian": 9.121
+      },
+      "search p99 ms": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          null,
+          null,
+          null
+        ],
+        "keyMedian": null,
+        "sessionMedian": null
+      },
+      "facets p99 ms": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          null,
+          null,
+          null
+        ],
+        "keyMedian": null,
+        "sessionMedian": null
+      },
+      "dashboard p99 ms": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          null,
+          null,
+          null
+        ],
+        "keyMedian": null,
+        "sessionMedian": null
+      },
+      "probe p50 ms": {
+        "key": [
+          0.898,
+          0.781,
+          0.73
+        ],
+        "session": [
+          2.717,
+          2.157,
+          2.465
+        ],
+        "keyMedian": 0.781,
+        "sessionMedian": 2.465
+      },
+      "probe p99 ms": {
+        "key": [
+          1.727,
+          1.415,
+          2.784
+        ],
+        "session": [
+          11.314,
+          8.574,
+          16.265
+        ],
+        "keyMedian": 1.727,
+        "sessionMedian": 11.314
+      },
+      "probe max ms": {
+        "key": [
+          2.381,
+          2.022,
+          9.532
+        ],
+        "session": [
+          30.261,
+          35.004,
+          1005.981
+        ],
+        "keyMedian": 2.381,
+        "sessionMedian": 35.004
+      },
+      "heartbeat p99 ms": {
+        "key": [
+          1.649,
+          1.416,
+          2.327
+        ],
+        "session": [
+          0.558,
+          0.486,
+          1.045
+        ],
+        "keyMedian": 1.649,
+        "sessionMedian": 0.558
+      },
+      "503s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "ingest events/s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "ingest 429s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "write pairs": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "cache hits": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "lookups/s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          11512.373506963753,
+          14662.284459248285,
+          11198.425701046068
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 11512.373506963753
+      },
+      "lookup queue µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          17.329950671321626,
+          13.830662305805397,
+          118.60617788193282
+        ],
+        "keyMedian": null,
+        "sessionMedian": 17.329950671321626
+      },
+      "lookup lock µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          2403.6472261303043,
+          1878.180979149632,
+          2400.714005133356
+        ],
+        "keyMedian": null,
+        "sessionMedian": 2400.714005133356
+      },
+      "lookup query µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          79.16268476542824,
+          61.89731875170346,
+          73.44925789532418
+        ],
+        "keyMedian": null,
+        "sessionMedian": 73.44925789532418
+      },
+      "lookup max lock µs": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          34163,
+          69244,
+          1012454
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 69244
+      },
+      "lookups in flight (peak)": {
+        "key": [
+          1,
+          1,
+          1
+        ],
+        "session": [
+          33,
+          33,
+          33
+        ],
+        "keyMedian": 1,
+        "sessionMedian": 33
+      },
+      "CPU µs/request": {
+        "key": [
+          177.11540624882818,
+          162.40336722264433,
+          103.81459837134287
+        ],
+        "session": [
+          303.8094445490821,
+          238.47175008489896,
+          328.60531800442044
+        ],
+        "keyMedian": 162.40336722264433,
+        "sessionMedian": 303.8094445490821
+      },
+      "peak MiB": {
+        "key": [
+          32.00390625,
+          31.73828125,
+          32.2109375
+        ],
+        "session": [
+          34.1953125,
+          33.95703125,
+          45.0859375
+        ],
+        "keyMedian": 32.00390625,
+        "sessionMedian": 34.1953125
+      }
+    },
+    "query-low": {
+      "requests/s": {
+        "key": [
+          240.8664655097004,
+          366.4175904827965,
+          223.9897407205133
+        ],
+        "session": [
+          252.3294050644289,
+          353.2049555384653,
+          226.2981166245557
+        ],
+        "keyMedian": 240.8664655097004,
+        "sessionMedian": 252.3294050644289
+      },
+      "load p50 ms": {
+        "key": [
+          20.142,
+          13.791,
+          20.046
+        ],
+        "session": [
+          19.327,
+          14.463,
+          17.412
+        ],
+        "keyMedian": 20.046,
+        "sessionMedian": 17.412
+      },
+      "load p95 ms": {
+        "key": [
+          30.075,
+          18.849,
+          36.467
+        ],
+        "session": [
+          30.86,
+          19.115,
+          39.494
+        ],
+        "keyMedian": 30.075,
+        "sessionMedian": 30.86
+      },
+      "load p99 ms": {
+        "key": [
+          36.388,
+          22.09,
+          69.343
+        ],
+        "session": [
+          38.402,
+          21.672,
+          67.586
+        ],
+        "keyMedian": 36.388,
+        "sessionMedian": 38.402
+      },
+      "load max ms": {
+        "key": [
+          55.095,
+          37.112,
+          162.091
+        ],
+        "session": [
+          64.339,
+          29.344,
+          296.179
+        ],
+        "keyMedian": 55.095,
+        "sessionMedian": 64.339
+      },
+      "cold load p99 ms": {
+        "key": [
+          37.55,
+          21.146,
+          59.102
+        ],
+        "session": [
+          27.034,
+          22.575,
+          85.649
+        ],
+        "keyMedian": 37.55,
+        "sessionMedian": 27.034
+      },
+      "search p99 ms": {
+        "key": [
+          31.806,
+          18.749,
+          73.36
+        ],
+        "session": [
+          33.506,
+          18.324,
+          62.207
+        ],
+        "keyMedian": 31.806,
+        "sessionMedian": 33.506
+      },
+      "facets p99 ms": {
+        "key": [
+          40.006,
+          24.831,
+          93.795
+        ],
+        "session": [
+          43.372,
+          23.713,
+          91.937
+        ],
+        "keyMedian": 40.006,
+        "sessionMedian": 43.372
+      },
+      "dashboard p99 ms": {
+        "key": [
+          4.435,
+          3.081,
+          11.915
+        ],
+        "session": [
+          4.755,
+          3.317,
+          18.702
+        ],
+        "keyMedian": 4.435,
+        "sessionMedian": 4.755
+      },
+      "probe p50 ms": {
+        "key": [
+          0.543,
+          0.314,
+          0.378
+        ],
+        "session": [
+          0.803,
+          0.508,
+          0.593
+        ],
+        "keyMedian": 0.378,
+        "sessionMedian": 0.593
+      },
+      "probe p99 ms": {
+        "key": [
+          0.946,
+          0.676,
+          1.014
+        ],
+        "session": [
+          1.335,
+          0.995,
+          11.16
+        ],
+        "keyMedian": 0.946,
+        "sessionMedian": 1.335
+      },
+      "probe max ms": {
+        "key": [
+          1.93,
+          3.006,
+          15.635
+        ],
+        "session": [
+          3.354,
+          1.632,
+          46.285
+        ],
+        "keyMedian": 3.006,
+        "sessionMedian": 3.354
+      },
+      "heartbeat p99 ms": {
+        "key": [
+          0.641,
+          0.447,
+          0.655
+        ],
+        "session": [
+          0.681,
+          0.446,
+          0.739
+        ],
+        "keyMedian": 0.641,
+        "sessionMedian": 0.681
+      },
+      "503s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "ingest events/s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "ingest 429s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "write pairs": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "cache hits": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "lookups/s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          418.9347126821573,
+          551.7890712761455,
+          379.4453295753756
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 418.9347126821573
+      },
+      "lookup queue µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          27.919437492551545,
+          20.785061113626075,
+          181.23650250197525
+        ],
+        "keyMedian": null,
+        "sessionMedian": 27.919437492551545
+      },
+      "lookup lock µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          20.02133237993088,
+          11.749660479855137,
+          30.534500921780353
+        ],
+        "keyMedian": null,
+        "sessionMedian": 20.02133237993088
+      },
+      "lookup query µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          140.13764747944225,
+          89.48727931190584,
+          101.8864893336845
+        ],
+        "keyMedian": null,
+        "sessionMedian": 101.8864893336845
+      },
+      "lookup max lock µs": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          953,
+          494,
+          23298
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 953
+      },
+      "lookups in flight (peak)": {
+        "key": [
+          1,
+          1,
+          1
+        ],
+        "session": [
+          4,
+          5,
+          4
+        ],
+        "keyMedian": 1,
+        "sessionMedian": 4
+      },
+      "CPU µs/request": {
+        "key": [
+          16291.99502281211,
+          10726.851220510023,
+          15050.167224080267
+        ],
+        "session": [
+          15741.986545310645,
+          11149.92927864215,
+          14199.602561271804
+        ],
+        "keyMedian": 15050.167224080267,
+        "sessionMedian": 14199.602561271804
+      },
+      "peak MiB": {
+        "key": [
+          38.5,
+          37.7109375,
+          39.625
+        ],
+        "session": [
+          37.9375,
+          38.83984375,
+          41.2265625
+        ],
+        "keyMedian": 38.5,
+        "sessionMedian": 38.83984375
+      }
+    },
+    "query-high": {
+      "requests/s": {
+        "key": [
+          273.74400443249147,
+          335.59866491881616,
+          230.1404289091672
+        ],
+        "session": [
+          242.6084672934014,
+          326.40974049629995,
+          242.30821582160377
+        ],
+        "keyMedian": 273.74400443249147,
+        "sessionMedian": 242.6084672934014
+      },
+      "load p50 ms": {
+        "key": [
+          117.23,
+          95.622,
+          140.003
+        ],
+        "session": [
+          129.666,
+          98.238,
+          129.057
+        ],
+        "keyMedian": 117.23,
+        "sessionMedian": 129.057
+      },
+      "load p95 ms": {
+        "key": [
+          161.421,
+          118.819,
+          198.635
+        ],
+        "session": [
+          196.051,
+          123.23,
+          206.65
+        ],
+        "keyMedian": 161.421,
+        "sessionMedian": 196.051
+      },
+      "load p99 ms": {
+        "key": [
+          183.499,
+          126.903,
+          242.914
+        ],
+        "session": [
+          237.769,
+          134.44,
+          250.644
+        ],
+        "keyMedian": 183.499,
+        "sessionMedian": 237.769
+      },
+      "load max ms": {
+        "key": [
+          207.367,
+          144.898,
+          279.843
+        ],
+        "session": [
+          300.963,
+          185.822,
+          342.842
+        ],
+        "keyMedian": 207.367,
+        "sessionMedian": 300.963
+      },
+      "cold load p99 ms": {
+        "key": [
+          142.057,
+          139.103,
+          216.242
+        ],
+        "session": [
+          175.826,
+          131.94,
+          179.566
+        ],
+        "keyMedian": 142.057,
+        "sessionMedian": 175.826
+      },
+      "search p99 ms": {
+        "key": [
+          187.558,
+          127.537,
+          240.268
+        ],
+        "session": [
+          236.966,
+          136.517,
+          250.359
+        ],
+        "keyMedian": 187.558,
+        "sessionMedian": 236.966
+      },
+      "facets p99 ms": {
+        "key": [
+          187.375,
+          130.87,
+          249.179
+        ],
+        "session": [
+          242.996,
+          138.809,
+          258.64
+        ],
+        "keyMedian": 187.375,
+        "sessionMedian": 242.996
+      },
+      "dashboard p99 ms": {
+        "key": [
+          161.15,
+          113.826,
+          200.312
+        ],
+        "session": [
+          208.022,
+          117.949,
+          227.271
+        ],
+        "keyMedian": 161.15,
+        "sessionMedian": 208.022
+      },
+      "probe p50 ms": {
+        "key": [
+          0.494,
+          0.377,
+          0.466
+        ],
+        "session": [
+          0.91,
+          0.613,
+          0.645
+        ],
+        "keyMedian": 0.466,
+        "sessionMedian": 0.645
+      },
+      "probe p99 ms": {
+        "key": [
+          1.062,
+          0.724,
+          1.137
+        ],
+        "session": [
+          1.868,
+          1.185,
+          13.447
+        ],
+        "keyMedian": 1.062,
+        "sessionMedian": 1.868
+      },
+      "probe max ms": {
+        "key": [
+          1.78,
+          2.754,
+          6.022
+        ],
+        "session": [
+          22.104,
+          3.75,
+          43.724
+        ],
+        "keyMedian": 2.754,
+        "sessionMedian": 22.104
+      },
+      "heartbeat p99 ms": {
+        "key": [
+          0.819,
+          0.499,
+          0.795
+        ],
+        "session": [
+          0.87,
+          0.564,
+          0.796
+        ],
+        "keyMedian": 0.795,
+        "sessionMedian": 0.796
+      },
+      "503s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "ingest events/s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "ingest 429s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "write pairs": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "cache hits": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "lookups/s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          404.3640409105287,
+          518.456422061917,
+          401.70710990182494
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 404.3640409105287
+      },
+      "lookup queue µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          56.59628170401379,
+          32.58258200652216,
+          435.3572844400396
+        ],
+        "keyMedian": null,
+        "sessionMedian": 56.59628170401379
+      },
+      "lookup lock µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          27.76631371583354,
+          18.681565317475542,
+          101.34365708622398
+        ],
+        "keyMedian": null,
+        "sessionMedian": 27.76631371583354
+      },
+      "lookup query µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          157.76828367397192,
+          107.5349127182045,
+          109.34613478691774
+        ],
+        "keyMedian": null,
+        "sessionMedian": 109.34613478691774
+      },
+      "lookup max lock µs": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          1990,
+          1538,
+          43617
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 1990
+      },
+      "lookups in flight (peak)": {
+        "key": [
+          1,
+          1,
+          1
+        ],
+        "session": [
+          28,
+          23,
+          27
+        ],
+        "keyMedian": 1,
+        "sessionMedian": 27
+      },
+      "CPU µs/request": {
+        "key": [
+          15152.118797537125,
+          12418.900903569842,
+          17933.11758360302
+        ],
+        "session": [
+          17510.773650728504,
+          13080.438756855576,
+          14684.740193058124
+        ],
+        "keyMedian": 15152.118797537125,
+        "sessionMedian": 14684.740193058124
+      },
+      "peak MiB": {
+        "key": [
+          43.66015625,
+          42.10546875,
+          42.671875
+        ],
+        "session": [
+          44.75,
+          45.40234375,
+          45.41796875
+        ],
+        "keyMedian": 42.671875,
+        "sessionMedian": 45.40234375
+      }
+    },
+    "mixed-low": {
+      "requests/s": {
+        "key": [
+          14.411155640994922,
+          15.549971767052046,
+          13.042808982969996
+        ],
+        "session": [
+          13.747353851447079,
+          0.00691373284956714,
+          12.118056674297716
+        ],
+        "keyMedian": 14.411155640994922,
+        "sessionMedian": 12.118056674297716
+      },
+      "load p50 ms": {
+        "key": [
+          178.027,
+          146.59,
+          226.606
+        ],
+        "session": [
+          183.887,
+          127.769,
+          228.308
+        ],
+        "keyMedian": 178.027,
+        "sessionMedian": 183.887
+      },
+      "load p95 ms": {
+        "key": [
+          1597.277,
+          1748.028,
+          2168.362
+        ],
+        "session": [
+          1539.66,
+          983.185,
+          1915.142
+        ],
+        "keyMedian": 1748.028,
+        "sessionMedian": 1539.66
+      },
+      "load p99 ms": {
+        "key": [
+          1827.247,
+          1980.49,
+          2739.981
+        ],
+        "session": [
+          1872.456,
+          1109.988,
+          2811.47
+        ],
+        "keyMedian": 1980.49,
+        "sessionMedian": 1872.456
+      },
+      "load max ms": {
+        "key": [
+          2011.959,
+          2480.853,
+          2829.104
+        ],
+        "session": [
+          2008.012,
+          1229.717,
+          2844.355
+        ],
+        "keyMedian": 2480.853,
+        "sessionMedian": 2008.012
+      },
+      "cold load p99 ms": {
+        "key": [
+          355.066,
+          229.449,
+          423.279
+        ],
+        "session": [
+          639.865,
+          322.986,
+          490.926
+        ],
+        "keyMedian": 355.066,
+        "sessionMedian": 490.926
+      },
+      "search p99 ms": {
+        "key": [
+          221.669,
+          326.758,
+          357.676
+        ],
+        "session": [
+          294.526,
+          218.518,
+          218.143
+        ],
+        "keyMedian": 326.758,
+        "sessionMedian": 218.518
+      },
+      "facets p99 ms": {
+        "key": [
+          481.426,
+          370.649,
+          631.414
+        ],
+        "session": [
+          509.239,
+          397.549,
+          429.699
+        ],
+        "keyMedian": 481.426,
+        "sessionMedian": 429.699
+      },
+      "dashboard p99 ms": {
+        "key": [
+          1891.663,
+          2329.568,
+          2829.104
+        ],
+        "session": [
+          1903.022,
+          1229.716,
+          2844.355
+        ],
+        "keyMedian": 2329.568,
+        "sessionMedian": 1903.022
+      },
+      "probe p50 ms": {
+        "key": [
+          0.407,
+          0.324,
+          0.483
+        ],
+        "session": [
+          0.69,
+          0.554,
+          0.706
+        ],
+        "keyMedian": 0.407,
+        "sessionMedian": 0.69
+      },
+      "probe p99 ms": {
+        "key": [
+          1.078,
+          0.862,
+          1.578
+        ],
+        "session": [
+          1.928,
+          1.643,
+          1.907
+        ],
+        "keyMedian": 1.078,
+        "sessionMedian": 1.907
+      },
+      "probe max ms": {
+        "key": [
+          9.295,
+          4.96,
+          14.841
+        ],
+        "session": [
+          17.908,
+          22.55,
+          12.158
+        ],
+        "keyMedian": 9.295,
+        "sessionMedian": 17.908
+      },
+      "heartbeat p99 ms": {
+        "key": [
+          0.848,
+          0.627,
+          1.025
+        ],
+        "session": [
+          0.962,
+          0.622,
+          0.98
+        ],
+        "keyMedian": 0.848,
+        "sessionMedian": 0.962
+      },
+      "503s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "ingest events/s": {
+        "key": [
+          155136.09047531034,
+          180667.2738565047,
+          124367.01977290801
+        ],
+        "session": [
+          138153.67075764766,
+          60.835405192057316,
+          117592.67153156744
+        ],
+        "keyMedian": 155136.09047531034,
+        "sessionMedian": 117592.67153156744
+      },
+      "ingest 429s": {
+        "key": [
+          2760,
+          2799,
+          2739
+        ],
+        "session": [
+          2562,
+          1553,
+          2414
+        ],
+        "keyMedian": 2760,
+        "sessionMedian": 2414
+      },
+      "write pairs": {
+        "key": [
+          375,
+          375,
+          374
+        ],
+        "session": [
+          377,
+          215,
+          375
+        ],
+        "keyMedian": 375,
+        "sessionMedian": 375
+      },
+      "cache hits": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "lookups/s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          147.89258564398858,
+          0.050954755489723176,
+          143.75341741078662
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 143.75341741078662
+      },
+      "lookup queue µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          45.5812133072407,
+          19.299145299145298,
+          24.64099173553719
+        ],
+        "keyMedian": null,
+        "sessionMedian": 24.64099173553719
+      },
+      "lookup lock µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          6.649706457925636,
+          5.394230769230769,
+          6.950413223140496
+        ],
+        "keyMedian": null,
+        "sessionMedian": 6.649706457925636
+      },
+      "lookup query µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          189.40019569471625,
+          174.375,
+          194.13388429752067
+        ],
+        "keyMedian": null,
+        "sessionMedian": 189.40019569471625
+      },
+      "lookup max lock µs": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          1831,
+          794,
+          1221
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 1221
+      },
+      "lookups in flight (peak)": {
+        "key": [
+          1,
+          1,
+          1
+        ],
+        "session": [
+          3,
+          3,
+          3
+        ],
+        "keyMedian": 1,
+        "sessionMedian": 3
+      },
+      "CPU µs/request": {
+        "key": [
+          294233.3333333333,
+          266833.85579937306,
+          347941.17647058825
+        ],
+        "session": [
+          324561.4035087719,
+          217283.46456692912,
+          352745.09803921566
+        ],
+        "keyMedian": 294233.3333333333,
+        "sessionMedian": 324561.4035087719
+      },
+      "peak MiB": {
+        "key": [
+          369.64453125,
+          368.26953125,
+          348.578125
+        ],
+        "session": [
+          310.56640625,
+          274.5390625,
+          327.9375
+        ],
+        "keyMedian": 368.26953125,
+        "sessionMedian": 310.56640625
+      }
+    },
+    "mixed-high": {
+      "requests/s": {
+        "key": [
+          16.787129494340352,
+          13.151127688586243,
+          16.17943656875526
+        ],
+        "session": [
+          16.184579009428237,
+          14.173445187342166,
+          13.740428435933373
+        ],
+        "keyMedian": 16.17943656875526,
+        "sessionMedian": 14.173445187342166
+      },
+      "load p50 ms": {
+        "key": [
+          2538.169,
+          2685.975,
+          2689.85
+        ],
+        "session": [
+          2667.148,
+          3107.645,
+          3269.039
+        ],
+        "keyMedian": 2685.975,
+        "sessionMedian": 3107.645
+      },
+      "load p95 ms": {
+        "key": [
+          6072.73,
+          5420.143,
+          5657.886
+        ],
+        "session": [
+          6461.013,
+          5756.065,
+          6019.428
+        ],
+        "keyMedian": 5657.886,
+        "sessionMedian": 6019.428
+      },
+      "load p99 ms": {
+        "key": [
+          6719.014,
+          5815.917,
+          6339.213
+        ],
+        "session": [
+          6957.518,
+          6521.169,
+          6420.5
+        ],
+        "keyMedian": 6339.213,
+        "sessionMedian": 6521.169
+      },
+      "load max ms": {
+        "key": [
+          6967.113,
+          6210.108,
+          6842.168
+        ],
+        "session": [
+          7082.361,
+          6656.706,
+          6803.597
+        ],
+        "keyMedian": 6842.168,
+        "sessionMedian": 6803.597
+      },
+      "cold load p99 ms": {
+        "key": [
+          1405.273,
+          1827.068,
+          1730.645
+        ],
+        "session": [
+          1418.233,
+          1627.955,
+          2196.295
+        ],
+        "keyMedian": 1730.645,
+        "sessionMedian": 1627.955
+      },
+      "search p99 ms": {
+        "key": [
+          5466.947,
+          5532.271,
+          5369.004
+        ],
+        "session": [
+          6033.343,
+          5507.721,
+          5347.268
+        ],
+        "keyMedian": 5466.947,
+        "sessionMedian": 5507.721
+      },
+      "facets p99 ms": {
+        "key": [
+          5294.165,
+          5586.693,
+          5669.049
+        ],
+        "session": [
+          6435.304,
+          5816.162,
+          5773.059
+        ],
+        "keyMedian": 5586.693,
+        "sessionMedian": 5816.162
+      },
+      "dashboard p99 ms": {
+        "key": [
+          6801.957,
+          5897.044,
+          6406.678
+        ],
+        "session": [
+          6974.884,
+          6569.283,
+          6803.596
+        ],
+        "keyMedian": 6406.678,
+        "sessionMedian": 6803.596
+      },
+      "probe p50 ms": {
+        "key": [
+          0.328,
+          0.366,
+          0.377
+        ],
+        "session": [
+          0.587,
+          0.498,
+          0.778
+        ],
+        "keyMedian": 0.366,
+        "sessionMedian": 0.587
+      },
+      "probe p99 ms": {
+        "key": [
+          1.042,
+          1.215,
+          0.992
+        ],
+        "session": [
+          1.708,
+          1.512,
+          2.174
+        ],
+        "keyMedian": 1.042,
+        "sessionMedian": 1.708
+      },
+      "probe max ms": {
+        "key": [
+          2.402,
+          3.659,
+          3.303
+        ],
+        "session": [
+          5.481,
+          101.741,
+          4.102
+        ],
+        "keyMedian": 3.303,
+        "sessionMedian": 5.481
+      },
+      "heartbeat p99 ms": {
+        "key": [
+          0.713,
+          0.82,
+          0.745
+        ],
+        "session": [
+          0.761,
+          0.786,
+          1.18
+        ],
+        "keyMedian": 0.745,
+        "sessionMedian": 0.786
+      },
+      "503s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "ingest events/s": {
+        "key": [
+          169776.50090982468,
+          128831.58002141696,
+          146460.25923165926
+        ],
+        "session": [
+          152148.87566213775,
+          146684.58049109043,
+          112046.53047656438
+        ],
+        "keyMedian": 146460.25923165926,
+        "sessionMedian": 146684.58049109043
+      },
+      "ingest 429s": {
+        "key": [
+          2814,
+          2653,
+          2824
+        ],
+        "session": [
+          2739,
+          2647,
+          2577
+        ],
+        "keyMedian": 2814,
+        "sessionMedian": 2647
+      },
+      "write pairs": {
+        "key": [
+          376,
+          369,
+          376
+        ],
+        "session": [
+          381,
+          363,
+          378
+        ],
+        "keyMedian": 376,
+        "sessionMedian": 378
+      },
+      "cache hits": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          0,
+          0,
+          0
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 0
+      },
+      "lookups/s": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          147.50560755316505,
+          128.1533297685356,
+          144.06770283160913
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 144.06770283160913
+      },
+      "lookup queue µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          30.651140981556736,
+          67.93562231759657,
+          42.783732057416266
+        ],
+        "keyMedian": null,
+        "sessionMedian": 42.783732057416266
+      },
+      "lookup lock µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          16.728040012503907,
+          23.38890723010895,
+          21.475279106858054
+        ],
+        "keyMedian": null,
+        "sessionMedian": 21.475279106858054
+      },
+      "lookup query µs": {
+        "key": [
+          null,
+          null,
+          null
+        ],
+        "session": [
+          183.59143482338231,
+          144.37669197755034,
+          217.51451355661882
+        ],
+        "keyMedian": null,
+        "sessionMedian": 183.59143482338231
+      },
+      "lookup max lock µs": {
+        "key": [
+          0,
+          0,
+          0
+        ],
+        "session": [
+          2394,
+          6688,
+          4606
+        ],
+        "keyMedian": 0,
+        "sessionMedian": 4606
+      },
+      "lookups in flight (peak)": {
+        "key": [
+          1,
+          1,
+          1
+        ],
+        "session": [
+          27,
+          24,
+          23
+        ],
+        "keyMedian": 1,
+        "sessionMedian": 24
+      },
+      "CPU µs/request": {
+        "key": [
+          240820.10582010582,
+          297742.94670846395,
+          274044.9438202247
+        ],
+        "session": [
+          255071.22507122508,
+          283731.3432835821,
+          328026.7558528428
+        ],
+        "keyMedian": 274044.9438202247,
+        "sessionMedian": 283731.3432835821
+      },
+      "peak MiB": {
+        "key": [
+          349.21875,
+          323.2421875,
+          329.69921875
+        ],
+        "session": [
+          347.125,
+          320.64453125,
+          273.171875
+        ],
+        "keyMedian": 329.69921875,
+        "sessionMedian": 320.64453125
+      }
+    }
+  },
+  "failures": [
+    "auth-high session run1: mean session lookup 2500 µs > 1000 µs",
+    "auth-high session run2: mean session lookup 1954 µs > 1000 µs",
+    "auth-high session run3: mean session lookup 2593 µs > 1000 µs",
+    "mixed-low session run2: load {\"ok\":254,\"unauthorized401\":0,\"forbidden403\":0,\"rejected429\":0,\"unavailable503\":0,\"serverError5xx\":0,\"otherStatus\":0,\"timeouts\":4,\"transportErrors\":0}",
+    "mixed-low session run2: metadata writes {\"ok\":429,\"unauthorized401\":0,\"forbidden403\":0,\"rejected429\":0,\"unavailable503\":0,\"serverError5xx\":0,\"otherStatus\":0,\"timeouts\":1,\"transportErrors\":0}",
+    "mixed-low session run2: ingest {\"ok\":22350,\"unauthorized401\":0,\"forbidden403\":0,\"rejected429\":1553,\"unavailable503\":0,\"serverError5xx\":0,\"otherStatus\":0,\"timeouts\":4,\"transportErrors\":0}",
+    "auth-low: requests/s 12351 < 90% of 18910",
+    "auth-low: CPU µs/request 210 > 110% of 98.25",
+    "auth-high: requests/s 11413 < 90% of 37616",
+    "auth-high: load p99 ms 10.34 > max(110%, +1 ms) of 1.65",
+    "auth-high: probe p99 ms 11.31 > max(110%, +1 ms) of 1.73",
+    "auth-high: CPU µs/request 304 > 110% of 162",
+    "query-high: requests/s 243 < 90% of 274",
+    "query-high: load p99 ms 238 > max(110%, +1 ms) of 183",
+    "mixed-low: requests/s 12.12 < 90% of 14.41",
+    "mixed-low: CPU µs/request 324561 > 110% of 294233",
+    "mixed-high: requests/s 14.17 < 90% of 16.18"
+  ]
+}

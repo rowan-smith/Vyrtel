@@ -460,3 +460,282 @@ async fn stalled_key_writes_do_not_hold_up_ingestion() {
     drop(db);
     Arc::into_inner(s).unwrap().stop().await;
 }
+
+// ---- AUTH-PERF-02: session-cookie authentication ------------------------
+
+/// A server with an admin password; returns it with a session cookie, a
+/// client that sends only that cookie, and one that sends only the
+/// harness's admin key.
+async fn session_and_key() -> (TestServer, String, reqwest::Client, reqwest::Client) {
+    let s = start_secure().await;
+    let cookie = session_cookie(&login(&s, "correct horse").await);
+    let by_session = authorized_client("cookie", &cookie);
+    let by_key = authorized_client("authorization", &format!("Bearer {}", s.api_key));
+    (s, cookie, by_session, by_key)
+}
+
+/// The server's session-lookup counters (read with the key, so reading
+/// them looks up no session).
+async fn session_lookups(s: &TestServer, by_key: &reqwest::Client) -> Value {
+    let info: Value = by_key.get(s.u("/api/v1/system/info")).send().await.unwrap().json().await.unwrap();
+    info["sessionAuth"].clone()
+}
+
+async fn status(r: reqwest::RequestBuilder) -> u16 {
+    r.send().await.unwrap().status().as_u16()
+}
+
+/// The same requests answer the same with only the cookie or only the
+/// admin key; key requests look up no session; cookie requests read SQLite
+/// once and then use the cached session.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_and_admin_key_authenticate_alike_in_isolation() {
+    let (s, _cookie, by_session, by_key) = session_and_key().await;
+    let before = session_lookups(&s, &by_key).await;
+    let mut configs = Vec::new();
+    for client in [&by_key, &by_session] {
+        let config: Value = client.get(s.u("/api/v1/system/config")).send().await.unwrap().json().await.unwrap();
+        configs.push(config);
+        let r = client.post(s.u("/api/v1/query/logs")).json(&json!({"query": "", "limit": 5})).send().await.unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(status(client.get(s.u("/api/v1/dashboards"))).await, 200);
+        let q: Value = client
+            .post(s.u("/api/v1/saved-queries"))
+            .json(&json!({"name": "parity", "signal": "logs", "query": ""}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let id = q["id"].as_i64().unwrap();
+        assert_eq!(status(client.delete(s.u(&format!("/api/v1/saved-queries/{id}")))).await, 204);
+        if std::ptr::eq(client, &by_key) {
+            let after = session_lookups(&s, &by_key).await;
+            assert_eq!(after["lookups"], before["lookups"], "key-only requests look up no session");
+        }
+    }
+    assert_eq!(configs[0], configs[1], "the same response either way");
+    let after = session_lookups(&s, &by_key).await;
+    let delta = |k: &str| after[k].as_u64().unwrap() - before[k].as_u64().unwrap();
+    assert_eq!((delta("lookups"), delta("found"), delta("cacheHits")), (1, 1, 4), "read once, then cached");
+    assert_eq!(delta("failed"), 0);
+    assert_eq!((after["inFlight"].as_u64(), after["cached"].as_u64()), (Some(0), Some(1)));
+    // `/auth/me` is public and is not request authentication.
+    assert_eq!(status(by_session.get(s.u("/api/v1/auth/me"))).await, 200);
+    let me = session_lookups(&s, &by_key).await;
+    assert_eq!((&me["lookups"], &me["cacheHits"]), (&after["lookups"], &after["cacheHits"]));
+    s.stop().await;
+}
+
+/// An unknown cookie falls back to a valid API key and is otherwise
+/// refused; a valid session is used before any key; logout ends the
+/// session at once while keys keep working.
+#[tokio::test(flavor = "multi_thread")]
+async fn invalid_cookies_fall_back_to_keys_and_logout_is_immediate() {
+    let (s, cookie, by_session, by_key) = session_and_key().await;
+    let created: Value = by_key
+        .post(s.u("/api/v1/api-keys"))
+        .json(&json!({"name": "producers", "scope": "ingest"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ingest_key = created["key"].as_str().unwrap().to_string();
+    let config = "/api/v1/system/config";
+    let bogus = "vyrtel_session=0000000000000000000000000000000000000000000000000000000000000000";
+    let before = session_lookups(&s, &by_key).await;
+    assert_eq!(status(s.client.get(s.u(config)).header("cookie", bogus)).await, 401);
+    assert_eq!(status(s.client.get(s.u(config)).header("cookie", bogus).bearer_auth(&s.api_key)).await, 200);
+    assert_eq!(status(s.client.get(s.u(config)).header("cookie", bogus).bearer_auth(&ingest_key)).await, 403);
+    assert_eq!(status(s.client.get(s.u(config)).header("cookie", &cookie).bearer_auth(&ingest_key)).await, 200);
+    assert_eq!(status(s.client.get(s.u(config)).header("cookie", "vyrtel_session=")).await, 401);
+    let after = session_lookups(&s, &by_key).await;
+    let delta = |k: &str| after[k].as_u64().unwrap() - before[k].as_u64().unwrap();
+    assert_eq!((delta("lookups"), delta("found")), (4, 1), "an empty cookie is not looked up");
+
+    assert_eq!(status(by_session.post(s.u("/api/v1/auth/logout"))).await, 200);
+    assert_eq!(status(by_session.get(s.u(config))).await, 401, "refused as soon as logout returns");
+    assert_eq!(status(by_session.get(s.u(config)).bearer_auth(&s.api_key)).await, 200);
+    assert_eq!(status(by_key.get(s.u(config))).await, 200);
+    s.stop().await;
+}
+
+/// A session is accepted until its expiry and refused from then on, and
+/// survives a restart (sessions live in the metadata store).
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_end_at_their_expiry_and_survive_restarts() {
+    let ttl = std::time::Duration::from_secs(3);
+    let s = TestServer::start_with(|c| {
+        c.auth.admin_password = Some("correct horse".into());
+        c.auth.session_ttl = ttl;
+    })
+    .await;
+    let r = login(&s, "correct horse").await;
+    let logged_in = std::time::Instant::now();
+    assert!(r.headers()["set-cookie"].to_str().unwrap().contains("Max-Age=3"));
+    let cookie = session_cookie(&r);
+    let config = "/api/v1/system/config";
+    let with_cookie = |s: &TestServer| reqwest::Client::new().get(s.u(config)).header("cookie", &cookie);
+    assert_eq!(status(with_cookie(&s)).await, 200);
+
+    let s = s.restart().await;
+    // Skipped only if the restart alone took most of the session's life.
+    if logged_in.elapsed() < ttl / 2 {
+        assert_eq!(status(with_cookie(&s)).await, 200, "the session survives the restart");
+    }
+    tokio::time::sleep(ttl.saturating_sub(logged_in.elapsed())).await;
+    assert_eq!(status(with_cookie(&s)).await, 401, "refused from its expiry on");
+    s.stop().await;
+}
+
+/// Restarting with the same `auth.admin_password` keeps the admin's
+/// sessions; restarting with a new one ends them all, and only the new
+/// password logs in.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_admin_password_ends_existing_sessions() {
+    let config = "/api/v1/system/config";
+    let with_cookie = |s: &TestServer, cookie: &str| reqwest::Client::new().get(s.u(config)).header("cookie", cookie);
+    let s = start_secure().await;
+    let first = session_cookie(&login(&s, "correct horse").await);
+    let second = session_cookie(&login(&s, "correct horse").await);
+    assert_eq!(status(with_cookie(&s, &first)).await, 200, "cached before the restarts");
+
+    // Same password: sessions survive.
+    let s = s.restart().await;
+    assert_eq!(status(with_cookie(&s, &first)).await, 200);
+    assert_eq!(status(with_cookie(&s, &second)).await, 200);
+
+    // New password: every earlier session is refused, cached or not.
+    let (mut config_, dir) = s.stop().await;
+    config_.auth.admin_password = Some("battery staple".into());
+    let mut s = TestServer::launch(config_, dir).await;
+    s.client = reqwest::Client::new();
+    assert_eq!(status(with_cookie(&s, &first)).await, 401);
+    assert_eq!(status(with_cookie(&s, &second)).await, 401);
+    assert_eq!(login(&s, "correct horse").await.status(), 401, "the old password no longer works");
+    let fresh = session_cookie(&login(&s, "battery staple").await);
+    assert_eq!(status(with_cookie(&s, &fresh)).await, 200);
+
+    // And the new session survives a restart that keeps the new password.
+    let s = s.restart().await;
+    assert_eq!(status(with_cookie(&s, &fresh)).await, 200);
+    s.stop().await;
+}
+
+/// Session lookups share the metadata store's one connection, so an
+/// uncached session waits while another metadata write holds it, and that
+/// wait is reported as lock time; key requests and cached sessions do not
+/// wait. A failed lookup is a 500, never a fallback to another credential.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_lookups_wait_for_metadata_writes_and_fail_closed() {
+    let (s, cookie, by_session, by_key) = session_and_key().await;
+    let uncached = session_cookie(&login(&s, "correct horse").await);
+    let by_uncached = authorized_client("cookie", &uncached);
+    let s = Arc::new(s);
+    let config = "/api/v1/system/config";
+    let db = rusqlite::Connection::open(s.data_dir().join(server::datadir::METADATA_DB)).unwrap();
+
+    // A key create waiting for the SQLite write lock holds the connection.
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let creating = tokio::spawn({
+        let (s, by_key) = (s.clone(), by_key.clone());
+        async move { status(by_key.post(s.u("/api/v1/api-keys")).json(&json!({"name": "slow", "scope": "admin"}))).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let waiting = tokio::spawn({
+        let (s, by_session) = (s.clone(), by_session.clone());
+        async move { status(by_session.get(s.u(config))).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    for _ in 0..10 {
+        assert_eq!(status(by_key.get(s.u(config))).await, 200, "key requests do not wait");
+    }
+    assert!(!waiting.is_finished(), "the session request waits for the connection");
+    db.execute_batch("COMMIT").unwrap();
+    assert_eq!(creating.await.unwrap(), 201);
+    assert_eq!(waiting.await.unwrap(), 200);
+    let lookups = session_lookups(&s, &by_key).await;
+    assert!(lookups["maxLockMicros"].as_u64().unwrap() >= 250_000, "{lookups}");
+    assert_eq!(lookups["inFlight"], 0);
+
+    // Now cached, the session no longer waits for a stalled write.
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let creating = tokio::spawn({
+        let (s, by_key) = (s.clone(), by_key.clone());
+        async move { status(by_key.post(s.u("/api/v1/api-keys")).json(&json!({"name": "slow2", "scope": "admin"}))).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    for _ in 0..10 {
+        assert_eq!(status(by_session.get(s.u(config))).await, 200, "cached sessions do not wait");
+    }
+    assert!(!creating.is_finished());
+    db.execute_batch("COMMIT").unwrap();
+    assert_eq!(creating.await.unwrap(), 201);
+
+    // The session table is unreadable: an uncached session fails with 500,
+    // even with a valid key alongside; key-only requests and the cached
+    // session are unaffected.
+    db.execute_batch("ALTER TABLE sessions RENAME TO sessions_away").unwrap();
+    assert_eq!(status(by_uncached.get(s.u(config))).await, 500);
+    assert_eq!(status(by_uncached.get(s.u(config)).bearer_auth(&s.api_key)).await, 500);
+    assert_eq!(status(by_key.get(s.u(config))).await, 200);
+    assert_eq!(status(by_session.get(s.u(config))).await, 200);
+    db.execute_batch("ALTER TABLE sessions_away RENAME TO sessions").unwrap();
+    assert_eq!(status(by_uncached.get(s.u(config))).await, 200);
+    assert_eq!(session_lookups(&s, &by_key).await["failed"], 2);
+    // Logout still ends the cached session.
+    assert_eq!(status(by_session.post(s.u("/api/v1/auth/logout"))).await, 200);
+    assert_eq!(status(s.client.get(s.u(config)).header("cookie", &cookie)).await, 401);
+    drop(db);
+    Arc::into_inner(s).unwrap().stop().await;
+}
+
+/// While clients keep sending a cached session, no request that starts
+/// after logout returns is admitted with it, and another session of the
+/// same user is unaffected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn logout_is_immediate_under_concurrent_cached_requests() {
+    let (s, _cookie, by_session, by_key) = session_and_key().await;
+    let other = authorized_client("cookie", &session_cookie(&login(&s, "correct horse").await));
+    let s = Arc::new(s);
+    let config = "/api/v1/system/config";
+    assert_eq!(status(by_session.get(s.u(config))).await, 200);
+    let done = Arc::new(AtomicBool::new(false));
+    let senders: Vec<_> = (0..4)
+        .map(|_| {
+            let (s, by_session, done) = (s.clone(), by_session.clone(), done.clone());
+            tokio::spawn(async move {
+                let mut seen = Vec::new();
+                while !done.load(Ordering::SeqCst) {
+                    let started = std::time::Instant::now();
+                    seen.push((started, status(by_session.get(s.u(config))).await));
+                }
+                seen
+            })
+        })
+        .collect();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(status(by_session.post(s.u("/api/v1/auth/logout"))).await, 200);
+    let logged_out = std::time::Instant::now();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    done.store(true, Ordering::SeqCst);
+    let (mut before, mut after) = (0, 0);
+    for t in senders {
+        for (started, code) in t.await.unwrap() {
+            if started >= logged_out {
+                assert_eq!(code, 401, "admitted after logout returned");
+                after += 1;
+            } else {
+                assert!(code == 200 || code == 401, "{code}");
+                before += 1;
+            }
+        }
+    }
+    assert!(before > 0 && after > 0, "{before} before, {after} after");
+    assert_eq!(status(other.get(s.u(config))).await, 200, "the other session is unaffected");
+    assert_eq!(session_lookups(&s, &by_key).await["failed"], 0);
+    Arc::into_inner(s).unwrap().stop().await;
+}

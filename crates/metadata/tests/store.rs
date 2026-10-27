@@ -297,6 +297,23 @@ fn users_and_sessions() {
 }
 
 #[test]
+fn rotating_a_password_ends_only_that_users_sessions() {
+    let m = Metadata::open_in_memory().unwrap();
+    let admin = m.upsert_user("admin", "old").unwrap();
+    let other = m.upsert_user("ops", "hash").unwrap();
+    m.create_session("a1", admin, 60_000).unwrap();
+    m.create_session("a2", admin, 60_000).unwrap();
+    m.create_session("o1", other, 60_000).unwrap();
+    assert_eq!(m.rotate_password("admin", "new").unwrap(), (admin, 2));
+    assert_eq!(m.find_user("admin").unwrap().unwrap().password_hash, "new");
+    assert!(m.find_session("a1").unwrap().is_none() && m.find_session("a2").unwrap().is_none());
+    assert_eq!(m.find_session("o1").unwrap().unwrap().username, "ops", "other users keep theirs");
+    // A user that does not exist yet is created, with nothing to end.
+    let (id, ended) = m.rotate_password("new-admin", "h").unwrap();
+    assert_eq!((m.find_user("new-admin").unwrap().unwrap().id, ended), (id, 0));
+}
+
+#[test]
 fn query_stats_accumulate() {
     let m = Metadata::open_in_memory().unwrap();
     let row = StoredQueryStats {

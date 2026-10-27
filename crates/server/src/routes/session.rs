@@ -56,7 +56,17 @@ pub async fn login(State(state): State<SharedState>, ApiJson(b): ApiJson<LoginBo
 pub async fn logout(State(state): State<SharedState>, headers: HeaderMap) -> ApiResult<Response> {
     if let Some(token) = auth::session_from(&headers) {
         let hash = auth::sha256_hex(&token);
-        state.db(move |m| m.delete_session(&hash)).await?;
+        let st = state.clone();
+        state
+            .blocking(move || {
+                let deleted = st.metadata.delete_session(&hash);
+                // After the delete, so no lookup can cache the session again,
+                // and in the same blocking task, so a client that goes away
+                // cannot skip it; also when the delete failed.
+                st.sessions.invalidate(&hash);
+                Ok(deleted?)
+            })
+            .await?;
     }
     let mut resp = Json(json!({ "ok": true })).into_response();
     resp.headers_mut().insert(header::SET_COOKIE, cookie("", 0));

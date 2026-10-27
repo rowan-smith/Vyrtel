@@ -1013,6 +1013,192 @@ change, it invalidates earlier
 evidence, which must be taken again on the final candidate, preferably on a
 quiet Linux host with this harness included.
 
+### Session authentication (AUTH-PERF-02)
+
+Session-cookie requests are authenticated from a bounded in-memory cache
+of valid sessions in front of the SQLite lookup
+([design](architecture.md#session-authentication),
+[API semantics](api.md#authentication)); `/api/v1/system/info` reports
+where session authentication spends its time (`sessionAuth`).
+
+```bash
+cargo test -p server --lib auth::                         # cache: expiry, logout vs fill races, bounds, failures
+cargo test -p server --test integration auth::            # over HTTP: parity, isolation, fallback, logout, expiry, restart
+node --test scripts/bench/*.test.mjs                      # the benchmark report's evidence and budget checks
+```
+
+| Acceptance criterion (AUTH-PERF-02) | Tests and evidence |
+|---|---|
+| AC1: matched session-only vs admin-key-only load: auth-only, searches, facets, dashboards, concurrent ingestion and metadata writes | `tools/loadgen` `sessionauth` and `scripts/bench/sessionauth.sh`, below (each credential client is built with only its header and no cookie store; `GET /api/v1/auth/me` confirms before each run that the key clients carry no session; the report fails a key run that used any session); integration `auth::session_and_admin_key_authenticate_alike_in_isolation` |
+| AC2: end-to-end, auth, queue and lock time, lookup rate, concurrency, latency percentiles, throughput, CPU, memory, errors; predeclared budgets; ≥3 matched runs, cold and warm | `sessionAuth` counters (queue, lock, query time, lookups, cache hits, in-flight); `sessionauth` summaries (per-request p50/p95/p99/max, cold and warm, the auth probe apart from query work, ingest and write outcomes); `sessionauth-report.mjs` budgets below, fixed before the first run; integration `auth::session_lookups_wait_for_metadata_writes_and_fail_closed` (a stalled metadata write shows up as lock time) |
+| AC3: budgets met, or the smallest evidenced fix | The first matrix missed the budgets (below); the fix is the session cache, and the rerun on it is the evidence |
+| AC4: cache entry and byte caps, eviction, bounded fills, no raw tokens, expiry, immediate invalidation (logout and password change), fill vs revoke, no unbounded negative cache | `auth::tests::cached_sessions_are_used_until_their_expiry_only`, `the_cache_is_bounded_in_bytes_too` (256-byte names: the 1 MiB byte cap binds before the entry cap; an 8 KiB name is authenticated but never cached; the byte count stays exact through expiry, logout and re-fills), `clearing_forgets_everything_including_fills_in_flight`, metadata `rotating_a_password_ends_only_that_users_sessions`, integration `a_changed_admin_password_ends_existing_sessions` (fails before this change: a session from before the rotation was still accepted), `invalidation_wins_over_a_fill_in_flight`, `the_cache_is_bounded_and_unknown_tokens_never_grow_it` (10,000 unknown tokens cache nothing; 100 expired and 4,596 live sessions leave exactly 4,096 live ones), `concurrent_fills_are_bounded` (64 misses: 16 read at once, waiters hold no blocking thread, cancelled waiters release their turn); integration `logout_is_immediate_under_concurrent_cached_requests` |
+| AC5: expiry, invalid cookie with key fallback, concurrent invalidation, DB failure, restart, missing users; no bypass | `auth::tests::lookup_failures_fail_closed`, `sessions_follow_the_store` (login, never-issued token, expiry while cached, logout, restart with an empty cache); integration `invalid_cookies_fall_back_to_keys_and_logout_is_immediate`, `sessions_end_at_their_expiry_and_survive_restarts`, `session_lookups_wait_for_metadata_writes_and_fail_closed` (an unreadable session table is a 500 even with a valid key alongside), `logout_is_immediate_under_concurrent_cached_requests`; existing `ui_api_requires_session_or_admin_key` and the ingest-policy tests unchanged |
+
+The ingest policy (no ingest key = open, ingest key = protected) is not
+touched: ingestion never uses sessions, and the existing tests above
+(`ingest_protection_*`, `ingestion_without_keys_leaves_the_rest_of_the_api_closed`)
+pass unchanged.
+
+#### Session authentication benchmark
+
+`sessionauth` (in `tools/loadgen`) seeds 20,000 events, creates an admin
+key, an ingest key and a dashboard with one log-count panel, then runs
+the load with **one credential only**: the session cookie, or the admin key
+(`Authorization: Bearer`). Closed-loop clients run the cell's workload:
+
+* `auth`: `GET /api/v1/system/config` (no SQLite, no query: authentication
+  plus routing);
+* `query`: in turn a search (`/query/logs`, 50 events), facets (`level`,
+  `service`) and a dashboard view (`GET /dashboards/{id}` then its panel's
+  histogram);
+* `mixed`: `query`, plus 4 producers sending 100 events per request with
+  the ingest key and one writer creating and deleting a saved query every
+  50 ms with the load credential.
+
+Alongside, an auth probe (`GET /api/v1/system/config` every 10 ms with the
+load credential) measures the authentication decision apart from query
+work, and a `/health` heartbeat the runtime. The first 3 s are reported as
+cold, the rest as warm. `scripts/bench/sessionauth.sh` runs every cell of
+workload {auth, query, mixed} × clients {4, 32} with each credential on
+the same binary, a fresh data directory per run, alternating the
+credentials (and which goes first, by repetition), and records server CPU
+seconds and peak memory around each run:
+
+```bash
+cargo build --release -p server -p loadgen
+RUNS=3 DURATION=20s scripts/bench/sessionauth.sh target/release/vyrtel
+node scripts/bench/sessionauth-report.mjs target/sessionauth --json target/sessionauth/report.json
+# one cell, 5 repetitions:
+CELLS='^mixed-low$' RUNS=5 OUT=target/sessionauth-rerun scripts/bench/sessionauth.sh target/release/vyrtel
+node scripts/bench/sessionauth-report.mjs target/sessionauth-rerun --cells '^mixed-low$' --min-runs 5
+# a longer run of the heaviest cell (soak):
+CELLS='^mixed-high$' RUNS=1 DURATION=4m OUT=target/sessionauth-soak scripts/bench/sessionauth.sh target/release/vyrtel
+```
+
+Settings: `RUNS`, `DURATION`, `LOW`/`HIGH` (clients), `CELLS`, `OUT`,
+`SESSIONAUTH`, `DURABILITY` (`storage.durability`, default `normal`). The
+server runs with its default configuration plus a random admin password and
+alerts off; the generator runs on the same host. Credentials are synthetic
+(a random password per invocation; the keys and the session created for the
+run) and are never written to the results.
+
+**Evidence completeness**, checked by `sessionauth-report.mjs` before any
+budget (exit 1 when incomplete): every expected cell has results for both
+credentials and no other cell is present; each has at least `--min-runs`
+(default 3) usable runs per credential, the same number for both, with the
+same workload; a run is usable when both files parse, it used the
+credential and workload of its directory, its gated values are finite, and
+it completed load requests and warm probes.
+
+**Budgets**, fixed before the first run and checked by
+`sessionauth-report.mjs` (exit 1 when missed):
+
+* every run, both credentials: no load, probe, write or ingest request
+  answered 401, 403, 5xx other than 503, another error status, a timeout
+  or a transport error (503s from busy query slots and ingest 429s are
+  reported, not failures); every probe succeeded; no session lookup
+  failed; in mixed cells every acknowledged event persisted and the writer
+  made changes; key runs used no session (no cookie was sent); session runs
+  authenticated every successful request by session (cache hit or SQLite
+  lookup);
+* session runs, absolute: mean SQLite session lookup (queue + metadata
+  lock + query) at most 1 ms; warm probe p99 at most 25 ms;
+* per cell, session median against key median: successful requests/s at
+  least 90%; warm load p99 and warm probe p99 at most max(110%, +1 ms);
+  server CPU per successful request at most 110%; peak memory at most 110%.
+
+**Results, 2026-10-27** (raw per-run values in
+[`docs/benchmarks/auth-perf-02/`](benchmarks/auth-perf-02/)). Baseline
+`308d74b` (main before this change, plus only the `sessionAuth` counters,
+which time each lookup and change nothing else); candidate: this change
+with the session cache. Both `cargo build --release` with Rust 1.96.1 on
+Windows 11, Intel Core Ultra 7 155H (16 cores, 22 threads), 31.5 GB,
+generator on the same host, 20 s per run, uninstrumented (no profiler).
+Medians of 3 runs, key → session:
+
+*Without the cache* (`2026-10-27-windows-laptop-before-cache`): budgets
+missed in every cell.
+
+| Cell (workload-clients) | requests/s | load p99 ms | probe p99 ms | CPU µs/request | SQLite lookups/s | mean lock wait µs |
+|---|---|---|---|---|---|---|
+| auth-low | 18,910 → 12,351 | 0.52 → 0.71 | 0.58 → 0.88 | 98 → 210 | 12,451 | 38 |
+| auth-high | 37,616 → 11,413 | 1.65 → 10.34 | 1.73 → 11.31 | 162 → 304 | 11,512 | 2,401 |
+| query-low | 241 → 252 | 36.4 → 38.4 | 0.95 → 1.33 | 15,050 → 14,200 | 419 | 20 |
+| query-high | 274 → 243 | 183 → 238 | 1.06 → 1.87 | 15,152 → 14,685 | 404 | 28 |
+| mixed-low | 14.4 → 12.1 | 1,980 → 1,872 | 1.08 → 1.91 | 294,233 → 324,561 | 144 | 7 |
+| mixed-high | 16.2 → 14.2 | 6,339 → 6,521 | 1.04 → 1.71 | 274,045 → 283,731 | 144 | 21 |
+
+Every session request read SQLite through the one metadata connection; at
+32 clients requests queued for it (mean lock wait 2.4 ms, over the 1 ms
+absolute budget) and throughput fell 70%. That decided AC3: the fix is the
+cache.
+
+*With the cache* (`2026-10-27-windows-laptop-matrix`):
+
+| Cell (workload-clients) | requests/s | load p99 ms | probe p99 ms | CPU µs/request | cache hits per run | SQLite lookups in the run |
+|---|---|---|---|---|---|---|
+| auth-low | 12,902 → 14,223 | 0.85 → 0.77 | 0.91 → 0.87 | 156 → 141 | 286,633 | 0 |
+| auth-high | 22,584 → 24,933 | 5.41 → 5.25 | 7.94 → 8.39 | 229 → 220 | 500,719 | 0 |
+| query-low | 163 → 164 | 69.1 → 64.2 | 1.26 → 1.17 | 23,583 → 23,626 | 5,878 | 0 |
+| query-high | 209 → 193 | 256 → 245 | 1.11 → 1.24 | 19,699 → 21,181 | 6,714 | 0 |
+| mixed-low | 13.2 → 11.8 | 2,019 → 2,262 | 1.51 → 1.50 | 347,411 → 396,639 | 3,001 | 0 |
+| mixed-high | 12.9 → 13.8 | 7,740 → 6,542 | 1.69 → 1.51 | 323,185 → 323,738 | 3,145 | 0 |
+
+Five cells meet every budget. Session requests no longer read SQLite once
+cached (the one lookup per session happens during setup), and in the
+auth-only cells they are as fast as key requests. Every run of both
+credentials passed the correctness checks: no 401, 403, 5xx, timeout or
+transport error; all acknowledged events persisted; key runs used no
+session.
+
+`mixed-low` missed throughput, load p99 and CPU. Rerun with 5 repetitions
+(`2026-10-27-windows-laptop-mixed-low-rerun`): requests/s 12.26 → 12.57
+(met), CPU µs/request 378,828 → 358,238 (met), probe p99 1.40 → 1.59 ms
+(met), peak memory met; **load p99 2,275 → 2,672 ms (+17%) missed**, from
+the dashboard histogram queries (2,423 → 2,904 ms) while ingestion runs.
+Those session runs did no SQLite lookup (only about 3,000 cache hits each,
+sub-microsecond), and their auth probe is within budget, so the extra time
+is in query execution under ingestion, not authentication; the key runs
+alone ranged 1,588–2,561 ms, wider than the budget.
+
+*Soak* (`2026-10-27-windows-laptop-soak`, `mixed-high`, 4 minutes per
+credential): authentication stayed flat (probe p99 1.51 → 1.90 ms, max
+11.8 → 54.5 ms, 33,741 cache hits and no SQLite lookup) while the data
+grew and the query clients saturated the 4 query slots: both credentials
+had the same share of 10 s client timeouts (494 of 1,295 key, 469 of 1,248
+session), which fails the correctness budget for both. That is query-engine
+load, independent of the credential, and belongs to
+[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170).
+
+**Open before 0.1.2 performance sign-off**, both retained under
+[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170); neither
+is shown to come from session authentication, and neither is waived:
+
+1. the `mixed-low` load p99 budget (+17.4% session against key over 5
+   runs, with the auth probe within budget and the difference in histogram
+   query time);
+2. the `mixed-high` soak correctness budget (10 s client timeouts for both
+   credentials alike: 494 of 1,295 key, 469 of 1,248 session).
+
+Both are to be rerun on the dedicated Linux benchmark host, with the
+generator on a separate machine (`CELLS='^mixed-low$' RUNS=5`,
+`--min-runs 5`; the soak at the #170 duration), and must pass or be
+explicitly dispositioned by the reviewer.
+
+**Limitations.** One laptop, generator and server sharing 22 threads, no
+CPU pinning. Key-only throughput in the auth cells moved by up to 40%
+between the two matrices, which use the same key path, so compare session
+with key only within one matrix. Queue and lock time are measured directly
+(`sessionAuth`), but runtime scheduling is not; no profile was taken. CPU
+is process time from `Get-Process`, memory the Windows peak working set.
+The soak is 4 minutes, not the #170 soak. Query workloads use one service
+over the last hour, so their time grows with ingested data. As a
+candidate-affecting change, this invalidates earlier
+[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170) evidence,
+which must be taken again on the final candidate with this harness
+included.
+
 ## Frontend tests
 
 Vitest + React Testing Library in `web/tests/unit/`:
@@ -1212,6 +1398,22 @@ Options: `--admin-password` (or `VYRTEL_AUTH_ADMIN_PASSWORD`),
 `--churn-interval` (0 = no churn), `--probe-interval`, `--timeout`,
 `--out`, `--label`. It writes `summary.json` and exits with status 1 if any
 acknowledged event is missing afterwards.
+
+`sessionauth` runs the same load with only a session cookie or only an
+admin key (see
+[Session authentication benchmark](#session-authentication-benchmark)):
+
+```bash
+cargo run --release -p loadgen --bin sessionauth -- --target http://localhost:8080 \
+  --auth session --workload mixed --concurrency 32 --duration 20s
+```
+
+Options: `--auth session|key`, `--workload auth|query|mixed`,
+`--admin-password` (or `VYRTEL_AUTH_ADMIN_PASSWORD`), `--admin-username`,
+`--duration`, `--cold`, `--concurrency`, `--seed-events`,
+`--ingest-concurrency`, `--batch`, `--write-interval`, `--probe-interval`,
+`--timeout`, `--out`, `--label`. It writes `summary.json` (no credentials)
+and exits with status 1 if any acknowledged event is missing afterwards.
 
 Observed on the same laptop with a release build (`--rate 10000 --duration
 30s --traces-every 200`, default config):

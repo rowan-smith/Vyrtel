@@ -89,6 +89,15 @@ Always on for the UI and API. Ingestion follows the API keys:
   `ingestKeyRequired`.
 * **Everything else under `/api/v1`** requires either the admin session
   cookie (from `/api/v1/auth/login`) or an API key with scope `admin`.
+  A valid session is used first; a missing, empty or unknown cookie falls
+  back to the API key, if any. A session is accepted until its expiry
+  (`auth.session_ttl`) and refused as soon as logout returns. Starting the
+  server with a different `auth.admin_password` ends every existing
+  session of the admin user; restarting with the same one keeps them. Valid
+  sessions are cached in memory after their first request
+  ([design](architecture.md#session-authentication)); this changes no
+  outcome. If an uncached session cannot be looked up (a database error)
+  the request fails with `500`, even when a key is also sent.
 * `/health`, `/ready`, `/api/v1/auth/*` and the web UI assets are public.
 
 ```
@@ -124,9 +133,10 @@ Key changes take effect when their response is sent:
   it completes.
 * Writing a change does not delay requests authenticated by an API key,
   or ingestion while it is open: they are checked against the keys in
-  force until the change commits. Requests authenticated by a session
-  cookie look the session up in the same metadata database, so they can
-  still wait while a key change is being written, as before.
+  force until the change commits. A session-cookie request whose session
+  is not cached yet (its first after login or a restart) reads the same
+  metadata database, so it can wait while a key change is being written;
+  later requests of that session do not.
 
 ## Native event ingestion
 
@@ -619,7 +629,7 @@ change is recorded and POSTed to the webhook (3 attempts, 10 s timeout):
 ```
 GET /health                      → 200 {"status": "ok"} while the process runs
 GET /ready                       → 200 {"status": "ready", "storageWritable": true}, 503 {"status": "degraded", ...} or, while shutting down, 503 {"status": "draining"}
-GET /api/v1/system/info          version, uptime, event counts, queue depths, connection, ingest and query admission, active segments, memory budgets, recovery status
+GET /api/v1/system/info          version, uptime, event counts, queue depths, connection, ingest and query admission, session-auth timings, active segments, memory budgets, recovery status
 GET /api/v1/system/storage       raw/stored bytes, compression ratio, index overhead, recovery status, per-signal detail
 GET /api/v1/system/query-stats   per-field query statistics (input for future adaptive indexing)
 GET /api/v1/system/config        effective configuration (secrets omitted)
@@ -634,6 +644,32 @@ connections since the process started:
                  "admitted": 1250, "queued": 4, "refused": 0, "headerTimeouts": 1190,
                  "bodyTimeouts": 0, "writeTimeouts": 0, "protocolErrors": 2, "acceptErrors": 0 }
 ```
+
+It also includes how session-cookie authentication was done, counted
+since the process started (`sessionAuth`):
+
+```json
+"sessionAuth": { "cacheHits": 182310, "cached": 3, "cacheCapacity": 4096,
+                 "cachedBytes": 495, "cacheByteCapacity": 1048576,
+                 "lookups": 41, "found": 37, "failed": 0, "inFlight": 0, "peakInFlight": 4,
+                 "queueMicros": 1720, "lockMicros": 380, "queryMicros": 3120,
+                 "maxQueueMicros": 210, "maxLockMicros": 95, "maxQueryMicros": 410 }
+```
+
+Each request that sends a non-empty session cookie to an authenticated
+`/api/v1` endpoint is either a cache hit or one lookup in the metadata
+database (`lookups`, of which `found` were valid). `cached` is the number
+of sessions held, at most `cacheCapacity`, and `cachedBytes` their size as
+counted against `cacheByteCapacity` (key and user name plus 96 bytes
+each). For lookups, `queueMicros` is
+time waiting for a turn (at most 16 lookups at once) and a blocking
+thread, `lockMicros` time waiting for the metadata connection (held by any
+other metadata read or write, such as an API key change or a dashboard
+save), `queryMicros` the lookup itself; the `max…` fields are the longest
+single wait. Divide a total by `lookups` for the mean. `failed` counts
+lookups that hit a database error (answered `500`). Requests authenticated
+by API key alone, `/api/v1/auth/*` and ingestion use no session and are
+not counted.
 
 `active` connections hold a slot (this request's own included); `pending`
 ones wait for one. `refused` counts connections closed for lack of a slot,
