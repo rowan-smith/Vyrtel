@@ -214,9 +214,15 @@ cache of sessions found valid:
 
 * **Key and contents.** The token's SHA-256 (as stored) → user name and the
   session's expiry. The token is never kept.
-* **Bounds.** At most `SESSION_CACHE_ENTRIES` (4096, under about 1 MB).
+* **Bounds.** At most `SESSION_CACHE_ENTRIES` (4096) entries and
+  `SESSION_CACHE_BYTES` (1 MiB), each entry counted as its key and user
+  name plus a fixed 96-byte overhead (about 165 bytes for `admin`, so the
+  entry cap is reached first, at about 660 KiB). Sessions of users whose
+  name is over `MAX_CACHED_USERNAME` (256 bytes) are never cached; they
+  are still authenticated, from SQLite each time, so no configured
+  `auth.admin_username` can push the cache past its byte cap.
   Only valid sessions are cached, so unknown tokens cannot grow it; when
-  full, expired entries are evicted first, then an arbitrary one. A miss
+  full, expired entries are evicted first, then arbitrary ones. A miss
   reads SQLite on the blocking pool, at most `MAX_SESSION_FILLS` (16) at
   once; further misses wait asynchronously, holding no thread, and are
   bounded by the connection limit.
@@ -236,12 +242,18 @@ cache of sessions found valid:
   even when an API key is also sent, and caches nothing. A cache hit does
   not read SQLite, so a cached session keeps working while the metadata
   database is briefly unavailable, until its expiry or logout.
-* **What does not change.** Sessions are still created only by login and
-  ended only by logout or expiry; there is no API to change a user or
-  password while the server runs (the admin password is set at startup,
-  before any request). The cache is per process and starts empty, so a
-  restart reads SQLite again. Session TTL, cookie attributes and
-  key fallback are unchanged; `/api/v1/auth/me` still reads SQLite.
+* **Password changes.** There is no API to change a user or password
+  while the server runs; the admin password is set from
+  `auth.admin_password` at startup. When it differs from the stored one,
+  `Metadata::rotate_password` stores the new hash and deletes all of that
+  user's sessions in one transaction (and the cache is cleared, though it
+  is still empty then), so no session issued under the old password
+  survives the restart. Restarting with the same password keeps them.
+* **What does not change.** Sessions are created only by login and ended
+  by logout, expiry or a password change. The cache is per process and
+  starts empty, so a restart reads SQLite again. Session TTL, cookie
+  attributes and key fallback are unchanged; `/api/v1/auth/me` still
+  reads SQLite.
 
 `/api/v1/system/info` reports `sessionAuth`: cache hits and size, SQLite
 lookups, and their time waiting for a turn and thread (`queue`), for the

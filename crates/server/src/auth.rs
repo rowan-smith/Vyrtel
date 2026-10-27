@@ -281,10 +281,22 @@ fn check_api_key(state: &AppState, key: &str) -> Result<Principal, ApiError> {
     Ok(Principal::ApiKey { id, scope })
 }
 
-/// Most sessions [`Sessions`] keeps. An entry is the SHA-256 (hex) of the
-/// token, the user name and the expiry, about 200 bytes with the map's
-/// overhead, so the cache stays under about 1 MB.
+/// Most sessions [`Sessions`] keeps.
 pub const SESSION_CACHE_ENTRIES: usize = 4096;
+
+/// Most bytes [`Sessions`] keeps, counted per entry as its key and user name
+/// plus [`SESSION_ENTRY_OVERHEAD`]. With the default `admin` user an entry
+/// is about 165 bytes, so the entry cap is reached first (about 660 KiB).
+pub const SESSION_CACHE_BYTES: usize = 1024 * 1024;
+
+/// What an entry costs beyond its key and user name: the two `String`
+/// headers, the expiry, and the map's slot and control byte, rounded up.
+pub const SESSION_ENTRY_OVERHEAD: usize = 96;
+
+/// Sessions of users with longer names are not cached (they are still
+/// authenticated, by reading SQLite every time), so one entry is always a
+/// small part of [`SESSION_CACHE_BYTES`] whatever `auth.admin_username` is.
+pub const MAX_CACHED_USERNAME: usize = 256;
 
 /// Most session lookups reading SQLite at once. Further lookups wait for a
 /// turn without holding a thread; how many can wait is bounded by the
@@ -354,13 +366,45 @@ struct Cached {
     expires_at: i64,
 }
 
+fn entry_bytes(hash: &str, username: &str) -> usize {
+    hash.len() + username.len() + SESSION_ENTRY_OVERHEAD
+}
+
 #[derive(Default)]
 struct Cache {
     by_hash: HashMap<String, Cached>,
+    /// The [`entry_bytes`] of every entry, kept in step with `by_hash`.
+    bytes: usize,
     /// Advanced by every invalidation. A lookup caches its result only if
     /// no invalidation happened since before it read SQLite, so a lookup
     /// racing a logout can never put the ended session back.
     epoch: u64,
+}
+
+impl Cache {
+    fn remove(&mut self, hash: &str) {
+        if let Some((hash, e)) = self.by_hash.remove_entry(hash) {
+            self.bytes -= entry_bytes(&hash, &e.username);
+        }
+    }
+
+    /// Make room for an entry of `size` bytes: expired entries go first,
+    /// then arbitrary ones, until both caps allow it.
+    fn make_room(&mut self, size: usize, now: i64) {
+        let full = |c: &Self| c.by_hash.len() >= SESSION_CACHE_ENTRIES || c.bytes + size > SESSION_CACHE_BYTES;
+        if !full(self) {
+            return;
+        }
+        let expired: Vec<String> =
+            self.by_hash.iter().filter(|(_, e)| e.expires_at <= now).map(|(h, _)| h.clone()).collect();
+        for hash in expired {
+            self.remove(&hash);
+        }
+        while full(self) {
+            let Some(evict) = self.by_hash.keys().next().cloned() else { break };
+            self.remove(&evict);
+        }
+    }
 }
 
 /// Sessions for request authentication (AUTH-PERF-02): a bounded cache of
@@ -370,12 +414,16 @@ struct Cache {
 /// * Keyed by the token's SHA-256, as stored; the token itself is never
 ///   kept.
 /// * Only sessions found valid are cached (no negative entries), so unknown
-///   tokens cannot grow it; at most [`SESSION_CACHE_ENTRIES`], evicting
-///   expired entries first, then an arbitrary one.
+///   tokens cannot grow it; at most [`SESSION_CACHE_ENTRIES`] entries and
+///   [`SESSION_CACHE_BYTES`], evicting expired entries first, then
+///   arbitrary ones; users with names over [`MAX_CACHED_USERNAME`] bytes
+///   are never cached.
 /// * An entry is used only before its session's expiry.
 /// * Logout deletes the session in SQLite, then [`Sessions::invalidate`]s
 ///   it before responding: from then on no request is admitted with it,
-///   and no lookup that started earlier can cache it again.
+///   and no lookup that started earlier can cache it again. A changed
+///   admin password ends all of the user's sessions at startup
+///   ([`bootstrap_admin`]).
 /// * A miss reads SQLite as before, at most [`MAX_SESSION_FILLS`] at once;
 ///   a database error fails the request (`500`) and caches nothing.
 /// * In memory only: a restart starts empty and reads SQLite again.
@@ -402,7 +450,7 @@ impl Sessions {
         match c.by_hash.get(hash) {
             Some(e) if e.expires_at > now => Some(e.username.clone()),
             Some(_) => {
-                c.by_hash.remove(hash);
+                c.remove(hash);
                 None
             }
             None => None,
@@ -416,18 +464,13 @@ impl Sessions {
     /// Cache a session found valid by a lookup that began at `epoch`.
     fn fill(&self, hash: String, username: String, expires_at: i64, epoch: u64) {
         let mut c = self.cache.lock().unwrap();
-        if c.epoch != epoch {
+        if c.epoch != epoch || username.len() > MAX_CACHED_USERNAME {
             return;
         }
-        if c.by_hash.len() >= SESSION_CACHE_ENTRIES && !c.by_hash.contains_key(&hash) {
-            let now = metadata::now_ms();
-            c.by_hash.retain(|_, e| e.expires_at > now);
-            if c.by_hash.len() >= SESSION_CACHE_ENTRIES
-                && let Some(evict) = c.by_hash.keys().next().cloned()
-            {
-                c.by_hash.remove(&evict);
-            }
-        }
+        c.remove(&hash);
+        let size = entry_bytes(&hash, &username);
+        c.make_room(size, metadata::now_ms());
+        c.bytes += size;
         c.by_hash.insert(hash, Cached { username, expires_at });
     }
 
@@ -436,7 +479,16 @@ impl Sessions {
     pub fn invalidate(&self, hash: &str) {
         let mut c = self.cache.lock().unwrap();
         c.epoch += 1;
-        c.by_hash.remove(hash);
+        c.remove(hash);
+    }
+
+    /// Forget every session, as [`Sessions::invalidate`] does one (for a
+    /// password change, which ends all of a user's sessions).
+    pub fn clear(&self) {
+        let mut c = self.cache.lock().unwrap();
+        c.epoch += 1;
+        c.by_hash.clear();
+        c.bytes = 0;
     }
 
     /// The user of session `hash`, from the cache or else from `lookup` (the
@@ -479,9 +531,13 @@ impl Sessions {
     pub fn snapshot(&self) -> serde_json::Value {
         let s = &self.stats;
         let n = |c: &AtomicU64| c.load(Ordering::Relaxed);
-        let cached = self.cache.lock().unwrap().by_hash.len();
+        let (cached, cached_bytes) = {
+            let c = self.cache.lock().unwrap();
+            (c.by_hash.len(), c.bytes)
+        };
         serde_json::json!({
             "cacheHits": n(&s.hits), "cached": cached, "cacheCapacity": SESSION_CACHE_ENTRIES,
+            "cachedBytes": cached_bytes, "cacheByteCapacity": SESSION_CACHE_BYTES,
             "lookups": n(&s.lookups), "found": n(&s.found), "failed": n(&s.failed),
             "inFlight": n(&s.in_flight), "peakInFlight": n(&s.peak_in_flight),
             "queueMicros": n(&s.queue_us), "lockMicros": n(&s.lock_us), "queryMicros": n(&s.query_us),
@@ -545,6 +601,9 @@ pub async fn require_user(
 
 /// Create/refresh the admin user at startup. Returns a generated password
 /// when none was configured and no user exists yet.
+///
+/// A changed `auth.admin_password` ends every session of the admin user in
+/// the same transaction as the new hash; an unchanged one keeps them.
 pub fn bootstrap_admin(state: &SharedState) -> anyhow::Result<Option<String>> {
     let auth = &state.config.auth;
     let m = &state.metadata;
@@ -552,7 +611,14 @@ pub fn bootstrap_admin(state: &SharedState) -> anyhow::Result<Option<String>> {
         let existing = m.find_user(&auth.admin_username)?;
         // Only re-hash when the configured password changed.
         if !existing.is_some_and(|u| verify_password(pw, &u.password_hash)) {
-            m.upsert_user(&auth.admin_username, &hash_password(pw).map_err(anyhow::Error::msg)?)?;
+            let hash = hash_password(pw).map_err(anyhow::Error::msg)?;
+            let (_, ended) = m.rotate_password(&auth.admin_username, &hash)?;
+            // Nothing is cached before the server starts; cleared anyway so
+            // the order can never matter.
+            state.sessions.clear();
+            if ended > 0 {
+                tracing::info!(ended, "admin password changed; signed out its existing sessions");
+            }
         }
         return Ok(None);
     }
@@ -1040,6 +1106,85 @@ mod tests {
         let c = s.cache.lock().unwrap();
         assert_eq!(c.by_hash.len(), SESSION_CACHE_ENTRIES);
         assert!(c.by_hash.values().all(|e| e.expires_at > metadata::now_ms()), "expired entries were evicted first");
+        assert_counted(&c);
+    }
+
+    /// `bytes` is the sum of the entries' sizes.
+    fn assert_counted(c: &Cache) {
+        assert_eq!(c.bytes, c.by_hash.iter().map(|(h, e)| entry_bytes(h, &e.username)).sum::<usize>());
+        assert!(c.bytes <= SESSION_CACHE_BYTES && c.by_hash.len() <= SESSION_CACHE_ENTRIES);
+    }
+
+    /// A lookup that finds `user` valid for a minute.
+    fn valid_as(user: String) -> impl FnOnce(&str) -> Found + Send + 'static {
+        move |_| Ok((Some((user, later(60_000))), Duration::ZERO))
+    }
+
+    // AC4 (review): the byte cap holds whatever the user name's length;
+    // names over MAX_CACHED_USERNAME are authenticated but never cached.
+    #[tokio::test]
+    async fn the_cache_is_bounded_in_bytes_too() {
+        let s = Sessions::default();
+        let longest = "u".repeat(MAX_CACHED_USERNAME);
+        for i in 0..SESSION_CACHE_ENTRIES {
+            let user = s.check(sha256_hex(&format!("t{i}")), valid_as(longest.clone())).await.unwrap();
+            assert_eq!(user.as_deref(), Some(longest.as_str()));
+            assert_counted(&s.cache.lock().unwrap());
+        }
+        let reported = stat(&s, "cachedBytes") as usize;
+        {
+            let c = s.cache.lock().unwrap();
+            let per_entry = entry_bytes(&sha256_hex("t0"), &longest);
+            assert_eq!(c.by_hash.len(), SESSION_CACHE_BYTES / per_entry, "the byte cap, not the count, binds");
+            assert_eq!(reported, c.bytes);
+        }
+
+        // An 8 KiB name: still authenticated, every time from SQLite.
+        let s = Sessions::default();
+        let huge = "u".repeat(8 * 1024);
+        for _ in 0..3 {
+            let user = s.check(sha256_hex("huge"), valid_as(huge.clone())).await.unwrap();
+            assert_eq!(user.as_deref(), Some(huge.as_str()));
+        }
+        assert_eq!((stat(&s, "cached"), stat(&s, "cachedBytes"), stat(&s, "lookups")), (0, 0, 3));
+
+        // Entries are counted out as well as in: expiry, logout, re-fill.
+        let s = Sessions::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        s.check(sha256_hex("a"), valid(&calls, later(30))).await.unwrap();
+        s.check(sha256_hex("b"), valid(&calls, later(60_000))).await.unwrap();
+        s.invalidate(&sha256_hex("b"));
+        s.check(sha256_hex("b"), valid(&calls, later(60_000))).await.unwrap();
+        s.check(sha256_hex("b"), valid(&calls, later(60_000))).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let none = |_: &str| -> Found { Ok((None, Duration::ZERO)) };
+        s.check(sha256_hex("a"), none).await.unwrap();
+        let c = s.cache.lock().unwrap();
+        assert_eq!(c.by_hash.len(), 1);
+        assert_counted(&c);
+    }
+
+    // AC4 (review): clearing (a password change) forgets every session and
+    // stops fills already under way from caching.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clearing_forgets_everything_including_fills_in_flight() {
+        let s = Arc::new(Sessions::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        for i in 0..10 {
+            s.check(sha256_hex(&format!("t{i}")), valid(&calls, later(60_000))).await.unwrap();
+        }
+        let (gate, started, release) = gated(Ok((Some(("admin".to_string(), later(60_000))), Duration::ZERO)));
+        let racing = tokio::spawn({
+            let s = s.clone();
+            async move { s.check(sha256_hex("racing"), move |_| gate()).await }
+        });
+        started.await.unwrap();
+        s.clear();
+        release.send(()).unwrap();
+        racing.await.unwrap().unwrap();
+        assert_eq!((stat(&s, "cached"), stat(&s, "cachedBytes")), (0, 0));
+        s.check(sha256_hex("t0"), valid(&calls, later(60_000))).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 11, "read from SQLite again after clearing");
     }
 
     // AC4: at most MAX_SESSION_FILLS lookups read SQLite at once, waiting

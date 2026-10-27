@@ -591,6 +591,40 @@ async fn sessions_end_at_their_expiry_and_survive_restarts() {
     s.stop().await;
 }
 
+/// Restarting with the same `auth.admin_password` keeps the admin's
+/// sessions; restarting with a new one ends them all, and only the new
+/// password logs in.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_admin_password_ends_existing_sessions() {
+    let config = "/api/v1/system/config";
+    let with_cookie = |s: &TestServer, cookie: &str| reqwest::Client::new().get(s.u(config)).header("cookie", cookie);
+    let s = start_secure().await;
+    let first = session_cookie(&login(&s, "correct horse").await);
+    let second = session_cookie(&login(&s, "correct horse").await);
+    assert_eq!(status(with_cookie(&s, &first)).await, 200, "cached before the restarts");
+
+    // Same password: sessions survive.
+    let s = s.restart().await;
+    assert_eq!(status(with_cookie(&s, &first)).await, 200);
+    assert_eq!(status(with_cookie(&s, &second)).await, 200);
+
+    // New password: every earlier session is refused, cached or not.
+    let (mut config_, dir) = s.stop().await;
+    config_.auth.admin_password = Some("battery staple".into());
+    let mut s = TestServer::launch(config_, dir).await;
+    s.client = reqwest::Client::new();
+    assert_eq!(status(with_cookie(&s, &first)).await, 401);
+    assert_eq!(status(with_cookie(&s, &second)).await, 401);
+    assert_eq!(login(&s, "correct horse").await.status(), 401, "the old password no longer works");
+    let fresh = session_cookie(&login(&s, "battery staple").await);
+    assert_eq!(status(with_cookie(&s, &fresh)).await, 200);
+
+    // And the new session survives a restart that keeps the new password.
+    let s = s.restart().await;
+    assert_eq!(status(with_cookie(&s, &fresh)).await, 200);
+    s.stop().await;
+}
+
 /// Session lookups share the metadata store's one connection, so an
 /// uncached session waits while another metadata write holds it, and that
 /// wait is reported as lock time; key requests and cached sessions do not

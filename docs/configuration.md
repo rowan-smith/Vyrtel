@@ -342,7 +342,7 @@ since the process started.
 | Key              | Default | Env                            | Description                                                                                                                                       |
 |------------------|---------|--------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
 | `admin_username` | `admin` | `VYRTEL_AUTH_ADMIN_USERNAME` |                                                                                                                                                   |
-| `admin_password` | –       | `VYRTEL_AUTH_ADMIN_PASSWORD` | Hashed (Argon2id) into the metadata store at startup. If unset on first start, a random password is generated and printed once.                  |
+| `admin_password` | –       | `VYRTEL_AUTH_ADMIN_PASSWORD` | Hashed (Argon2id) into the metadata store at startup. If unset on first start, a random password is generated and printed once. Starting with a different password signs out all existing admin sessions. |
 | `session_ttl`    | `7d`    | –                              | Login session lifetime.                                                                                                                           |
 
 > **Security note.** The UI and API always need a login, but until an
@@ -1176,7 +1176,8 @@ provided.
 4. Start Vyrtel with the same `[auth]` settings. `auth.admin_password` may
    be left out: the restored admin user keeps its password, and no new one
    is generated. If it is set, it replaces the stored password, exactly as
-   on any start.
+   on any start; a password different from the backup's signs out the
+   sessions restored with it.
 5. Check the startup log: one `recovered stream` line per signal, and no
    `recovery found damaged files` warning for a backup of a stopped server.
 6. Run the verification queries below.

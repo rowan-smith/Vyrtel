@@ -91,7 +91,9 @@ Always on for the UI and API. Ingestion follows the API keys:
   cookie (from `/api/v1/auth/login`) or an API key with scope `admin`.
   A valid session is used first; a missing, empty or unknown cookie falls
   back to the API key, if any. A session is accepted until its expiry
-  (`auth.session_ttl`) and refused as soon as logout returns. Valid
+  (`auth.session_ttl`) and refused as soon as logout returns. Starting the
+  server with a different `auth.admin_password` ends every existing
+  session of the admin user; restarting with the same one keeps them. Valid
   sessions are cached in memory after their first request
   ([design](architecture.md#session-authentication)); this changes no
   outcome. If an uncached session cannot be looked up (a database error)
@@ -648,6 +650,7 @@ since the process started (`sessionAuth`):
 
 ```json
 "sessionAuth": { "cacheHits": 182310, "cached": 3, "cacheCapacity": 4096,
+                 "cachedBytes": 495, "cacheByteCapacity": 1048576,
                  "lookups": 41, "found": 37, "failed": 0, "inFlight": 0, "peakInFlight": 4,
                  "queueMicros": 1720, "lockMicros": 380, "queryMicros": 3120,
                  "maxQueueMicros": 210, "maxLockMicros": 95, "maxQueryMicros": 410 }
@@ -656,7 +659,9 @@ since the process started (`sessionAuth`):
 Each request that sends a non-empty session cookie to an authenticated
 `/api/v1` endpoint is either a cache hit or one lookup in the metadata
 database (`lookups`, of which `found` were valid). `cached` is the number
-of sessions held, at most `cacheCapacity`. For lookups, `queueMicros` is
+of sessions held, at most `cacheCapacity`, and `cachedBytes` their size as
+counted against `cacheByteCapacity` (key and user name plus 96 bytes
+each). For lookups, `queueMicros` is
 time waiting for a turn (at most 16 lookups at once) and a blocking
 thread, `lockMicros` time waiting for the metadata connection (held by any
 other metadata read or write, such as an API key change or a dashboard

@@ -1032,7 +1032,7 @@ node --test scripts/bench/*.test.mjs                      # the benchmark report
 | AC1: matched session-only vs admin-key-only load: auth-only, searches, facets, dashboards, concurrent ingestion and metadata writes | `tools/loadgen` `sessionauth` and `scripts/bench/sessionauth.sh`, below (each credential client is built with only its header and no cookie store; `GET /api/v1/auth/me` confirms before each run that the key clients carry no session; the report fails a key run that used any session); integration `auth::session_and_admin_key_authenticate_alike_in_isolation` |
 | AC2: end-to-end, auth, queue and lock time, lookup rate, concurrency, latency percentiles, throughput, CPU, memory, errors; predeclared budgets; ≥3 matched runs, cold and warm | `sessionAuth` counters (queue, lock, query time, lookups, cache hits, in-flight); `sessionauth` summaries (per-request p50/p95/p99/max, cold and warm, the auth probe apart from query work, ingest and write outcomes); `sessionauth-report.mjs` budgets below, fixed before the first run; integration `auth::session_lookups_wait_for_metadata_writes_and_fail_closed` (a stalled metadata write shows up as lock time) |
 | AC3: budgets met, or the smallest evidenced fix | The first matrix missed the budgets (below); the fix is the session cache, and the rerun on it is the evidence |
-| AC4: cache bounds, eviction, bounded fills, no raw tokens, expiry, immediate invalidation, fill vs revoke, no unbounded negative cache | `auth::tests::cached_sessions_are_used_until_their_expiry_only`, `invalidation_wins_over_a_fill_in_flight`, `the_cache_is_bounded_and_unknown_tokens_never_grow_it` (10,000 unknown tokens cache nothing; 100 expired and 4,596 live sessions leave exactly 4,096 live ones), `concurrent_fills_are_bounded` (64 misses: 16 read at once, waiters hold no blocking thread, cancelled waiters release their turn); integration `logout_is_immediate_under_concurrent_cached_requests` |
+| AC4: cache entry and byte caps, eviction, bounded fills, no raw tokens, expiry, immediate invalidation (logout and password change), fill vs revoke, no unbounded negative cache | `auth::tests::cached_sessions_are_used_until_their_expiry_only`, `the_cache_is_bounded_in_bytes_too` (256-byte names: the 1 MiB byte cap binds before the entry cap; an 8 KiB name is authenticated but never cached; the byte count stays exact through expiry, logout and re-fills), `clearing_forgets_everything_including_fills_in_flight`, metadata `rotating_a_password_ends_only_that_users_sessions`, integration `a_changed_admin_password_ends_existing_sessions` (fails before this change: a session from before the rotation was still accepted), `invalidation_wins_over_a_fill_in_flight`, `the_cache_is_bounded_and_unknown_tokens_never_grow_it` (10,000 unknown tokens cache nothing; 100 expired and 4,596 live sessions leave exactly 4,096 live ones), `concurrent_fills_are_bounded` (64 misses: 16 read at once, waiters hold no blocking thread, cancelled waiters release their turn); integration `logout_is_immediate_under_concurrent_cached_requests` |
 | AC5: expiry, invalid cookie with key fallback, concurrent invalidation, DB failure, restart, missing users; no bypass | `auth::tests::lookup_failures_fail_closed`, `sessions_follow_the_store` (login, never-issued token, expiry while cached, logout, restart with an empty cache); integration `invalid_cookies_fall_back_to_keys_and_logout_is_immediate`, `sessions_end_at_their_expiry_and_survive_restarts`, `session_lookups_wait_for_metadata_writes_and_fail_closed` (an unreadable session table is a 500 even with a valid key alongside), `logout_is_immediate_under_concurrent_cached_requests`; existing `ui_api_requires_session_or_admin_key` and the ingest-policy tests unchanged |
 
 The ingest policy (no ingest key = open, ingest key = protected) is not
@@ -1171,12 +1171,20 @@ session), which fails the correctness budget for both. That is query-engine
 load, independent of the credential, and belongs to
 [PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170).
 
-**Open before 0.1.2 performance sign-off:** the `mixed-low` load p99
-budget is neither met nor shown to come from session authentication. It is
-to be rerun on the dedicated Linux benchmark host, with the generator on a
-separate machine (`CELLS='^mixed-low$' RUNS=5`, `--min-runs 5`), and must
-pass or be explicitly dispositioned by the reviewer as part of
-[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170).
+**Open before 0.1.2 performance sign-off**, both retained under
+[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170); neither
+is shown to come from session authentication, and neither is waived:
+
+1. the `mixed-low` load p99 budget (+17.4% session against key over 5
+   runs, with the auth probe within budget and the difference in histogram
+   query time);
+2. the `mixed-high` soak correctness budget (10 s client timeouts for both
+   credentials alike: 494 of 1,295 key, 469 of 1,248 session).
+
+Both are to be rerun on the dedicated Linux benchmark host, with the
+generator on a separate machine (`CELLS='^mixed-low$' RUNS=5`,
+`--min-runs 5`; the soak at the #170 duration), and must pass or be
+explicitly dispositioned by the reviewer.
 
 **Limitations.** One laptop, generator and server sharing 22 threads, no
 CPU pinning. Key-only throughput in the auth cells moved by up to 40%

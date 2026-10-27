@@ -568,6 +568,24 @@ impl Metadata {
         Ok(c.query_row("SELECT id FROM users WHERE username = ?1", [username], |r| r.get(0))?)
     }
 
+    /// Set the password hash of `username` (creating the user if needed)
+    /// and end all of that user's sessions, in one transaction, so no
+    /// session issued under the old password outlives the change. Returns
+    /// the user id and how many sessions were ended.
+    pub fn rotate_password(&self, username: &str, password_hash: &str) -> Result<(i64, usize)> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        tx.prepare_cached(
+            "INSERT INTO users (username, password_hash, created_at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash",
+        )?
+        .execute(params![username, password_hash, now_ms()])?;
+        let id: i64 = tx.query_row("SELECT id FROM users WHERE username = ?1", [username], |r| r.get(0))?;
+        let ended = tx.prepare_cached("DELETE FROM sessions WHERE user_id = ?1")?.execute([id])?;
+        tx.commit()?;
+        Ok((id, ended))
+    }
+
     pub fn find_user(&self, username: &str) -> Result<Option<User>> {
         let c = self.conn.lock().unwrap();
         Ok(c.prepare_cached("SELECT id, username, password_hash FROM users WHERE username = ?1")?
