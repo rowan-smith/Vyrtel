@@ -27,6 +27,7 @@ OTLP HTTP           http://0.0.0.0:8080/v1/*
 Storage             0 B
 Memory limit        512 MB
 Durability          normal
+Connections         256 max (buffers up to 52.1 MB)
 Authentication      login for the UI/API; ingestion open until an ingest API key is created
 
 Admin login         admin / 3f9c2a7d41b08e6c5a2d9f10
@@ -148,12 +149,14 @@ Want realistic data? `cargo run --release -p loadgen -- --rate 1000 --duration 6
 
 ### Run a query
 
-In the UI type `level = "Error" and service = "payments"` and press Enter,
-or:
+Sign in to the UI as `admin` with the printed password, type
+`level = "Error" and service = "payments"` and press Enter. Or, with an
+admin API key from Settings → API keys:
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/query/logs \
   -H 'content-type: application/json' \
+  -H 'Authorization: Bearer <admin key>' \
   -d '{"query": "customerId = 481 and message contains \"failed\"", "from": "-1h"}'
 ```
 

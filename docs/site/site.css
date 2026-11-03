@@ -1550,6 +1550,88 @@ h3 {
   margin: 0;
 }
 
+.version-notice {
+  max-width: 780px;
+  margin: 0 0 24px;
+  border-left-color: var(--warn);
+  font-size: 14.5px;
+}
+
+/* The docs version picker: the version being read, opening onto every version. */
+.version-picker {
+  margin-bottom: 22px;
+}
+
+.version-picker > summary {
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  font-size: 14px;
+}
+
+.version-picker > summary:hover,
+.version-picker[open] > summary {
+  border-color: var(--line-strong);
+}
+
+.version-picker > summary .chevron {
+  margin-left: auto;
+}
+
+.version-picker-label {
+  color: var(--muted);
+}
+
+.version-picker > summary strong {
+  white-space: nowrap;
+}
+
+.version-menu {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  box-shadow: 0 18px 40px rgba(var(--shadow-rgb), 0.18);
+}
+
+.version-menu a {
+  display: block;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.version-menu a:hover {
+  background: var(--bg-tint);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.version-menu a[aria-current='true'] {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.version-menu .muted {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.docs-nav .version-picker {
+  margin-bottom: 10px;
+}
+
 .docs-toc {
   position: sticky;
   top: calc(var(--header-h) + 24px);

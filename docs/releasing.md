@@ -336,6 +336,9 @@ at `compat/0.1.2-rc.1/COMPAT-GATE-0.1.2.json`.
 
 ## After a release
 
+The website redeploys itself once a stable release is published: the release's docs appear at
+`/docs/<version>/` and become the default docs. Nothing needs to be copied.
+
 Add the new release's data-directory fixture, so every later build is
 tested against data it wrote: a build of the same layout must read it, one
 of another layout must refuse it unchanged. On Linux or macOS, with the

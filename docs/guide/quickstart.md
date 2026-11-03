@@ -56,7 +56,7 @@ Click the event to see its properties and exception. Other queries to try:
 ```text
 customerId = 481
 amount > 50
-"timed out"
+"failed"
 ```
 
 ## Next steps

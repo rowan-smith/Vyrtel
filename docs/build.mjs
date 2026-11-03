@@ -2,9 +2,10 @@
 //
 // - site/index.html is the front page; {{PLACEHOLDERS}} are filled from the repo (version from
 //   Cargo.toml, repository from $GITHUB_REPOSITORY or the git remote, logo path from the web UI).
-// - README.md (as "Overview"), docs/*.md and docs/brand/README.md are rendered to
-//   build/docs/<slug>.html, so every doc lives under /docs/ on the site. Links between docs become
-//   site links; links to other repo files point at GitHub.
+// - The docs (docs/guide/*.md, docs/*.md, CONTRIBUTING.md, docs/brand/README.md) are rendered once
+//   per documentation version: `latest` from this checkout and every release from its git tag, at
+//   build/docs/<version>/<slug>.html, with the newest release also at build/docs/<slug>.html. Links
+//   between docs become site links; links to other repo files point at GitHub at that version.
 // - Brand assets, favicons, screenshots and fonts are copied from where the repo already keeps them,
 //   so the site never drifts from the app.
 //
@@ -70,19 +71,6 @@ const chevron = `<svg class="chevron" viewBox="0 0 16 16" width="14" height="14"
 const sunIcon = `<svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
 const moonIcon = `<svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>`;
 
-/** Docs pages grouped for the menus: filled in once the docs are parsed (see build()). */
-let docNav = [];
-
-/** The grouped list of docs pages, shared by the header dropdown and the docs page picker. */
-const docMenu = (base, currentSlug) =>
-  `<div class="dropdown-panel">${docNav
-    .map(
-      (g) => `<div class="dd-group"><h3>${g.group}</h3>${g.pages
-        .map((d) => `<a href="${base}docs/${d.slug}.html"${d.slug === currentSlug ? ' aria-current="page"' : ''}>${d.title}</a>`)
-        .join('')}</div>`,
-    )
-    .join('')}</div>`;
-
 const themeToggle = (cls) =>
   `<button class="theme-toggle ${cls}" type="button" data-theme-toggle aria-label="Switch colour theme">${sunIcon}${moonIcon}</button>`;
 
@@ -94,7 +82,7 @@ const header = (base, current, currentSlug) => `
     <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu"><span></span><span></span></button>
     <nav id="site-nav" class="site-nav" aria-label="Main">
       <a href="${base}index.html#features"${current === 'features' ? ' aria-current="page"' : ''}>Features</a>
-      <a href="${base}docs/introduction.html"${current === 'docs' && currentSlug !== 'benchmarks' ? ' aria-current="page"' : ''}>Docs</a>
+      <a href="${base}docs/index.html"${current === 'docs' && currentSlug !== 'benchmarks' ? ' aria-current="page"' : ''}>Docs</a>
       <a href="${base}docs/benchmarks.html"${currentSlug === 'benchmarks' ? ' aria-current="page"' : ''}>Benchmarks</a>
       <a href="${repoUrl}/releases">Releases</a>
       <a class="nav-source" href="${repoUrl}">${githubIcon}<span>Source</span></a>
@@ -177,6 +165,12 @@ const fill = (s, vars) => s.replace(/\{\{([A-Z_]+)\}\}/g, (m, k) => (k in vars ?
 
 // ---------- docs ----------
 
+/**
+ * Every docs page. Pages outside the Project group are versioned: each documentation version renders
+ * them from its own git ref, and a version simply lacks the pages its ref does not have. Project
+ * pages (roadmap, benchmarks, contributing...) describe the project rather than a release, so every
+ * version shows them from the current checkout.
+ */
 const DOCS = [
   { slug: 'introduction', file: 'docs/guide/introduction.md', group: 'Get started' },
   { slug: 'quickstart', file: 'docs/guide/quickstart.md', group: 'Get started' },
@@ -200,6 +194,10 @@ const DOCS = [
   { slug: 'cla-individual', file: 'docs/cla/individual.md', title: 'Individual CLA', group: 'Project', hidden: true },
   { slug: 'cla-corporate', file: 'docs/cla/corporate.md', title: 'Corporate CLA', group: 'Project', hidden: true },
 ];
+const isProjectPage = (d) => d.group === 'Project';
+
+/** Releases before the guides existed opened with the README; it stands in for the introduction. */
+const README_OVERVIEW = { slug: 'overview', file: 'README.md', title: 'Overview', group: 'Get started' };
 
 /** Pages that used to exist, so old links still land somewhere useful. Maintainer docs live on GitHub. */
 const REDIRECTS = {
@@ -207,27 +205,109 @@ const REDIRECTS = {
   testing: `${repoUrl}/blob/main/docs/testing.md`,
   releasing: `${repoUrl}/blob/main/docs/releasing.md`,
 };
-const bySource = new Map(DOCS.map((d) => [d.file, d]));
+
+// ---------- versions ----------
+
+/** The oldest release with docs on the site. 0.1.0 shipped under the product's earlier name. */
+const OLDEST_DOCS_RELEASE = '0.1.1';
+
+const semver = (v) => v.split('.').map(Number);
+const compareVersions = (a, b) => {
+  const [x, y] = [semver(a), semver(b)];
+  return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+};
+
+/** Stable release tags (vX.Y.Z, no prereleases) back to OLDEST_DOCS_RELEASE, newest first. */
+function releaseVersions() {
+  let tags = '';
+  try {
+    tags = execSync('git tag --list v*', { cwd: root, encoding: 'utf8' });
+  } catch {
+    return [];
+  }
+  return tags
+    .split('\n')
+    .map((t) => t.trim())
+    .filter((t) => /^v\d+\.\d+\.\d+$/.test(t))
+    .map((t) => t.slice(1))
+    .filter((v) => compareVersions(v, OLDEST_DOCS_RELEASE) >= 0)
+    .sort((a, b) => compareVersions(b, a));
+}
+
+/** A repo file as it is at `ref`, or in the working tree when `ref` is null; null if it is absent. */
+function readAt(ref, file) {
+  if (!ref) {
+    const full = path.join(root, file);
+    return fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null;
+  }
+  try {
+    return execSync(`git show ${ref}:${file}`, {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The documentation versions: `latest` (this checkout, i.e. main, with unreleased changes) and every
+ * stable release, each rendered under docs/<id>/. The newest release is the default and is also
+ * rendered at docs/ itself; `latest` is the default only before the first release.
+ */
+function docVersions() {
+  const releases = releaseVersions();
+  const list = [
+    { id: 'latest', label: 'Latest', ref: null, released: false },
+    ...releases.map((v) => ({ id: v, label: v, ref: `v${v}`, released: true })),
+  ];
+  for (const v of list) {
+    const pages = DOCS.filter((d) => isProjectPage(d) || readAt(v.ref, d.file) !== null).map((d) => ({
+      ...d,
+      ref: isProjectPage(d) ? null : v.ref,
+    }));
+    if (!pages.some((d) => d.slug === 'introduction') && readAt(v.ref, README_OVERVIEW.file) !== null) {
+      pages.unshift({ ...README_OVERVIEW, ref: v.ref });
+    }
+    v.pages = pages;
+    v.slugs = new Set(pages.map((d) => d.slug));
+  }
+  const latestRelease = list.find((v) => v.released) ?? null;
+  return { list, defaultVersion: latestRelease ?? list[0], latestRelease };
+}
+
+// ---------- rendering ----------
+
 const copiedDirs = ['docs/screenshots/', 'docs/brand/'];
 const ASSET = /\.(png|svg|jpe?g|gif|webp|json)$/i;
 
-let currentSource = '';
+/** What the Markdown renderer is working on: set before each page is parsed. */
+const current = { source: '', ref: null, bySource: new Map(), assetPrefix: '', crossToLatest: false };
 
-/** Rewrites a link or image target written relative to `currentSource` in the repo. */
+/** Rewrites a link or image target written relative to `current.source` in the repo. */
 function rewrite(href) {
   if (!href || /^(https?:|mailto:|#|\/\/)/.test(href)) return href;
   const [p, hash = ''] = href.split('#');
   const frag = hash ? `#${hash}` : '';
-  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(currentSource), p));
-  const doc = bySource.get(resolved);
+  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(current.source), p));
+  const doc = current.bySource.get(resolved);
+  // Project pages are written against main, so in a release's docs their links to versioned pages
+  // go to the latest docs, where the sections they name exist.
+  if (doc && current.crossToLatest && !isProjectPage(doc)) return `${current.assetPrefix}latest/${doc.slug}.html${frag}`;
   if (doc) return `${doc.slug}.html${frag}`;
-  // Images and data files in these folders are copied next to the pages; anything else (scripts,
-  // READMEs) links to GitHub like other repo files.
+  if (current.crossToLatest) {
+    const latestDoc = DOCS.find((d) => d.file === resolved && !isProjectPage(d));
+    if (latestDoc) return `${current.assetPrefix}latest/${latestDoc.slug}.html${frag}`;
+  }
+  // Images and data files in these folders are copied to docs/; anything else (scripts, READMEs)
+  // links to GitHub at the version's ref, like other repo files.
   const copied = copiedDirs.find((d) => resolved.startsWith(d));
-  if (copied && ASSET.test(resolved)) return resolved.slice('docs/'.length);
+  if (copied && ASSET.test(resolved)) return current.assetPrefix + resolved.slice('docs/'.length);
   const full = path.join(root, resolved);
   const kind = fs.existsSync(full) && fs.statSync(full).isDirectory() ? 'tree' : 'blob';
-  return `${repoUrl}/${kind}/main/${resolved}${frag}`;
+  return `${repoUrl}/${kind}/${current.ref ?? 'main'}/${resolved}${frag}`;
 }
 
 const marked = new Marked({ gfm: true });
@@ -248,13 +328,25 @@ marked.use({
 });
 
 function docSource(d) {
-  return read(d.file);
+  let src = readAt(d.ref, d.file);
+  if (d.file === 'README.md') {
+    // The README opens with a centred logo block (GitHub-only <picture> markup); the site has its
+    // own header. Start at the first paragraph and give the page a heading.
+    src = src.replace(/^<p align="center">[\s\S]*?<\/p>\s*/, '# Overview\n\n');
+    src = src.replace('git clone <this repository> vyrtel', `git clone ${repoUrl}.git vyrtel`);
+  }
+  return src;
 }
 
-function parseDocs() {
-  return DOCS.map((d) => {
-    currentSource = d.file;
-    let html = marked.parse(docSource(d));
+/** Parses a version's pages for output at a directory `assetPrefix` away from docs/. */
+function parseDocs(v, assetPrefix) {
+  current.bySource = new Map(v.pages.map((d) => [d.file, d]));
+  current.assetPrefix = assetPrefix;
+  return v.pages.map((d) => {
+    current.source = d.file;
+    current.ref = d.ref;
+    current.crossToLatest = v.released && isProjectPage(d);
+    const html = marked.parse(docSource(d));
     const headings = getHeadingList();
     const h1 = headings.find((h) => h.level === 1);
     const title = d.title ?? h1?.raw ?? d.slug;
@@ -265,28 +357,50 @@ function parseDocs() {
   });
 }
 
-/** The docs sidebar: every listed page by group, the current one marked. */
-const sidebar = (currentSlug) =>
-  docNav
-    .map(
-      (g) =>
-        `<div class="side-group"><h2>${g.group}</h2>${g.pages
-          .map((d) => `<a href="${d.slug}.html"${d.slug === currentSlug ? ' aria-current="page"' : ''}>${d.title}</a>`)
-          .join('')}</div>`,
-    )
-    .join('');
+/** Listed pages by group, for the sidebar and the mobile page picker. */
+const navGroups = (docs) => {
+  const listed = docs.filter((d) => !d.hidden);
+  return [...new Set(listed.map((d) => d.group))].map((group) => ({ group, pages: listed.filter((d) => d.group === group) }));
+};
+
+const pageLinks = (pages, currentSlug) =>
+  pages.map((d) => `<a href="${d.slug}.html"${d.slug === currentSlug ? ' aria-current="page"' : ''}>${d.title}</a>`).join('');
+
+const sidebar = (groups, currentSlug) =>
+  groups.map((g) => `<div class="side-group"><h2>${g.group}</h2>${pageLinks(g.pages, currentSlug)}</div>`).join('');
+
+const pageMenu = (groups, currentSlug) =>
+  `<div class="dropdown-panel">${groups.map((g) => `<div class="dd-group"><h3>${g.group}</h3>${pageLinks(g.pages, currentSlug)}</div>`).join('')}</div>`;
 
 const redirectPage = (to, title) =>
   `<!doctype html><meta charset="utf-8"><title>${title}</title><meta name="robots" content="noindex"><meta http-equiv="refresh" content="0; url=${to}"><link rel="canonical" href="${to}"><a href="${to}">${title}</a>`;
 
-function renderDocs(rendered) {
+/**
+ * Renders one version into `dir` (docs/ or docs/<id>/). `toDocs` is the relative path from that
+ * directory back to docs/, so links to other versions and the default docs resolve from either.
+ */
+function renderVersion(versions, v, dir, toDocs) {
   const template = fs.readFileSync(path.join(here, 'site/doc.html'), 'utf8');
-  fs.mkdirSync(path.join(out, 'docs'), { recursive: true });
-  const listed = rendered.filter((d) => !d.hidden);
+  const base = `${toDocs}../`;
+  const docs = parseDocs(v, toDocs);
+  const groups = navGroups(docs);
+  const listed = docs.filter((d) => !d.hidden);
+  const { defaultVersion, latestRelease } = versions;
+  // Link to `slug` in another version: the same page if it has one, else that version's first page.
+  const inVersion = (other, slug) => {
+    const target = other.slugs.has(slug) ? slug : other.pages[0].slug;
+    return `${toDocs}${other.id}/${target}.html`;
+  };
+  fs.mkdirSync(path.join(out, dir), { recursive: true });
 
-  rendered.forEach((d) => {
-    // Wide screens get the sidebar; narrow ones a dropdown page picker with the same entries.
-    const picker = `<details class="dropdown doc-picker"><summary><span class="doc-picker-group">${d.group}</span><span class="doc-picker-title">${d.title}</span>${chevron}</summary>${docMenu('../', d.slug)}</details>`;
+  for (const d of docs) {
+    const picker = `<details class="dropdown doc-picker"><summary><span class="doc-picker-group">${d.group}</span><span class="doc-picker-title">${d.title}</span>${chevron}</summary>${pageMenu(groups, d.slug)}</details>`;
+    const versionPicker = `<details class="dropdown version-picker"><summary><span class="version-picker-label">Version</span><strong>${v.label}</strong>${chevron}</summary><div class="version-menu">${versions.list
+      .map(
+        (o) =>
+          `<a href="${inVersion(o, d.slug)}"${o.id === v.id ? ' aria-current="true"' : ''}>${o.label}${o === defaultVersion ? ' <span class="muted">current release</span>' : ''}${o.released ? '' : ' <span class="muted">unreleased</span>'}</a>`,
+      )
+      .join('')}</div></details>`;
     const toc = d.toc.length
       ? `<nav class="toc" aria-label="On this page"><h2>On this page</h2>${d.toc.map((h) => `<a href="#${h.id}">${h.text}</a>`).join('')}</nav>`
       : '';
@@ -294,26 +408,57 @@ function renderDocs(rendered) {
     const prev = i > 0 ? listed[i - 1] : null;
     const next = i >= 0 ? listed[i + 1] : null;
     const pager = `<nav class="pager" aria-label="Pages">${prev ? `<a class="prev" href="${prev.slug}.html"><span>Previous</span>${prev.title}</a>` : '<span></span>'}${next ? `<a class="next" href="${next.slug}.html"><span>Next</span>${next.title}</a>` : ''}</nav>`;
+
+    // Versioned pages say when they are not the docs most readers want; project pages are the same in every version.
+    let notice = '';
+    if (!isProjectPage(d) && v !== defaultVersion) {
+      notice = v.released
+        ? `You're reading the docs for Vyrtel ${v.label}. <a href="${inVersion(defaultVersion, d.slug)}">Read the current docs</a>.`
+        : `You're reading the docs for unreleased changes on main. Some behaviour differs in the current release. <a href="${inVersion(defaultVersion, d.slug)}">Read the ${defaultVersion.label} docs</a>.`;
+    }
+    const source = d.ref
+      ? `<a href="${repoUrl}/blob/${d.ref}/${d.file}">View the source of this page</a>`
+      : `<a href="${repoUrl}/edit/main/${d.file}">Edit this page on GitHub</a>`;
+
     const page = fill(template, {
-      HEAD: head('../', `${d.title} · Vyrtel docs`, d.description ?? `Vyrtel documentation: ${d.title}.`),
-      HEADER: header('../', 'docs', d.slug),
-      FOOTER: footer('../'),
-      SIDEBAR: sidebar(d.slug),
+      HEAD: head(base, `${d.title} · Vyrtel docs`, d.description ?? `Vyrtel documentation: ${d.title}.`),
+      HEADER: header(base, 'docs', d.slug),
+      FOOTER: footer(base),
+      VERSIONS: versionPicker,
+      SIDEBAR: sidebar(groups, d.slug),
       PICKER: picker,
       GROUP: d.group,
+      NOTICE: notice ? `<div class="callout version-notice" role="note"><p>${notice}</p></div>` : '',
       TOC: toc,
       CONTENT: d.html,
       PAGER: pager,
-      EDIT_URL: `${repoUrl}/edit/main/${d.file}`,
+      SOURCE: source,
     });
-    fs.writeFileSync(path.join(out, 'docs', `${d.slug}.html`), page);
-  });
-  // /docs/ itself opens the first page; retired pages forward to their replacement.
-  fs.writeFileSync(path.join(out, 'docs', 'index.html'), redirectPage(`${listed[0].slug}.html`, 'Vyrtel docs'));
+    fs.writeFileSync(path.join(out, dir, `${d.slug}.html`), page);
+  }
+  // The directory itself opens the first page; retired pages forward to their replacement.
+  fs.writeFileSync(path.join(out, dir, 'index.html'), redirectPage(`${listed[0].slug}.html`, 'Vyrtel docs'));
   for (const [slug, to] of Object.entries(REDIRECTS)) {
-    fs.writeFileSync(path.join(out, 'docs', `${slug}.html`), redirectPage(to, 'Moved'));
+    if (!v.slugs.has(slug)) fs.writeFileSync(path.join(out, dir, `${slug}.html`), redirectPage(to, 'Moved'));
+  }
+  // Site-wide links (front page, header, footer) point at docs/<slug>.html. Where the default version
+  // has no such page (it predates it), send them to that version's first page instead of a 404.
+  if (dir === 'docs') {
+    for (const d of DOCS) {
+      if (!v.slugs.has(d.slug) && !(d.slug in REDIRECTS)) {
+        fs.writeFileSync(path.join(out, dir, `${d.slug}.html`), redirectPage(`${listed[0].slug}.html`, 'Vyrtel docs'));
+      }
+    }
   }
   return listed.length;
+}
+
+/** Renders every version under docs/<id>/, and the default one at docs/ as well. */
+function renderDocs() {
+  const versions = docVersions();
+  for (const v of versions.list) renderVersion(versions, v, `docs/${v.id}`, '../');
+  const n = renderVersion(versions, versions.defaultVersion, 'docs', '');
+  return { versions, n };
 }
 
 // ---------- assets ----------
@@ -326,10 +471,6 @@ function copy(from, to, filter) {
 function build() {
   fs.rmSync(out, { recursive: true, force: true });
   fs.mkdirSync(out, { recursive: true });
-
-  const docs = parseDocs();
-  const listed = docs.filter((d) => !d.hidden);
-  docNav = [...new Set(listed.map((d) => d.group))].map((group) => ({ group, pages: listed.filter((d) => d.group === group) }));
 
   const vars = {
     REPO: repo,
@@ -370,8 +511,9 @@ function build() {
 
   copy(path.join(here, 'node_modules/mermaid/dist/mermaid.min.js'), 'assets/mermaid.min.js');
 
-  const n = renderDocs(docs);
-  console.log(`Built ${path.relative(root, out)}: front page + ${n} docs pages for ${repo} (v${version}), site URL ${siteUrl}`);
+  const { versions, n } = renderDocs();
+  const ids = versions.list.map((v) => (v === versions.defaultVersion ? `${v.id} (default)` : v.id)).join(', ');
+  console.log(`Built ${path.relative(root, out)}: front page + ${n} docs pages in versions ${ids} for ${repo}, site URL ${siteUrl}`);
 }
 
 build();

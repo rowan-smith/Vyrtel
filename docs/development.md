@@ -196,3 +196,24 @@ Write docs as ordinary Markdown with relative links (`configuration.md#docker-an
 `../web/src/App.tsx`): the build turns links between docs into site links and links to other repo
 files into GitHub links. Add a new page to the `DOCS` list in `docs/build.mjs` to put it in the
 sidebar. Task-oriented guides live in `docs/guide/`; the other files in `docs/` are reference.
+
+### Documentation versions
+
+The docs are versioned by git tag, with nothing copied into the repository:
+
+| URL | Content |
+|---|---|
+| `/docs/<page>.html` | The newest stable release (the default) |
+| `/docs/<version>/<page>.html` | That release, read from its `v<version>` tag |
+| `/docs/latest/<page>.html` | `main`, i.e. unreleased changes |
+
+Every stable tag from `OLDEST_DOCS_RELEASE` (in `build.mjs`) onwards gets a version; prereleases
+do not. A version shows only the pages its tag has; a release from before the guides opens with its
+README as "Overview". Pages in the Project group (roadmap, benchmarks, contributing, development,
+brand) are not versioned: every version shows them from the current checkout.
+
+So edit docs on `main` as usual: changes appear under `latest` straight away and in the default
+docs once they are released. To fix a released version's docs, the fix has to be in that tag, so
+it waits for the next release. The release workflow redeploys the site after a stable release, which
+adds the version and makes it the default. Locally, the build uses the tags you have fetched
+(`git fetch --tags`).
