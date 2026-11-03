@@ -204,14 +204,24 @@ export const INGEST_MODES: { mode: IngestAuth['mode']; label: string; help: stri
 ];
 
 /** The confirmation before changing the mode, or `null` when none is needed. */
+/**
+ * Decided by what the change does to protection, as the server would apply
+ * it, not by the name of the mode: any change that leaves ingestion open
+ * where it was protected asks first, as does choosing `open` itself (it
+ * stays open even once keys exist).
+ */
 export function modePrompt(to: IngestAuth['mode'], a: IngestAuth): string | null {
-  if (to === 'open') {
+  const willProtect = to === 'required' || (to === 'automatic' && a.latched);
+  const protectedNow = a.effective === 'protected';
+  if (to === 'open' || (protectedNow && !willProtect)) {
+    const until =
+      to === 'open' ? 'whatever keys exist' : 'until an ingest key is created or the mode is set to "required"';
     return (
-      'Open ingestion? Anyone who can reach Vyrtel will be able to send data without a key, whatever keys exist. ' +
+      `Open ingestion? Anyone who can reach Vyrtel will be able to send data without an API key, ${until}. ` +
       'Queries and settings still need a login.'
     );
   }
-  if (a.effective === 'open' && (to === 'required' || a.latched)) {
+  if (!protectedNow && willProtect) {
     return 'Require API keys for ingestion? Senders without a valid key will be refused from now on.';
   }
   return null;

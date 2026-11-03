@@ -126,8 +126,10 @@ environment variable to disagree with it.
   admin (a login or an admin key). The change is stored and synced to disk
   first, then applies to every ingest request that starts after it
   returns, with no restart; it survives restarts and is backed up and
-  restored with the data directory. Choosing `open`, or a change that starts
-  refusing keyless senders, asks for confirmation first. A fresh install is
+  restored with the data directory. Any change that opens ingestion (choosing
+  `open`, or `required` → `automatic` before any ingest key), and any that
+  starts refusing keyless senders, asks for confirmation first: decided by
+  what the change does to protection, not by the mode's name. A fresh install is
   `automatic`.
 * **The last ingest key.** Revoking it in `automatic` or `required` mode
   leaves ingestion protected with no ingest key: requests without a key, or

@@ -193,7 +193,57 @@ it('asks before each change that widens or narrows who can send', () => {
   };
   expect(modePrompt('open', base)).toMatch(/Open ingestion/);
   expect(modePrompt('required', base)).toMatch(/Require API keys/);
-  expect(modePrompt('automatic', { ...base, mode: 'required', effective: 'protected' })).toBeNull();
+  // Required → automatic on an unlatched store opens ingestion: it asks.
+  const required: IngestAuth = { ...base, mode: 'required', effective: 'protected', protectedWithoutKeys: true };
+  expect(modePrompt('automatic', required)).toMatch(/^Open ingestion\?.*until an ingest key is created/);
+  // ...but not when the latch keeps it protected.
+  expect(modePrompt('automatic', { ...required, latched: true })).toBeNull();
+  expect(modePrompt('required', { ...required, mode: 'automatic', latched: true })).toBeNull();
   expect(modePrompt('automatic', { ...base, mode: 'open', latched: true })).toMatch(/Require API keys/);
   expect(modePrompt('automatic', { ...base, mode: 'open' })).toBeNull();
+  expect(modePrompt('open', { ...required, latched: true })).toMatch(/whatever keys exist/);
+  // Every pair of modes, latched or not: a change that ends protection
+  // always asks.
+  const modes = ['automatic', 'required', 'open'] as const;
+  const protects = (m: Mode, latched: boolean) => m === 'required' || (m === 'automatic' && latched);
+  for (const latched of [false, true]) {
+    for (const from of modes) {
+      for (const to of modes) {
+        if (from === to) continue;
+        const state: IngestAuth = {
+          ...base,
+          mode: from,
+          latched,
+          effective: protects(from, latched) ? 'protected' : 'open',
+        };
+        if (protects(from, latched) && !protects(to, latched)) {
+          expect(modePrompt(to, state), `${from} → ${to}, latched=${latched}`).toMatch(/^Open ingestion\?/);
+        }
+      }
+    }
+  }
+});
+
+it('confirms before Required → Automatic opens an unlatched install, and changes nothing when cancelled', async () => {
+  const s = server('required', []);
+  const calls = mockFetch({
+    '/api/v1/api-keys': () => s.list(),
+    '/api/v1/ingest-auth': (body) => s.setMode((body as { mode: Mode }).mode),
+  });
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  renderWithRouter(<SettingsPage />, '/settings?tab=keys');
+  const select = await screen.findByLabelText('Ingestion mode');
+  expect(select).toHaveValue('required');
+
+  await userEvent.selectOptions(select, 'automatic');
+  expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Open ingestion\?/));
+  expect(calls.some((c) => c.url.endsWith('/api/v1/ingest-auth'))).toBe(false);
+  expect(select).toHaveValue('required');
+  expect(screen.getByTestId('ingest-protection')).toHaveTextContent(/requires an API key/);
+
+  confirm.mockReturnValue(true);
+  await userEvent.selectOptions(select, 'automatic');
+  await waitFor(() => expect(screen.getByTestId('ingest-protection')).toHaveTextContent(/Ingestion is open/));
+  expect(calls.find((c) => c.url.endsWith('/api/v1/ingest-auth'))?.body).toEqual({ mode: 'automatic' });
+  expect(select).toHaveValue('automatic');
 });
