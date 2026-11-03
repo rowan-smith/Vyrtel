@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { api } from '../lib/api';
-import type { ApiKey, QueryFieldStats, StorageStats, SystemInfo } from '../lib/types';
+import type { ApiKey, IngestAuth, QueryFieldStats, StorageStats, SystemInfo } from '../lib/types';
 import { formatBytes, formatCount, formatDateTime, formatDuration, formatUptime } from '../lib/format';
 import { useRouter } from '../lib/router';
 import { ErrorBanner, Spinner, Stat } from '../components/common';
@@ -113,7 +113,7 @@ function SystemTab() {
         </tr>
         <tr>
           <th>Ingestion</th>
-          <td>{i.ingestKeyRequired ? 'API key required' : 'open (no ingest key yet)'}</td>
+          <td>{ingestSummary(i.ingestAuth)}</td>
         </tr>
         <tr>
           <th>Events</th>
@@ -156,19 +156,91 @@ function SystemTab() {
   );
 }
 
+/** One line for the System tab. */
+export function ingestSummary(a: IngestAuth): string {
+  if (a.mode === 'open') return 'open (mode "open")';
+  if (a.effective === 'open') return 'open (no ingest key yet)';
+  if (a.protectedWithoutKeys) return 'API key required — no ingest key exists';
+  return 'API key required';
+}
+
+/** The Keys tab notice: what ingestion accepts now, and what changes it. */
+export function ingestNotice(a: IngestAuth): string {
+  if (a.mode === 'open') {
+    const restore = a.latched ? ' Switching back to "automatic" protects it again.' : '';
+    return `Ingestion is open (mode "open"): anyone who can reach Vyrtel can send data, whatever keys exist.${restore}`;
+  }
+  if (a.effective === 'open') {
+    return 'Ingestion is open: anyone who can reach Vyrtel can send data. Creating an ingest key protects it for good.';
+  }
+  if (a.protectedWithoutKeys) {
+    return (
+      'Ingestion requires an API key, and no ingest key exists: senders are refused unless they use an admin key. ' +
+      'Create a replacement ingest key, or switch the mode to "open" to accept data without one.'
+    );
+  }
+  return 'Ingestion requires an API key. It stays protected when keys are revoked, including the last ingest key.';
+}
+
+/** The revoke confirmation; the last ingest key gets the consequences spelt out. */
+export function revokePrompt(k: ApiKey, a: IngestAuth | null): string {
+  const last = k.scope === 'ingest' && a?.effective === 'protected' && a.ingestKeys === 1;
+  if (!last) return `Revoke key "${k.name}"?`;
+  return (
+    `Revoke key "${k.name}"? It is the last ingest key. Ingestion stays protected, so senders using it ` +
+    'will be refused until you create a replacement key (or switch the ingestion mode to "open").'
+  );
+}
+
+/** What each ingestion mode does, for the selector. */
+export const INGEST_MODES: { mode: IngestAuth['mode']; label: string; help: string }[] = [
+  {
+    mode: 'automatic',
+    label: 'Automatic',
+    help: 'Open until the first ingest key is created, then requires a key for good, even after keys are revoked.',
+  },
+  { mode: 'required', label: 'Required', help: 'Always requires an API key, even before any key exists.' },
+  { mode: 'open', label: 'Open', help: 'Never requires a key: anyone who can reach Vyrtel can send data.' },
+];
+
+/** The confirmation before changing the mode, or `null` when none is needed. */
+/**
+ * Decided by what the change does to protection, as the server would apply
+ * it, not by the name of the mode: any change that leaves ingestion open
+ * where it was protected asks first, as does choosing `open` itself (it
+ * stays open even once keys exist).
+ */
+export function modePrompt(to: IngestAuth['mode'], a: IngestAuth): string | null {
+  const willProtect = to === 'required' || (to === 'automatic' && a.latched);
+  const protectedNow = a.effective === 'protected';
+  if (to === 'open' || (protectedNow && !willProtect)) {
+    const until =
+      to === 'open' ? 'whatever keys exist' : 'until an ingest key is created or the mode is set to "required"';
+    return (
+      `Open ingestion? Anyone who can reach Vyrtel will be able to send data without an API key, ${until}. ` +
+      'Queries and settings still need a login.'
+    );
+  }
+  if (!protectedNow && willProtect) {
+    return 'Require API keys for ingestion? Senders without a valid key will be refused from now on.';
+  }
+  return null;
+}
+
 function KeysTab() {
   const [keys, setKeys] = useState<ApiKey[] | null>(null);
-  const [protectedIngest, setProtectedIngest] = useState<boolean | null>(null);
+  const [ingestAuth, setIngestAuth] = useState<IngestAuth | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [name, setName] = useState('');
   const [scope, setScope] = useState<'ingest' | 'admin'>('ingest');
   const [created, setCreated] = useState<ApiKey | null>(null);
+  const [savingMode, setSavingMode] = useState(false);
   const load = useCallback(() => {
     api
       .apiKeys()
       .then((r) => {
         setKeys(r.apiKeys);
-        setProtectedIngest(r.ingestKeyRequired);
+        setIngestAuth(r.ingestAuth);
       })
       .catch(setError);
   }, []);
@@ -179,12 +251,42 @@ function KeysTab() {
         Send keys as <code>Authorization: Bearer &lt;key&gt;</code> or <code>X-Api-Key</code>. Ingest keys can only send
         data; admin keys can use the whole API.
       </p>
-      {protectedIngest !== null && (
+      {ingestAuth !== null && (
         <p className="notice" data-testid="ingest-protection">
-          {protectedIngest
-            ? 'Ingestion requires an API key. Revoking the last ingest key opens it again.'
-            : 'Ingestion is open: anyone who can reach Vyrtel can send data. Creating an ingest key protects it.'}
+          {ingestNotice(ingestAuth)}
         </p>
+      )}
+      {ingestAuth !== null && (
+        <div className="inline-form">
+          <label htmlFor="ingest-mode">Ingestion mode</label>
+          <select
+            id="ingest-mode"
+            className="select"
+            value={ingestAuth.mode}
+            disabled={savingMode}
+            onChange={async (e) => {
+              const to = e.target.value as IngestAuth['mode'];
+              const prompt = modePrompt(to, ingestAuth);
+              if (prompt !== null && !window.confirm(prompt)) return;
+              setSavingMode(true);
+              try {
+                setIngestAuth((await api.setIngestAuthMode(to)).ingestAuth);
+                setError(null);
+              } catch (err) {
+                setError(err);
+              } finally {
+                setSavingMode(false);
+              }
+            }}
+          >
+            {INGEST_MODES.map((m) => (
+              <option key={m.mode} value={m.mode}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+          <span className="muted">{INGEST_MODES.find((m) => m.mode === ingestAuth.mode)?.help}</span>
+        </div>
       )}
       <form
         className="inline-form"
@@ -248,10 +350,14 @@ function KeysTab() {
                 <button
                   className="btn btn-small btn-danger"
                   onClick={async () => {
-                    if (window.confirm(`Revoke key "${k.name}"?`)) {
+                    if (!window.confirm(revokePrompt(k, ingestAuth))) return;
+                    try {
                       await api.revokeApiKey(k.id);
-                      load();
+                      setError(null);
+                    } catch (err) {
+                      setError(err);
                     }
+                    load();
                   }}
                 >
                   Revoke

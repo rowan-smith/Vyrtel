@@ -1,5 +1,5 @@
-//! Missing auth, bad auth, scopes, sessions, and ingestion protection
-//! following the ingest-scoped keys.
+//! Missing auth, bad auth, scopes, sessions, and ingestion protection:
+//! the ingestion mode (Settings) and the latch the first ingest-scoped key sets.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -273,28 +273,61 @@ async fn revoke_key(s: &TestServer, id: i64) {
 async fn key_required(s: &TestServer) -> bool {
     let info: Value = s.client.get(s.u("/api/v1/system/info")).send().await.unwrap().json().await.unwrap();
     let keys: Value = s.client.get(s.u("/api/v1/api-keys")).send().await.unwrap().json().await.unwrap();
-    assert_eq!(info["ingestKeyRequired"], keys["ingestKeyRequired"]);
-    info["ingestKeyRequired"].as_bool().unwrap()
+    assert_eq!(info["ingestAuth"], keys["ingestAuth"]);
+    info["ingestAuth"]["effective"] == "protected"
 }
 
+/// The ingestion policy, as system info and the key list (the UI's
+/// sources) report it; asserts they agree.
+async fn ingest_auth(s: &TestServer) -> Value {
+    let info: Value = s.client.get(s.u("/api/v1/system/info")).send().await.unwrap().json().await.unwrap();
+    let keys: Value = s.client.get(s.u("/api/v1/api-keys")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(info["ingestAuth"], keys["ingestAuth"]);
+    info["ingestAuth"].clone()
+}
+
+/// Every ingestion endpoint's status for one request with `key` (or none):
+/// `/api/v1/events` and OTLP/HTTP logs, traces and metrics.
+async fn ingest_everywhere(s: &TestServer, key: Option<&str>) -> Vec<u16> {
+    let client = reqwest::Client::new();
+    let mut out = vec![ingest_from(&client, s, key).await];
+    for path in ["/v1/logs", "/v1/traces", "/v1/metrics"] {
+        let mut r = client.post(s.u(path)).header("content-type", "application/json").body("{}");
+        if let Some(k) = key {
+            r = r.header("x-api-key", k);
+        }
+        out.push(r.send().await.unwrap().status().as_u16());
+    }
+    out
+}
+
+/// AUTH-250: automatic mode. Open on a fresh install; the first ingest key
+/// protects it for good; revoking every ingest key leaves it protected
+/// with no ingest key, until a replacement is created.
 #[tokio::test(flavor = "multi_thread")]
-async fn ingest_protection_follows_the_ingest_keys() {
+async fn ingest_protection_latches_with_the_first_ingest_key() {
     let s = TestServer::start().await;
     // No keys but the harness's admin key: open.
     assert!(!key_required(&s).await);
-    assert_eq!(ingest(&s, None).await, 200);
+    assert_eq!(
+        ingest_auth(&s).await,
+        json!({
+            "mode": "automatic", "effective": "open", "latched": false, "ingestKeys": 0, "protectedWithoutKeys": false,
+        })
+    );
+    assert_eq!(ingest_everywhere(&s, None).await, [200; 4]);
 
-    // Admin keys do not protect ingestion.
+    // Admin keys do not protect ingestion, even once revoked.
     let (admin_id, admin) = create_key(&s, "automation", "admin").await;
     assert!(!key_required(&s).await);
     assert_eq!(ingest(&s, None).await, 200);
 
-    // The first ingest key protects it at once.
+    // The first ingest key protects it at once, on every endpoint.
     let (a_id, a) = create_key(&s, "a", "ingest").await;
     assert!(key_required(&s).await);
-    assert_eq!(ingest(&s, None).await, 401);
-    assert_eq!(ingest(&s, Some("vyr_not_a_real_key")).await, 401);
-    assert_eq!(ingest(&s, Some(&a)).await, 200);
+    assert_eq!(ingest_everywhere(&s, None).await, [401; 4]);
+    assert_eq!(ingest_everywhere(&s, Some("vyr_not_a_real_key")).await, [401; 4]);
+    assert_eq!(ingest_everywhere(&s, Some(&a)).await, [200; 4]);
     assert_eq!(ingest(&s, Some(&admin)).await, 200, "any valid key may ingest");
 
     // Revoking one of two ingest keys keeps it protected.
@@ -305,13 +338,32 @@ async fn ingest_protection_follows_the_ingest_keys() {
     assert_eq!(ingest(&s, Some(&b)).await, 200);
     assert_eq!(ingest(&s, None).await, 401);
 
-    // Revoking an admin key changes nothing; revoking the last ingest key
-    // reopens ingestion at once.
+    // Revoking the last ingest key keeps it protected: anonymous and
+    // revoked keys are refused everywhere; an admin key still sends.
     revoke_key(&s, admin_id).await;
-    assert!(key_required(&s).await);
     revoke_key(&s, b_id).await;
-    assert!(!key_required(&s).await);
-    assert_eq!(ingest(&s, None).await, 200);
+    assert_eq!(
+        ingest_auth(&s).await,
+        json!({
+            "mode": "automatic", "effective": "protected", "latched": true, "ingestKeys": 0, "protectedWithoutKeys": true,
+        })
+    );
+    for key in [None, Some(a.as_str()), Some(b.as_str()), Some(admin.as_str())] {
+        assert_eq!(ingest_everywhere(&s, key).await, [401; 4], "{key:?}");
+    }
+    assert_eq!(ingest(&s, Some(&s.api_key)).await, 200, "the harness's admin key still sends");
+    // Query and administration stay authenticated throughout.
+    let anonymous = reqwest::Client::new();
+    for path in ["/api/v1/query/logs", "/api/v1/api-keys"] {
+        let r = anonymous.post(s.u(path)).json(&json!({})).send().await.unwrap();
+        assert_eq!(r.status(), 401, "{path}");
+    }
+
+    // A replacement key restores sending; the old ones stay refused.
+    let (_, c) = create_key(&s, "replacement", "ingest").await;
+    assert_eq!(ingest_auth(&s).await["protectedWithoutKeys"], false);
+    assert_eq!(ingest_everywhere(&s, Some(&c)).await, [200; 4]);
+    assert_eq!(ingest(&s, Some(&b)).await, 401);
     s.stop().await;
 }
 
@@ -328,16 +380,205 @@ async fn ingest_protection_survives_restarts() {
     revoke_key(&s, id).await;
     let (config, dir) = s.stop().await;
 
+    // AUTH-250: restarting after the last ingest key was revoked stays
+    // protected.
     let s = TestServer::launch(config, dir).await;
-    assert!(!key_required(&s).await);
-    assert_eq!(ingest(&s, None).await, 200);
-    assert_eq!(ingest(&s, Some(&key)).await, 200, "open again, so the revoked key is not checked");
+    assert!(ingest_auth(&s).await["protectedWithoutKeys"].as_bool().unwrap());
+    assert_eq!(ingest(&s, None).await, 401);
+    assert_eq!(ingest(&s, Some(&key)).await, 401, "the revoked key is refused");
     s.stop().await;
 }
 
-/// Producers keep sending while the first ingest key is created and the
-/// last revoked: a request that starts after either change returns sees
-/// it, none fails otherwise, and a valid key is accepted throughout.
+/// Set the ingestion mode with `client`; returns the status and body.
+async fn set_mode_with(client: &reqwest::Client, s: &TestServer, mode: Value) -> (u16, Value) {
+    let r = client.put(s.u("/api/v1/ingest-auth")).json(&json!({ "mode": mode })).send().await.unwrap();
+    let status = r.status().as_u16();
+    (status, r.json().await.unwrap_or(Value::Null))
+}
+
+/// Set the ingestion mode as the harness's admin; returns the new state.
+async fn set_mode(s: &TestServer, mode: &str) -> Value {
+    let (status, body) = set_mode_with(&s.client, s, json!(mode)).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["ingestAuth"], ingest_auth(s).await, "the response is the state now in force");
+    body["ingestAuth"].clone()
+}
+
+/// AUTH-250: the ingestion mode, set from Settings (`PUT
+/// /api/v1/ingest-auth`), on a fresh store and over a latched one: in force
+/// at once and across restarts; `required` protects before any key, `open`
+/// admits anonymous ingestion (and nothing else) without erasing the latch,
+/// and returning to `automatic` restores the protection.
+#[tokio::test(flavor = "multi_thread")]
+async fn ingest_auth_modes_and_their_transitions() {
+    let s = TestServer::start().await;
+    assert_eq!(ingest_auth(&s).await["mode"], "automatic", "a fresh store is automatic");
+    assert_eq!(
+        set_mode(&s, "required").await,
+        json!({
+            "mode": "required", "effective": "protected", "latched": false, "ingestKeys": 0, "protectedWithoutKeys": true,
+        })
+    );
+    assert_eq!(ingest_everywhere(&s, None).await, [401; 4], "required protects a fresh install at once");
+    let (config, dir) = s.stop().await;
+
+    let s = TestServer::launch(config, dir).await;
+    assert_eq!(ingest_auth(&s).await["mode"], "required", "the mode survives a restart");
+    assert_eq!(ingest(&s, None).await, 401);
+    set_mode(&s, "automatic").await;
+    assert!(!key_required(&s).await, "required alone latched nothing");
+    let (id, key) = create_key(&s, "producers", "ingest").await;
+    revoke_key(&s, id).await;
+
+    assert_eq!(
+        set_mode(&s, "open").await,
+        json!({
+            "mode": "open", "effective": "open", "latched": true, "ingestKeys": 0, "protectedWithoutKeys": false,
+        })
+    );
+    assert_eq!(ingest_everywhere(&s, None).await, [200; 4], "explicit open admits anonymous ingestion at once");
+    assert_eq!(ingest(&s, Some(&key)).await, 200, "open checks no key");
+    let (_, live) = create_key(&s, "while-open", "ingest").await;
+    assert_eq!(ingest(&s, None).await, 200, "keys created while open do not close it");
+    let anonymous = reqwest::Client::new();
+    for path in ["/api/v1/query/logs", "/api/v1/api-keys"] {
+        let r = anonymous.post(s.u(path)).json(&json!({})).send().await.unwrap();
+        assert_eq!(r.status(), 401, "open ingestion exposes no other API: {path}");
+    }
+    let r = anonymous.get(s.u("/api/v1/system/info")).send().await.unwrap();
+    assert_eq!(r.status(), 401);
+    let (config, dir) = s.stop().await;
+
+    let s = TestServer::launch(config, dir).await;
+    assert_eq!(ingest_auth(&s).await["mode"], "open", "open survives a restart");
+    assert_eq!(ingest(&s, None).await, 200);
+    set_mode(&s, "automatic").await;
+    assert!(key_required(&s).await, "automatic restores the latched protection at once");
+    assert_eq!(ingest_everywhere(&s, None).await, [401; 4]);
+    assert_eq!(ingest(&s, Some(&key)).await, 401);
+    assert_eq!(ingest(&s, Some(&live)).await, 200);
+    s.stop().await;
+}
+
+/// AUTH-250: only an admin can change the mode, and an invalid one changes
+/// nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_admins_set_the_ingest_auth_mode() {
+    let s = start_secure().await;
+    let (session, ingest_key) = {
+        let r = login(&s, "correct horse").await;
+        let cookie = session_cookie(&r);
+        let session = authorized_client("cookie", &cookie);
+        let (status, body) = set_mode_with(&session, &s, json!("required")).await;
+        assert_eq!((status, body["ingestAuth"]["mode"].as_str()), (200, Some("required")), "an admin session may");
+        let key: Value = session
+            .post(s.u("/api/v1/api-keys"))
+            .json(&json!({"name": "producer", "scope": "ingest"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        (session, key["key"].as_str().unwrap().to_string())
+    };
+    let anonymous = reqwest::Client::new();
+    assert_eq!(set_mode_with(&anonymous, &s, json!("open")).await.0, 401);
+    let producer = authorized_client("authorization", &format!("Bearer {ingest_key}"));
+    assert_eq!(set_mode_with(&producer, &s, json!("open")).await.0, 403, "an ingest key may only ingest");
+    for bad in [json!("opened"), json!("OPEN"), json!(""), json!(null), json!(1)] {
+        let (status, body) = set_mode_with(&session, &s, bad.clone()).await;
+        assert!(matches!(status, 400 | 422) && body["error"]["code"] == "invalid_json", "{bad}: {status} {body}");
+    }
+    let r = session.put(s.u("/api/v1/ingest-auth")).json(&json!({"mode": "open", "extra": 1})).send().await.unwrap();
+    assert_eq!(r.status(), 422);
+    assert_eq!(ingest(&s, None).await, 401, "nothing changed");
+    assert_eq!(ingest(&s, Some(&ingest_key)).await, 200);
+    s.stop().await;
+}
+
+/// AUTH-250: a mode this build cannot read stops the start with what to do,
+/// instead of starting with a default.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_ingest_auth_mode_refuses_to_start() {
+    let s = TestServer::start().await;
+    let (config, dir) = s.stop().await;
+    let db = rusqlite::Connection::open(config.storage.path.join(server::datadir::METADATA_DB)).unwrap();
+    db.execute("INSERT INTO settings (key, value, updated_at) VALUES ('ingest_auth_mode', 'Open ', 0)", []).unwrap();
+    drop(db);
+    let e = format!("{:#}", server::App::build(config.clone()).err().expect("refused to start"));
+    assert!(e.contains("loading API keys") && e.contains("ingestion mode setting (ingest_auth_mode)"), "{e}");
+    assert!(e.contains("'automatic', 'required' or 'open'"), "{e}");
+    let db = rusqlite::Connection::open(config.storage.path.join(server::datadir::METADATA_DB)).unwrap();
+    db.execute("UPDATE settings SET value = 'required' WHERE key = 'ingest_auth_mode'", []).unwrap();
+    drop(db);
+    let s = TestServer::launch(config, dir).await;
+    assert_eq!(ingest(&s, None).await, 401);
+    s.stop().await;
+}
+
+/// AUTH-250: a latch this build cannot read stops the start with what to do,
+/// instead of starting open.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_ingest_latch_refuses_to_start() {
+    let s = TestServer::start().await;
+    let (config, dir) = s.stop().await;
+    let db = rusqlite::Connection::open(config.storage.path.join(server::datadir::METADATA_DB)).unwrap();
+    db.execute("INSERT INTO settings (key, value, updated_at) VALUES ('ingest_protection', 'unlatched', 0)", [])
+        .unwrap();
+    drop(db);
+    let e = format!("{:#}", server::App::build(config.clone()).err().expect("refused to start"));
+    assert!(e.contains("loading API keys") && e.contains("ingestion protection setting"), "{e}");
+    assert!(e.contains("set the value to 'latched'"), "{e}");
+
+    // Following the instruction keeps ingestion protected.
+    let db = rusqlite::Connection::open(config.storage.path.join(server::datadir::METADATA_DB)).unwrap();
+    db.execute("UPDATE settings SET value = 'latched' WHERE key = 'ingest_protection'", []).unwrap();
+    drop(db);
+    let s = TestServer::launch(config, dir).await;
+    assert!(key_required(&s).await);
+    assert_eq!(ingest(&s, None).await, 401);
+    s.stop().await;
+}
+
+/// The banner says how ingestion is authenticated, in each state.
+#[tokio::test(flavor = "multi_thread")]
+async fn banner_shows_the_ingestion_policy() {
+    use metadata::IngestAuthMode;
+    let dir = tempfile::tempdir().unwrap();
+    let line = || {
+        let app = server::App::build(base_config(dir.path())).unwrap();
+        let b = app.banner("127.0.0.1:8080".parse().unwrap());
+        let line = b.lines().find(|l| l.starts_with("Authentication")).unwrap().to_string();
+        (app, line)
+    };
+    let (app, l) = line();
+    assert!(l.ends_with("ingestion open until an ingest API key is created"), "{l}");
+    server::auth::create_api_key(&app.state, "ci", "ingest").await.unwrap();
+    app.shutdown().await.unwrap();
+    let (app, l) = line();
+    assert!(l.ends_with("API keys for ingestion"), "{l}");
+    server::auth::set_ingest_auth_mode(&app.state, IngestAuthMode::Open).await.unwrap();
+    app.shutdown().await.unwrap();
+    let (app, l) = line();
+    assert!(l.ends_with("ingestion open (ingestion mode \"open\")"), "{l}");
+    server::auth::set_ingest_auth_mode(&app.state, IngestAuthMode::Required).await.unwrap();
+    app.shutdown().await.unwrap();
+    let (app, l) = line();
+    assert!(l.ends_with("API keys for ingestion"), "{l}");
+    let id = app.state.metadata.list_api_keys().unwrap()[0].id;
+    server::auth::revoke_api_key(&app.state, id).await.unwrap();
+    server::auth::set_ingest_auth_mode(&app.state, IngestAuthMode::Automatic).await.unwrap();
+    app.shutdown().await.unwrap();
+    let (app, l) = line();
+    assert!(l.ends_with("API keys for ingestion (no ingest key yet: create one)"), "{l}");
+    app.shutdown().await.unwrap();
+}
+
+/// Producers keep sending while the first ingest key is created and keys
+/// churn after it: a keyless request is refused once the first create
+/// returned (AUTH-250: and never admitted again, whatever is revoked), and
+/// a valid key is accepted throughout.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ingest_protection_changes_are_immediate_under_concurrent_requests() {
     const OPEN: u8 = 0;
@@ -381,18 +622,22 @@ async fn ingest_protection_changes_are_immediate_under_concurrent_requests() {
         })
         .collect();
 
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    phase.store(CHANGING, Ordering::SeqCst);
+    let (first, _) = create_key(&s, "first", "ingest").await;
+    phase.store(PROTECTED, Ordering::SeqCst);
+    assert_eq!(ingest(&s, None).await, 401);
+    let mut last = first;
     for round in 0..20 {
-        phase.store(CHANGING, Ordering::SeqCst);
         let (id, _) = create_key(&s, &format!("k{round}"), "ingest").await;
-        phase.store(PROTECTED, Ordering::SeqCst);
-        assert_eq!(ingest(&s, None).await, 401);
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        phase.store(CHANGING, Ordering::SeqCst);
-        revoke_key(&s, id).await;
-        phase.store(OPEN, Ordering::SeqCst);
-        assert_ne!(ingest(&s, None).await, 401, "open again at once");
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        revoke_key(&s, last).await;
+        last = id;
+        assert_eq!(ingest(&s, None).await, 401, "still protected after a revoke");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
+    revoke_key(&s, last).await;
+    assert_eq!(ingest(&s, None).await, 401, "still protected after the last revoke");
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     done.store(true, Ordering::SeqCst);
     let mut checked = 0;
     for p in producers {
@@ -400,24 +645,20 @@ async fn ingest_protection_changes_are_immediate_under_concurrent_requests() {
     }
     assert!(checked > 0, "no request ran between changes");
 
-    // Many keys created and revoked at once leave the count exact.
+    // Many keys created and revoked at once never reopen it.
     let created = futures_util::future::join_all((0..16).map(|i| {
         let s = s.clone();
         async move { create_key(&s, &format!("c{i}"), "ingest").await.0 }
     }))
     .await;
     assert!(key_required(&s).await);
-    let (last, rest) = created.split_last().unwrap();
-    futures_util::future::join_all(rest.iter().map(|&id| {
+    futures_util::future::join_all(created.iter().map(|&id| {
         let s = s.clone();
         async move { revoke_key(&s, id).await }
     }))
     .await;
-    assert!(key_required(&s).await, "one ingest key is left");
+    assert!(ingest_auth(&s).await["protectedWithoutKeys"].as_bool().unwrap());
     assert_eq!(ingest(&s, None).await, 401);
-    revoke_key(&s, *last).await;
-    assert!(!key_required(&s).await);
-    assert_eq!(ingest(&s, None).await, 200);
     Arc::into_inner(s).unwrap().stop().await;
 }
 
@@ -444,21 +685,29 @@ async fn stalled_key_writes_do_not_hold_up_ingestion() {
     assert!(!revoking.is_finished(), "requests did not wait for the stalled revoke");
     db.execute_batch("COMMIT").unwrap();
     assert_eq!(revoking.await.unwrap(), 204);
-    assert!(!key_required(&s).await);
-    assert_eq!(ingest(&s, None).await, 200, "open once the revoke committed");
+    assert_eq!(ingest(&s, Some(&key)).await, 401, "refused once the revoke committed");
+    assert_eq!(ingest(&s, None).await, 401, "and ingestion stays protected (AUTH-250)");
+    drop(db);
+    Arc::into_inner(s).unwrap().stop().await;
 
-    // Held past the store's 5 s busy timeout: the create fails, and no key
-    // is accepted or protects ingestion.
+    // Held past the store's 5 s busy timeout: the first ingest key's create
+    // fails, and no key is accepted or latches protection.
+    let s = TestServer::start().await;
+    let db = rusqlite::Connection::open(s.data_dir().join(server::datadir::METADATA_DB)).unwrap();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
     let r = s.post("/api/v1/api-keys", json!({"name": "never", "scope": "ingest"})).await;
     assert_eq!(r.status(), 500);
     db.execute_batch("ROLLBACK").unwrap();
     assert!(!key_required(&s).await);
+    assert_eq!(ingest_auth(&s).await["latched"], false);
     assert_eq!(ingest(&s, None).await, 200);
     let keys: Value = s.client.get(s.u("/api/v1/api-keys")).send().await.unwrap().json().await.unwrap();
     assert!(keys["apiKeys"].as_array().unwrap().iter().all(|k| k["name"] != "never"));
     drop(db);
-    Arc::into_inner(s).unwrap().stop().await;
+    let (config, dir) = s.stop().await;
+    let s = TestServer::launch(config, dir).await;
+    assert!(!key_required(&s).await, "the failed create latched nothing on disk either");
+    s.stop().await;
 }
 
 // ---- AUTH-PERF-02: session-cookie authentication ------------------------
@@ -791,12 +1040,9 @@ async fn api_key_last_used_is_recorded_and_revoked_keys_are_reclaimed() {
     let t = key_touches(&s).await;
     assert_eq!((t["tracked"].as_u64(), t["forgotten"].as_u64()), (Some(1), Some(20)));
     for (_, key) in &keys {
-        assert_eq!(ingest(&s, Some(key)).await, 200, "no ingest key left: open, as before");
+        assert_eq!(ingest(&s, Some(key)).await, 401, "no ingest key left: still protected (AUTH-250)");
     }
     let (_, last) = create_key(&s, "last", "ingest").await;
-    for (_, key) in &keys {
-        assert_eq!(ingest(&s, Some(key)).await, 401, "a revoked key is refused");
-    }
     assert_eq!(ingest(&s, Some(&last)).await, 200);
     assert_eq!(key_touches(&s).await["tracked"], 2, "revoked keys never come back");
 

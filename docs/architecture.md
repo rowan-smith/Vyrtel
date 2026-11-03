@@ -167,16 +167,30 @@ flowchart LR
 
 ## Metadata
 
-SQLite (bundled, WAL mode, foreign keys on, one schema per layout created in
-one transaction, prepared statements) stores product metadata only: settings, API key hashes, users
+SQLite (bundled, WAL mode with `synchronous = FULL`, foreign keys on, one
+schema per layout created in one transaction, prepared statements) stores
+product metadata only: settings, API key hashes, users
 and sessions, dashboards and panels, saved queries, alerts with state and
 history, aggregated query statistics. Telemetry never goes to SQLite.
+
+Every metadata commit syncs the WAL before it returns (`synchronous =
+FULL`), so a write that was acknowledged survives a power failure or OS
+crash, not only a process crash: an API key and the ingestion protection
+latch it sets, a revoke, a logout or a password change can never be rolled
+back after their response. `NORMAL` (before AUTH-250) kept the database
+consistent but could lose the last commits on power loss, which could have
+reopened ingestion. This is independent of `storage.durability`, which
+governs telemetry. The cost is one WAL sync per metadata commit (about
+0.5 ms on the AUTH-250 laptop, [testing](testing.md#ingestion-protection-latch-auth-250));
+metadata writes run on the blocking pool, off the ingest and key-auth
+request path, though an uncached session lookup can wait behind one.
 
 ### API keys and request authentication
 
 Authenticating a request by API key never reads SQLite. The active API keys (hash →
-id and scope, plus the count of ingest-scoped keys that decides whether
-ingestion is protected) are loaded at startup into an immutable `KeySet`
+id and scope, the count of ingest-scoped keys, the ingestion protection
+latch and the ingestion mode, which together decide whether ingestion is
+protected) are loaded at startup into an immutable `KeySet`
 (`crates/server/src/auth.rs`). Requests clone an `Arc` to the current set
 under a read lock that is only ever held for a pointer copy or swap, and
 take every part of one decision (is ingestion open, is this key valid,

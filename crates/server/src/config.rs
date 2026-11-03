@@ -472,14 +472,14 @@ const REMOVED_SETTINGS: &[(&str, &str, &str)] = &[
     (
         "auth",
         "enabled",
-        "the UI and API now always require a login; remove it (ingestion requires an API key once an \
-         ingest-scoped key exists)",
+        "the UI and API now always require a login; remove it (whether ingestion needs an API key is set \
+         under Settings → API keys)",
     ),
     (
         "auth",
         "ingest_api_key",
-        "ingestion requires an API key automatically while an ingest-scoped key exists, and is open while none \
-         does; remove it",
+        "remove it and create ingest-scoped API keys instead; whether ingestion needs one is set under \
+         Settings → API keys",
     ),
     ("storage", "zstd_level", "segments are always compressed at level 3; remove it"),
     ("storage", "block_events", "blocks always hold up to 1024 events; remove it"),
@@ -1009,7 +1009,7 @@ mod tests {
         let e = check_env_names(["VYRTEL_AUTH_ENABLED"]).unwrap_err();
         assert!(e.starts_with("VYRTEL_AUTH_ENABLED: auth.enabled is no longer a setting"), "{e}");
         let e = Config::from_toml("[auth]\ningest_api_key = true").unwrap_err();
-        assert!(e.contains("automatically while an ingest-scoped key exists"), "{e}");
+        assert!(e.contains("whether ingestion needs one is set under Settings"), "{e}");
         let e = check_env_names(["VYRTEL_AUTH_INGEST_API_KEY"]).unwrap_err();
         assert!(e.starts_with("VYRTEL_AUTH_INGEST_API_KEY: auth.ingest_api_key is no longer a setting"), "{e}");
     }

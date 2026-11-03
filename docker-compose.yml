@@ -12,7 +12,8 @@ services:
       VYRTEL_LOG_LEVEL: info
       # The UI always needs a login; without this a password is generated and printed once.
       # VYRTEL_AUTH_ADMIN_PASSWORD: change-me
-      # Ingestion is open until an ingest API key is created under Settings → API keys.
+      # Ingestion is open until the first ingest API key is created, then stays protected;
+      # the ingestion mode under Settings → API keys can require a key from the start.
     restart: unless-stopped
     # Longer than server.shutdown_timeout (8s), so in-flight requests drain
     # before Docker force-kills the container.

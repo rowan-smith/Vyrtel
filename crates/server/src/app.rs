@@ -52,6 +52,18 @@ pub struct StartOptions {
     pub accept_incomplete_restore: bool,
 }
 
+/// The banner's authentication line.
+fn authentication(keys: &crate::auth::KeySet) -> &'static str {
+    match (keys.ingest_protected(), keys.ingest_keys()) {
+        (true, 0) => "login for the UI/API, API keys for ingestion (no ingest key yet: create one)",
+        (true, _) => "login for the UI/API, API keys for ingestion",
+        (false, _) if keys.mode() == metadata::IngestAuthMode::Open => {
+            "login for the UI/API; ingestion open (ingestion mode \"open\")"
+        }
+        (false, _) => "login for the UI/API; ingestion open until an ingest API key is created",
+    }
+}
+
 fn storage_config(config: &Config) -> StorageConfig {
     let budgets = config.budgets();
     let mut sc = StorageConfig::new(&config.storage.path);
@@ -121,6 +133,11 @@ impl App {
                 .map_err(|e| anyhow::anyhow!("opening metadata store: {e}"))?,
         );
         let api_keys = crate::auth::ApiKeys::load(&metadata).map_err(|e| anyhow::anyhow!("loading API keys: {e}"))?;
+        let keys = api_keys.snapshot();
+        if let Some(warning) = keys.startup_warning() {
+            tracing::warn!(ingest_auth_mode = keys.mode().as_str(), "{warning}");
+        }
+        drop(keys);
         // Record the layout before storage recovery changes any telemetry
         // file, and before a new directory gets its first one.
         crate::datadir::record(dir, &layout).context("writing the data directory manifest")?;
@@ -243,11 +260,7 @@ impl App {
             },
             c.server.max_connections,
             human_bytes(c.transport_limits().estimated_peak()),
-            if self.state.api_keys.ingest_protected() {
-                "login for the UI/API, API keys for ingestion"
-            } else {
-                "login for the UI/API; ingestion open until an ingest API key is created"
-            },
+            authentication(&self.state.api_keys.snapshot()),
         );
         if let Some(pw) = &self.generated_password {
             out.push_str(&format!(
