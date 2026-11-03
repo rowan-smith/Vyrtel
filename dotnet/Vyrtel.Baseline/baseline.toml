@@ -1,4 +1,4 @@
-# Pinned server configuration for performance baselines (docs/benchmarks.md#reproducible-baselines).
+# Pinned server configuration for performance baselines (dotnet/Vyrtel.Baseline/README.md).
 #
 # Every key that affects throughput, latency or memory is written out, even when it equals
 # the default, so a change to Vyrtel's defaults cannot silently move a baseline. The baseline
@@ -24,7 +24,7 @@ segment_max_age = "5m"
 durability = "normal"
 fsync_interval = "1s"
 # Off so background merges cannot start partway through a measurement and make repeated
-# runs disagree. Production defaults to true; see the limitations in docs/benchmarks.md.
+# runs disagree. Production defaults to true; see the limitations in dotnet/Vyrtel.Baseline/README.md.
 compaction = false
 
 [retention]

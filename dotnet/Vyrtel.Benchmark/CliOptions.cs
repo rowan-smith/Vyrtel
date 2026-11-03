@@ -52,7 +52,7 @@ internal sealed record CliOptions
     private static string DefaultOutput()
     {
         var root = VyrtelServer.FindRepositoryRoot() ?? Directory.GetCurrentDirectory();
-        return Path.Combine(root, "docs", "benchmarks", "results.json");
+        return Path.Combine(root, "target", "benchmark", "results.json");
     }
 
     public static void PrintHelp()
@@ -70,7 +70,7 @@ internal sealed record CliOptions
               --events <n>       Log events to seed before benchmarking (default 200000, 0 = skip)
               --batch <n>        Events per seeded/batched request (default 500)
               --job <name>       BenchmarkDotNet job: dry, short, medium, default (default short)
-              --out <path>       Where to write results.json (default docs/benchmarks/results.json)
+              --out <path>       Where to write results.json (default target/benchmark/results.json)
               --label <name>     Version label for a version snapshot (default: server version)
               --ingest-key <key> API key for ingestion, for a running server that has
                                  ingest-scoped API keys (or VYRTEL_HARNESS_INGEST_KEY)

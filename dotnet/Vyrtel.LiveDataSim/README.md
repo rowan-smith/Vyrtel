@@ -18,7 +18,7 @@ under, so each exported trace shows the full request path.
 
 ## Run
 
-Start Vyrtel first (authentication is off by default):
+Start Vyrtel first (ingestion is open until the first ingest key is created):
 
 ```bash
 cargo run -p server

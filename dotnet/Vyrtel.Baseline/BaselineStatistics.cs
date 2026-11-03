@@ -22,7 +22,7 @@ public sealed record MetricSample(
 /// alarms from noise rare. Fewer than <see cref="MinRunsForBudget"/> runs, a zero mean, a
 /// percentile with fewer than <see cref="TailSamples"/> samples beyond it in some run, or a
 /// budget over <see cref="MaxBudgetPercent"/> leave the metric ungated, with the reason recorded.
-/// The floors come from same-commit comparisons on the reference laptop (docs/benchmarks.md).
+/// The floors come from same-commit comparisons on the reference laptop (dotnet/Vyrtel.Baseline/README.md).
 /// </summary>
 public static class BaselineStatistics
 {

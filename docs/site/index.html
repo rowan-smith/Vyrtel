@@ -16,12 +16,12 @@
         <p class="eyebrow"><span class="pulse-dot" aria-hidden="true"></span> Vyrtel {{VERSION}} · open source · MIT</p>
         <h1>View. Trace.<br>Understand.</h1>
         <p class="lead">
-          Developer-friendly observability: launch one ~11&nbsp;MB binary, send it logs, traces and
-          metrics, and start asking questions. Small, fast, light, and everything included.
+          Self-hosted logs, traces and metrics in one small binary. No database, no queue,
+          no cluster. Start it, point OpenTelemetry at it, and search.
         </p>
         <div class="hero-actions">
-          <a class="button button-dark" href="#download" data-os-cta>Download</a>
-          <a class="button button-ghost" href="docs/overview.html">Read the docs</a>
+          <a class="button button-dark" href="docs/quickstart.html">Get started</a>
+          <a class="button button-ghost" href="#download" data-os-cta>Download</a>
         </div>
         <div class="command" data-copy-wrap>
           <code><span class="prompt">$</span> docker run -p 8080:8080 -v vyrtel-data:/data {{IMAGE}}</code>
@@ -56,87 +56,67 @@
     </div>
   </section>
 
-  <!-- ===================== Numbers ===================== -->
-  <section class="numbers" aria-label="Measured numbers">
+  <!-- ===================== Facts ===================== -->
+  <section class="numbers" aria-label="At a glance">
     <div class="wrap numbers-grid">
-      <div class="number reveal"><strong>11 MB</strong><span>one binary, web UI included</span></div>
-      <div class="number reveal"><strong>~20 MB</strong><span>memory when idle</span></div>
-      <div class="number reveal"><strong>10k/s</strong><span>events ingested on a laptop</span></div>
+      <div class="number reveal"><strong>1 binary</strong><span>web UI included</span></div>
+      <div class="number reveal"><strong>1 directory</strong><span>all data, crash-safe</span></div>
       <div class="number reveal"><strong>0</strong><span>external services to run</span></div>
+      <div class="number reveal"><strong>OTLP</strong><span>logs, traces and metrics</span></div>
     </div>
   </section>
 
-  <!-- ===================== Selling points ===================== -->
-  <section class="section" id="features">
+  <!-- ===================== Features ===================== -->
+  <section class="section section-tint" id="features">
     <div class="wrap">
       <div class="section-head reveal">
-        <p class="eyebrow">Why Vyrtel</p>
-        <h2>Everything you need. Nothing you have to run.</h2>
-        <p class="lead">A complete observability stack that starts in a second and fits on the smallest server you have.</p>
+        <p class="eyebrow">Features</p>
+        <h2>The whole stack in one process.</h2>
+        <p class="lead">Logs, traces and metrics share one store, one UI and one query language.</p>
       </div>
-      <div class="pillars">
-        <article class="pillar reveal">
-          <span class="pillar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-5-6-5"/><path d="M12 19h8"/></svg></span>
-          <h3>Developer friendly</h3>
-          <p>Launch and send. Run <code>./vyrtel</code>, POST JSON or point OpenTelemetry at it, and search what arrives. No schema, no setup wizard, no agents to configure.</p>
+      <div class="cards">
+        <article class="card card-featured reveal">
+          <span class="card-eyebrow">Logs</span>
+          <h3>Structured search that stays fast</h3>
+          <p>Query any field, nested paths included. Live tail, a filter panel built from your data, and exceptions with stack traces.</p>
+          <p><a class="text-link" href="docs/http-ingestion.html">Send logs &rarr;</a></p>
         </article>
-        <article class="pillar reveal">
-          <span class="pillar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg></span>
-          <h3>Small</h3>
-          <p>One ~11&nbsp;MB binary with the web UI built in, and one data directory. Copy it anywhere, or run the Docker image.</p>
+        <article class="card reveal">
+          <span class="card-eyebrow">OpenTelemetry</span>
+          <h3>Standard in</h3>
+          <p>Any SDK or Collector over OTLP/HTTP, protobuf or JSON.</p>
+          <p><a class="text-link" href="docs/opentelemetry.html">Connect &rarr;</a></p>
         </article>
-        <article class="pillar reveal">
-          <span class="pillar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/></svg></span>
-          <h3>Fast</h3>
-          <p>10,000 events per second on a laptop. Indexes, Bloom filters and time ranges let queries skip most of the data before reading it.</p>
+        <article class="card reveal">
+          <span class="card-eyebrow">Traces</span>
+          <h3>Waterfall and related logs</h3>
+          <p>See which span was slow or failed, and jump between logs and traces.</p>
         </article>
-        <article class="pillar reveal">
-          <span class="pillar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.2 12.2a6 6 0 0 0-8.5-8.5L5 10.5V19h8.5l6.7-6.8z"/><path d="M16 8L2 22"/><path d="M17.5 15H9"/></svg></span>
-          <h3>Light</h3>
-          <p>About 20&nbsp;MB of memory when idle, with a memory limit you set. Compressed segments keep the disk footprint small.</p>
+        <article class="card reveal">
+          <span class="card-eyebrow">Metrics</span>
+          <h3>Counters, gauges, histograms</h3>
+          <p>Aggregate and group by any attribute over any time range.</p>
         </article>
-        <article class="pillar pillar-wide reveal">
-          <span class="pillar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l10 5-10 5L2 7l10-5z"/><path d="M2 12l10 5 10-5"/><path d="M2 17l10 5 10-5"/></svg></span>
-          <h3>Full featured</h3>
-          <p>The whole stack in the box, sharing one query language.</p>
-          <div class="pillar-tags"><span>Logs</span><span>Live tail</span><span>Traces</span><span>Metrics</span><span>Dashboards</span><span>Alerts + webhooks</span><span>OpenTelemetry</span><span>API keys</span><span>Query diagnostics</span></div>
+        <article class="card reveal">
+          <span class="card-eyebrow">Dashboards</span>
+          <h3>Panels on a grid</h3>
+          <p>Log counts, metric lines, single stats and saved queries side by side.</p>
         </article>
-        <article class="pillar pillar-wide pillar-roadmap reveal">
-          <span class="pillar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5v4M12 11.5l-5.2 5.4M12 11.5l5.2 5.4"/></svg></span>
-          <h3>Scalable &amp; distributed <span class="roadmap-badge">Roadmap</span></h3>
-          <p>Today Vyrtel is a single node that scales with its machine. Planned for 0.3: separate Ingest nodes forwarding to one Core owner, followed by operational hardening. Standalone query roles, storage sharding and replication remain discovery work.</p>
-          <p class="pillar-link"><a class="text-link" href="docs/roadmap.html">See the roadmap →</a></p>
+        <article class="card reveal">
+          <span class="card-eyebrow">Alerts</span>
+          <h3>Thresholds with webhooks</h3>
+          <p>Get notified when log counts cross a threshold, with state history.</p>
         </article>
-      </div>
-    </div>
-  </section>
-
-  <!-- ===================== View / Trace / Understand ===================== -->
-  <section class="section section-tint" id="how-it-works">
-    <div class="wrap">
-      <div class="section-head reveal">
-        <p class="eyebrow">How it works</p>
-        <h2>From a symptom to the cause, in one place.</h2>
-        <p class="lead">Logs, traces and metrics live in the same process and the same query language, so the path from &ldquo;something is wrong&rdquo; to &ldquo;this is why&rdquo; is a few clicks, not a few tools.</p>
-      </div>
-      <div class="steps">
-        <article class="step reveal">
-          <span class="step-num">01</span>
-          <h3>View.</h3>
-          <p>Search structured events with a small query language, watch them arrive with live tail, and open any event vertically: properties, exception, stack trace.</p>
-          <code class="mono">level = "Error" and service = "payments"</code>
+        <article class="card reveal">
+          <span class="card-eyebrow">Storage</span>
+          <h3>Crash-safe by design</h3>
+          <p>A write-ahead log, compressed segments, and indexes that let queries skip most of the data.</p>
         </article>
-        <article class="step reveal">
-          <span class="step-num">02</span>
-          <h3>Trace.</h3>
-          <p>Jump from a log line to its trace. The waterfall shows which span was slow or failed, with every related log right underneath.</p>
-          <code class="mono">traceId = "4bf92f3577b34da6…"</code>
-        </article>
-        <article class="step reveal">
-          <span class="step-num">03</span>
-          <h3>Understand.</h3>
-          <p>Put metrics and log counts on a dashboard, alert when a threshold is crossed, and see exactly how each query used the indexes.</p>
-          <code class="mono">count &gt; 100 in 5 min → webhook</code>
+        <article class="card reveal">
+          <span class="card-eyebrow">Operations</span>
+          <h3>Simple to run</h3>
+          <p>Per-signal retention, API keys, health checks and a non-root image.</p>
+          <p><a class="text-link" href="docs/docker.html">Deploy &rarr;</a></p>
         </article>
       </div>
     </div>
@@ -175,65 +155,13 @@
     </div>
   </section>
 
-  <!-- ===================== Features ===================== -->
-  <section class="section section-tint">
-    <div class="wrap">
-      <div class="section-head reveal">
-        <p class="eyebrow">Everything in the box</p>
-        <h2>One binary. The whole stack.</h2>
-      </div>
-      <div class="cards">
-        <article class="card card-featured reveal">
-          <span class="card-eyebrow">Logs</span>
-          <h3>The hero feature</h3>
-          <p>JSON / NDJSON ingestion (Serilog CLEF compatible), a readable query language, live tail with pause, a filter panel built from detected fields and a compact level histogram.</p>
-        </article>
-        <article class="card reveal">
-          <span class="card-eyebrow">OpenTelemetry</span>
-          <h3>OTLP/HTTP in</h3>
-          <p>Point any OpenTelemetry SDK or Collector at it. Logs, traces and metrics, protobuf or JSON, gzip.</p>
-        </article>
-        <article class="card reveal">
-          <span class="card-eyebrow">Traces</span>
-          <h3>Waterfall + related logs</h3>
-          <p>Search traces by status, duration or service; inspect spans; navigate logs ↔ traces both ways.</p>
-        </article>
-        <article class="card reveal">
-          <span class="card-eyebrow">Metrics</span>
-          <h3>Counters, gauges, histograms</h3>
-          <p>Sum, count, min, max, avg and last with group-by, plotted over any time range.</p>
-        </article>
-        <article class="card reveal">
-          <span class="card-eyebrow">Dashboards</span>
-          <h3>Panels on a grid</h3>
-          <p>Log counts, metric lines, single stats and saved queries side by side.</p>
-        </article>
-        <article class="card reveal">
-          <span class="card-eyebrow">Alerts</span>
-          <h3>Thresholds that page you</h3>
-          <p>Log-count alerts with OK / FIRING / ERROR state, history and webhook delivery.</p>
-        </article>
-        <article class="card reveal">
-          <span class="card-eyebrow">Storage</span>
-          <h3>Crash-safe by design</h3>
-          <p>Append-only WAL with checksums, immutable zstd segments, bitmap indexes, Bloom filters and zone maps. Bounded memory, automatic recovery.</p>
-        </article>
-        <article class="card reveal">
-          <span class="card-eyebrow">Operations</span>
-          <h3>Boring in production</h3>
-          <p>Per-signal retention, compaction, strict or normal durability, API keys, admin login, health endpoints and a non-root Docker image.</p>
-        </article>
-      </div>
-    </div>
-  </section>
-
   <!-- ===================== Query language ===================== -->
   <section class="section">
     <div class="wrap split">
       <div class="reveal">
         <p class="eyebrow">Query language</p>
         <h2>Ask production a question.</h2>
-        <p class="lead">Small enough to learn in a minute, precise enough for incidents. Fields come from your events, nested paths included, and every query reports what it scanned and which indexes it skipped with.</p>
+        <p class="lead">Small enough to learn in a minute, precise enough for an incident. Every query shows what it scanned and which indexes it used.</p>
         <p><a class="text-link" href="docs/query-language.html">Query language reference →</a></p>
       </div>
       <div class="code-panel reveal" aria-label="Example queries">
@@ -253,7 +181,7 @@
 <span class="c"># free text</span>
 <span class="s">"timed out"</span></code></pre>
         <div class="diag mono">
-          <span class="diag-ok">✓</span> 21 results · 274 µs · 3/4 segments skipped by index · 0 B read
+          <span class="diag-ok">✓</span> 21 results · 3 of 4 segments skipped by index
         </div>
       </div>
     </div>
@@ -282,14 +210,15 @@
 <span class="t-ok">{"accepted":1}</span></pre>
       </div>
       <div class="reveal">
-        <p class="eyebrow eyebrow-mint">Quiet when healthy</p>
+        <p class="eyebrow eyebrow-mint">Get started</p>
         <h2>Running in one command.</h2>
-        <p class="lead">No setup wizard, no connection strings, no cluster to plan. Start the binary, open the URL it prints, and send events over HTTP or OTLP.</p>
+        <p class="lead">Start the binary, open the URL it prints, and send events over OTLP or plain HTTP.</p>
         <ul class="checks">
           <li>Point OpenTelemetry at <code>OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:8080</code></li>
           <li>Or POST JSON / NDJSON to <code>/api/v1/events</code></li>
           <li>Everything persistent lives in one directory</li>
         </ul>
+        <p><a class="text-link" href="docs/quickstart.html">Read the quickstart &rarr;</a></p>
       </div>
     </div>
   </section>
@@ -299,7 +228,7 @@
     <div class="wrap">
       <div class="section-head reveal">
         <p class="eyebrow">Why Vyrtel</p>
-        <h2>Observability shouldn't need more resources than what it observes.</h2>
+        <h2>Observability shouldn't need more resources than the software it observes.</h2>
       </div>
       <div class="compare reveal">
         <div class="compare-col">
@@ -319,7 +248,7 @@
           <div class="one-box">
             <span>HTTP API · OTLP ingestion · query engine · storage · metadata · web UI · background jobs</span>
           </div>
-          <p class="muted">One process, one data directory, idle at ~20 MB.</p>
+          <p class="muted">One process and one data directory.</p>
         </div>
       </div>
     </div>
@@ -368,14 +297,6 @@
           </div>
           <p class="muted small">Verify downloads against <a href="{{REPO_URL}}/releases/latest/download/SHA256SUMS">SHA256SUMS</a>.</p>
         </div>
-        <div class="install">
-          <h3>From source</h3>
-          <div class="command command-dark" data-copy-wrap>
-            <code>cargo run --release -p server</code>
-            <button class="copy" type="button" data-copy="cargo run --release -p server" aria-label="Copy build command">Copy</button>
-          </div>
-          <p class="muted small">Needs Rust stable and Node 22. <a href="docs/development.html">Build guide</a>.</p>
-        </div>
       </div>
     </div>
   </section>
@@ -385,15 +306,15 @@
     <div class="wrap">
       <div class="section-head reveal">
         <p class="eyebrow">Documentation</p>
-        <h2>Everything is written down.</h2>
+        <h2>Start here.</h2>
       </div>
       <div class="doc-links">
-        <a class="doc-link reveal" href="docs/overview.html"><strong>Quick start</strong><span>Install, send your first event, run a query.</span></a>
-        <a class="doc-link reveal" href="docs/query-language.html"><strong>Query language</strong><span>Operators, types, coercion and examples.</span></a>
-        <a class="doc-link reveal" href="docs/api.html"><strong>HTTP API</strong><span>Ingestion, querying, live tail and admin endpoints.</span></a>
-        <a class="doc-link reveal" href="docs/configuration.html"><strong>Configuration</strong><span>TOML, environment variables, Docker and durability.</span></a>
-        <a class="doc-link reveal" href="docs/architecture.html"><strong>Architecture</strong><span>How ingestion, storage and queries fit together.</span></a>
-        <a class="doc-link reveal" href="docs/storage-format.html"><strong>Storage format</strong><span>WAL, segments, indexes, commit and recovery.</span></a>
+        <a class="doc-link reveal" href="docs/quickstart.html"><strong>Quickstart</strong><span>Run Vyrtel and search your first event.</span></a>
+        <a class="doc-link reveal" href="docs/opentelemetry.html"><strong>OpenTelemetry</strong><span>Connect an SDK or Collector.</span></a>
+        <a class="doc-link reveal" href="docs/query-language.html"><strong>Query language</strong><span>Operators, fields and examples.</span></a>
+        <a class="doc-link reveal" href="docs/docker.html"><strong>Docker</strong><span>Volumes, tags and Compose.</span></a>
+        <a class="doc-link reveal" href="docs/security.html"><strong>Security</strong><span>Logins, API keys and TLS.</span></a>
+        <a class="doc-link reveal" href="docs/configuration.html"><strong>Configuration</strong><span>Every setting, flag and variable.</span></a>
       </div>
     </div>
   </section>

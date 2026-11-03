@@ -204,7 +204,7 @@ the same fixture the tests use; its values are illustrative, not measurements.
 | `metrics`                                                | At least one row per category: `footprint`, `cpu`, `ingestion`, `queries`, `correctness`, `backpressure`, `storage`, `networking`, `ui`, `lifecycle`. A measured row has `name`, `unit`, numeric `value`, `limit.max` and/or `limit.min`, `result`, and either `baseline` + `delta` (= value − baseline) or a `noBaseline` reason for an absolute budget. A category that does not apply has a `{ "category": …, "na": "<reason>" }` row. |
 | `equivalence` (optional)                                 | `method` and `evidence` link, for when the release workflow's rebuilt artifacts are not byte-identical to the profiled ones.                                                                                                                                                                                                                 |
 
-**Producing the measurements.** [Reproducible baselines](benchmarks.md#reproducible-baselines)
+**Producing the measurements.** [Reproducible baselines](../dotnet/Vyrtel.Baseline/README.md)
 give the `ingestion`, `queries`, `backpressure`, `footprint` and `storage` rows on one host:
 
 1. Before measuring the candidate, check out the prior release's commit and record its baseline
@@ -223,10 +223,8 @@ give the `ingestion`, `queries`, `backpressure`, `footprint` and `storage` rows 
 For 0.1.2, the `networking` and `lifecycle` rows also cover the connection limits
 ([REL-18](https://github.com/rowan-smith/Vyrtel/issues/184)). Rerun the transport soak against
 the candidate on the sign-off host ([transport soak on Linux](testing.md#transport-soak-on-linux)),
-using [`docs/benchmarks/transport/budgets.md`](benchmarks/transport/budgets.md) as the limits,
-and link its run directories from `reports`. The developer-host runs in
-[`docs/benchmarks/transport/2026-10-17-wsl2`](benchmarks/transport/2026-10-17-wsl2/README.md)
-show the procedure and expected magnitudes; they are not sign-off evidence.
+using [`scripts/bench/transport-budgets.md`](../scripts/bench/transport-budgets.md) as the limits,
+and link its run directories from `reports`.
 
 The check recomputes every row. A value outside its limit fails even when it is marked `pass`,
 any `fail` row fails the gate, and a delta that does not match its baseline is rejected. Limits

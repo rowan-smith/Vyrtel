@@ -177,7 +177,7 @@ public static class BaselineReportWriter
 
         Line("## Run-to-run variance and proposed regression budgets");
         Line();
-        Line(string.Create(Inv, $"budget = max(floor, 3 × CV × k(n) rounded up), where k(n) turns the CV of n runs into a {BaselineStatistics.Confidence:P0} upper confidence bound; floor {BaselineStatistics.TimingFloorPercent:0}% for timings and memory, {BaselineStatistics.SizeFloorPercent:0}% for sizes; not gated with fewer than {BaselineStatistics.MinRunsForBudget} runs or a budget over {BaselineStatistics.MaxBudgetPercent:0}%. See docs/benchmarks.md#regression-budgets."));
+        Line(string.Create(Inv, $"budget = max(floor, 3 × CV × k(n) rounded up), where k(n) turns the CV of n runs into a {BaselineStatistics.Confidence:P0} upper confidence bound; floor {BaselineStatistics.TimingFloorPercent:0}% for timings and memory, {BaselineStatistics.SizeFloorPercent:0}% for sizes; not gated with fewer than {BaselineStatistics.MinRunsForBudget} runs or a budget over {BaselineStatistics.MaxBudgetPercent:0}%. See dotnet/Vyrtel.Baseline/README.md#regression-budgets."));
         Line();
         Line("| Metric | Better | Runs | Mean | Std dev | CV | Min | Max | Budget | Justification |");
         Line("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |");

@@ -17,7 +17,7 @@ public sealed record ServerFacts(string Version, JsonElement? EffectiveConfig, I
 /// <item>run the concurrent ingest + query mix and record per-operation outcomes and percentiles.</item>
 /// </list>
 /// The operating system's page cache is not dropped, so "cold" means a cold server process on
-/// a warm OS; see docs/benchmarks.md.
+/// a warm OS; see dotnet/Vyrtel.Baseline/README.md.
 /// </summary>
 public sealed class BaselineRunner(BaselineOptions options, string configPath)
 {

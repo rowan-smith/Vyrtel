@@ -57,7 +57,7 @@ search, basic tracing and metrics **without operating infrastructure**:
 * one process (HTTP API, OTLP ingestion, query engine, storage, metadata,
   web UI, background jobs);
 * one data directory (`./data`), crash-safe, with bounded memory;
-* idle at ~20 MB of RAM; 10,000 events/s on a laptop with ~110 MB.
+* bounded memory you set (`--memory-limit`, 512 MB by default).
 
 ## Features
 
@@ -169,55 +169,18 @@ level >= Warning and (service = "orders" or service = "payments")
 
 See [docs/query-language.md](docs/query-language.md).
 
-## Development
-
-```bash
-cargo run -p server -- --data-dir ./data-dev     # API on :8080
-cd web && npm ci && npm run dev                   # UI with hot reload on :5173
-```
-
-Details: [docs/development.md](docs/development.md).
-
-## Testing
-
-```bash
-cargo test --workspace                 # unit, property, recovery, correctness, integration
-cd web && npm test                     # Vitest + React Testing Library
-cd web && npm run build && cd .. && cargo build -p server && cd web && npx playwright install chromium && npm run e2e
-cargo bench -p storage -p query        # Criterion benchmarks
-dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short   # ingest + query over HTTP
-dotnet run --project dotnet/Vyrtel.Baseline -c Release -- --runs 5   # reproducible baseline + regression budgets
-```
-
-Details: [docs/testing.md](docs/testing.md).
-
-## Measured numbers
-
-Release build on a Windows 11 laptop (numbers vary with hardware and data
-shape; see [docs/testing.md](docs/testing.md) for method):
-
-| | |
-|---|---|
-| Binary size (with embedded UI) | 11.2 MB |
-| Idle memory | ~20 MB working set (4.7 MB private) |
-| Sustained ingest via `loadgen --rate 10000` | 10,063 events/s, 0 rejected, 5.3 ms mean request latency |
-| Memory while ingesting 300k events | ~112 MB working set |
-| Compression on loadgen data | 4.9× (raw encoded ÷ segment data + indexes) |
-| Index + metadata overhead | 9.2% of compressed data |
-| External services required | 0 |
-
 ## Documentation
 
-* [Architecture](docs/architecture.md) — process layout, ingestion, storage and query paths
-* [Storage format](docs/storage-format.md) — WAL, segments, indexes, commit & recovery
-* [Query language](docs/query-language.md)
-* [HTTP API](docs/api.md)
-* [Configuration](docs/configuration.md)
-* [Development](docs/development.md)
-* [Testing](docs/testing.md)
-* [Benchmarks](docs/benchmarks.md) — live results, how they are measured, and reproducible baselines
-* [Roadmap](docs/roadmap.md)
-* [Brand guide](docs/brand/README.md) — name, voice, logo, Aurora palette, typography, motion
+The full documentation is on the website: **<https://rowan-smith.github.io/Vyrtel/docs/introduction.html>**
+
+* [Quickstart](docs/guide/quickstart.md) · [Installation](docs/guide/installation.md) · [Docker](docs/guide/docker.md)
+* [OpenTelemetry](docs/guide/opentelemetry.md) · [HTTP and JSON](docs/guide/http-ingestion.md) · [Query language](docs/query-language.md)
+* [Security](docs/guide/security.md) · [Backups and upgrades](docs/guide/backups-and-upgrades.md)
+* Reference: [configuration](docs/configuration.md), [HTTP API](docs/api.md), [architecture](docs/architecture.md), [storage format](docs/storage-format.md)
+* [Benchmarks](docs/benchmarks.md): performance-gate results for the latest release
+
+Working on Vyrtel itself: [development](docs/development.md), [testing](docs/testing.md),
+[releasing](docs/releasing.md).
 
 ## Current limitations
 
@@ -228,21 +191,15 @@ shape; see [docs/testing.md](docs/testing.md) for method):
 * Metrics aggregation works on raw data points (no rate() for cumulative
   counters, no percentiles yet).
 * Alerts: log-count thresholds with a generic webhook only.
-* Authentication is a single admin user plus API keys; it is **off by
-  default** — enable it before exposing Vyrtel, and terminate TLS in a
-  reverse proxy.
+* Authentication is a single admin user plus API keys. Ingestion is open
+  until the first ingest key is created: create one before exposing Vyrtel,
+  and terminate TLS in a reverse proxy ([security](docs/guide/security.md)).
 * Retention is per signal at segment granularity.
 
 ## Roadmap
 
-Current: **0.1.2 — Reliability and release confidence**. Next:
-**0.1.3 — Complete everyday workflows**. Planned 0.2 work covers shared
-search and a friendly query builder, metrics and SDK interoperability,
-retention and alert operations, privacy and user audit trails, dashboard
-authoring, and a SIEM starter. Ingest/Core node foundations follow in 0.3;
-object-storage tiering and replication remain discovery work.
-See [docs/roadmap.md](docs/roadmap.md) for the milestone sequence and links
-to the [planned backlog](https://github.com/users/rowan-smith/projects/2).
+See the [roadmap](docs/roadmap.md) for planned milestones and the
+[backlog](https://github.com/users/rowan-smith/projects/2).
 
 ## Contributing
 

@@ -139,16 +139,10 @@ They build the server themselves unless one is already listening (`--url`/`--no-
 ```bash
 cargo build --release -p server
 
-# BenchmarkDotNet: ingest throughput (NDJSON, JSON array, OTLP traces, OTLP metrics)
-# + query latency; writes docs/benchmarks/results.json
+# BenchmarkDotNet: ingest throughput and query latency; writes target/benchmark/results.{json,md}
 dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short
 
-# Capture a snapshot for a released version (also what the tag CI job does):
-dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short --label v0.1.1 --out docs/benchmarks/versions/v0.1.1.json
-
-# Reproducible baseline: repeated runs with the pinned configuration, cold/warm queries with
-# diagnostics, accepted/rejected counts, peak RSS and variance-derived regression budgets;
-# writes target/baseline/report.{json,md,samples.csv}. --compare checks against an earlier report.
+# Reproducible baseline with regression budgets; writes target/baseline/report.{json,md,samples.csv}
 dotnet run --project dotnet/Vyrtel.Baseline -c Release -- --runs 5 --notes "NVMe SSD, AC power"
 dotnet run --project dotnet/Vyrtel.Baseline -c Release -- compare old.json target/baseline/report.json
 
@@ -156,21 +150,11 @@ dotnet run --project dotnet/Vyrtel.Baseline -c Release -- compare old.json targe
 dotnet test dotnet/Vyrtel.slnx -c Release
 ```
 
-Use the benchmark to see trends; use the baseline (which includes the mixed-load percentile profile) to decide whether a
-change regressed, because it pins the server configuration, repeats the workload and states how
-noisy the machine is. See [Reproducible baselines](benchmarks.md#reproducible-baselines).
-
-Both reports record what was built and how big it is on disk: the release binary size, the
-seeded dataset's data-directory footprint, and the server's own storage counters (bytes stored
-per event, compression ratio, index overhead) read from `GET /api/v1/system/storage` before the
-load starts. The site charts those across `v*` snapshots, so regressions in binary or dataset
-size show up next to the latency numbers.
-
-`.github/workflows/benchmark.yml` runs the benchmark on every `main` change (and on each `v*`
-tag, writing a `versions/<tag>.json` snapshot) and commits the rollup to the
-`benchmark-results` branch, which the site build overlays onto `docs/benchmarks/` to render the
-[benchmarks page](benchmarks.md), including the version-history comparison.
-The same workflow's `baseline` job uploads a 3-run baseline as a workflow artifact.
+Use the benchmark for a quick look while working; use the baseline to decide whether a change
+regressed, because it pins the server configuration, repeats the workload and states how noisy
+the machine is ([`dotnet/Vyrtel.Baseline/README.md`](../dotnet/Vyrtel.Baseline/README.md)).
+Published numbers come only from the performance gates of a release
+([releasing](releasing.md#pre-tag-performance-sign-off)).
 `dotnet/Vyrtel.LiveDataSim` is a sample ASP.NET Core producer (not part of the build).
 
 ## Release builds
@@ -211,4 +195,4 @@ npm run brand      # regenerate the outlined wordmark SVGs and web/src/lib/wordm
 Write docs as ordinary Markdown with relative links (`configuration.md#docker-and-bind-mounts`,
 `../web/src/App.tsx`): the build turns links between docs into site links and links to other repo
 files into GitHub links. Add a new page to the `DOCS` list in `docs/build.mjs` to put it in the
-sidebar.
+sidebar. Task-oriented guides live in `docs/guide/`; the other files in `docs/` are reference.
