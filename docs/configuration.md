@@ -37,7 +37,6 @@ traces = "14d"
 metrics = "30d"
 
 [ingest]
-auth_mode = "automatic"          # or "required" / "open"; see Ingestion authentication
 max_request_size = "1MB"
 queue_capacity = 10000
 
@@ -93,7 +92,6 @@ by up to one segment's time span.
 
 | Key                | Default | Env                                | Description                                                                                                      |
 |--------------------|---------|------------------------------------|------------------------------------------------------------------------------------------------------------------|
-| `auth_mode`        | `automatic` | `VYRTEL_INGEST_AUTH_MODE`    | Whether ingestion needs an API key: `automatic`, `required` or `open` ([ingestion authentication](#ingestion-authentication)). Read at startup. Any other value stops startup. |
 | `max_request_size` | `1MB`   | `VYRTEL_INGEST_MAX_REQUEST_SIZE` | Maximum ingest body size, both after gzip decoding and on the wire (inclusive). Larger requests get 413; see [request size and encoding](api.md#request-size-and-encoding). Was `16MB` before 0.1.2. |
 | `queue_capacity`   | `10000` | `VYRTEL_INGEST_QUEUE_CAPACITY`   | Events waiting to be written, per signal. When full, requests get 429. Also the most events (OTLP: log records, spans or metric data points) one request may carry: a larger batch gets 413 as soon as the count is known, before it is decoded ([decoding limits](#decoding-limits)). |
 | `ack_timeout`      | `30s`   | –                                  | Give up waiting for a write acknowledgement (503).                                                               |
@@ -106,20 +104,31 @@ Status codes and retry behaviour are in the
 
 The UI and API always need a login or an admin key. Ingestion
 (`/api/v1/events` and OTLP/HTTP `/v1/logs`, `/v1/traces`, `/v1/metrics`)
-follows `ingest.auth_mode` and a **protection latch** kept in the metadata
-database:
+follows the **ingestion mode** and a **protection latch**, both kept in the
+metadata database. The mode is not a configuration setting: an admin sets it
+under Settings → API keys (or `PUT /api/v1/ingest-auth`,
+[API](api.md#ingestion-mode)), so there is one value, with no file or
+environment variable to disagree with it.
 
-| `auth_mode`           | Before the latch is set   | After it is set                    |
+| Mode                  | Before the latch is set   | After it is set                    |
 |-----------------------|---------------------------|------------------------------------|
 | `automatic` (default) | open: anyone can send     | requires a valid API key           |
 | `required`            | requires a valid API key  | requires a valid API key           |
 | `open`                | open: anyone can send     | open: anyone can send              |
 
 * **The latch.** Creating the first ingest-scoped API key sets it, in the
-  same metadata transaction as the key, before the create returns. Admin
+  same metadata transaction as the key, synced to disk before the create
+  returns, so it survives a power failure as well as a crash. Admin
   keys never set it. Nothing clears it: revoking keys (the last ingest key
   included) and restarting all leave it set. `required` writes no latch;
   `open` keeps the one there.
+* **Changing the mode.** Settings → API keys → *Ingestion mode*, as the
+  admin (a login or an admin key). The change is stored and synced to disk
+  first, then applies to every ingest request that starts after it
+  returns, with no restart; it survives restarts and is backed up and
+  restored with the data directory. Choosing `open`, or a change that starts
+  refusing keyless senders, asks for confirmation first. A fresh install is
+  `automatic`.
 * **The last ingest key.** Revoking it in `automatic` or `required` mode
   leaves ingestion protected with no ingest key: requests without a key, or
   with a revoked or unknown one, get `401` until you create a replacement
@@ -127,37 +136,36 @@ database:
   the revoke confirmation says so before the last ingest key goes.
 * **Recovery.** Create a replacement ingest key (Settings → API keys) and
   give it to your senders. To accept data without a key instead, set
-  `ingest.auth_mode = "open"` deliberately and restart; setting it back to
-  `automatic` restores the protection, also across restarts.
+  the mode to `open` deliberately; setting it back to `automatic` restores
+  the protection at once, also across restarts.
 * **`open`** accepts every ingest request without checking keys, even when
   ingest keys exist. Only ingestion opens: queries, settings and the rest
   of the API still need a login or an admin key.
-* **Precedence and reloads.** Like every setting: default < config file <
-  `VYRTEL_INGEST_AUTH_MODE` (there is no flag). It is read once, at
-  startup; change it by restarting. An invalid value stops startup with a
-  configuration error.
 * **Status.** `GET /api/v1/system/info` and `GET /api/v1/api-keys` report
-  `ingestAuth` (configured `mode`, `effective` `protected`/`open`,
-  `latched`, `ingestKeys` and `protectedWithoutKeys`) and
-  `ingestKeyRequired`; Settings → System and API keys show the same. The
+  `ingestAuth` (`mode`, `effective` `protected`/`open`,
+  `latched`, `ingestKeys` and `protectedWithoutKeys`); Settings → System
+  and API keys show the same. The
   startup banner says how ingestion is authenticated.
 * **Warnings.** Startup logs a warning when ingestion is open (in
   `automatic` before any ingest key, or with `open`), and when it is
-  protected with no ingest key. Creating the first ingest key and revoking
-  the last one are each logged once; no request is logged for it.
-* **Unreadable state fails closed.** A latch value this build does not
-  write stops startup (`loading API keys: … ingestion protection setting
+  protected with no ingest key. Creating the first ingest key, revoking
+  the last one and each mode change (with who made it) are logged once; no
+  request is logged for it.
+* **Unreadable state fails closed.** A mode value this build does
+  not write stops startup (`… ingestion mode setting (ingest_auth_mode) …`:
+  set it to `automatic`, `required` or `open`, or restore a backup), as does
+  a latch value (`loading API keys: … ingestion protection setting
   (ingest_protection) …`): restore the metadata database from a backup, or
   set the value to `latched` (`UPDATE settings SET value = 'latched' WHERE
-  key = 'ingest_protection'`) to keep ingestion protected. A database that
-  has held an ingest key but has no latch (one written before the latch
-  existed) is latched on startup, so its keys never become anonymously
-  writable.
+  key = 'ingest_protection'`) to keep ingestion protected. A missing latch
+  in a database that has held an ingest key is refused the same way (every
+  key is stored with its latch, so the row was removed); nothing is
+  repaired or guessed at startup.
 
 This replaces the earlier rule that revoking the last ingest key reopened
 ingestion. It is a deliberate pre-1.0 break: removing credentials must
 never open writes to anyone. An operator who wants open ingestion says so
-with `ingest.auth_mode = "open"`.
+by choosing the `open` mode.
 
 #### Ingest memory
 
@@ -405,9 +413,8 @@ since the process started.
 
 > **Security note.** The UI and API always need a login, but until an
 > ingest-scoped API key exists anyone who can reach the port can write
-> data. Create one (Settings → API keys), or set
-> `ingest.auth_mode = "required"`, before exposing Vyrtel beyond a trusted
-> network: ingestion then requires a valid key for good, even after every
+> data. Create one (Settings → API keys), or set the ingestion mode to
+> `required` there, before exposing Vyrtel beyond a trusted network: ingestion then requires a valid key for good, even after every
 > ingest key is revoked ([ingestion authentication](#ingestion-authentication)).
 > Put Vyrtel behind TLS (a reverse proxy) — it serves plain HTTP itself.
 
@@ -418,15 +425,16 @@ since the process started.
   A configuration that still sets `auth.enabled` (or `VYRTEL_AUTH_ENABLED`)
   is refused at startup with what to do instead, so an upgrade never
   silently changes what it meant.
-* Ingestion follows `ingest.auth_mode` (default `automatic`): open on a
+* Ingestion follows the ingestion mode, set under Settings → API keys
+  (default `automatic`): open on a
   fresh install, and requiring a valid key for good once the first
   ingest-scoped key is created. Revoking the last ingest key no longer
-  reopens it; `ingest.auth_mode = "open"` does, deliberately
+  reopens it; choosing the `open` mode does, deliberately
   ([ingestion authentication](#ingestion-authentication)).
   `auth.ingest_api_key` is refused like `auth.enabled`.
 * `GET /api/v1/auth/me` still returns `authEnabled`, now always `true`;
   `GET /api/v1/system/info` and `GET /api/v1/api-keys` add
-  `ingestKeyRequired` and `ingestAuth`.
+  `ingestAuth`.
 
 ### `[alerts]`
 

@@ -57,6 +57,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/v1/saved-queries/{id}", axum::routing::delete(manage::delete_saved_query))
         .route("/api/v1/api-keys", get(manage::list_api_keys).post(manage::create_api_key))
         .route("/api/v1/api-keys/{id}", axum::routing::delete(manage::revoke_api_key))
+        .route("/api/v1/ingest-auth", axum::routing::put(manage::set_ingest_auth))
         .route("/api/v1/alerts", get(alerts::list).post(alerts::create))
         .route("/api/v1/alerts/{id}", get(alerts::get).put(alerts::update).delete(alerts::delete))
         .route("/api/v1/alerts/{id}/evaluate", post(alerts::evaluate))

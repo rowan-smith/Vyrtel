@@ -1360,38 +1360,48 @@ harness included.
 ### Ingestion protection latch (AUTH-250)
 
 [#250](https://github.com/rowan-smith/Vyrtel/issues/250): revoking the
-last ingest key no longer opens ingestion. `ingest.auth_mode`
-(`automatic`, `required`, `open`) and a latch the first ingest key writes
-decide it ([configuration](configuration.md#ingestion-authentication),
+last ingest key no longer opens ingestion. The ingestion mode
+(`automatic`, `required`, `open`; set in Settings, stored in metadata) and a
+latch the first ingest key writes decide it ([configuration](configuration.md#ingestion-authentication),
 [API](api.md#authentication)).
 
 ```bash
-cargo test -p metadata --test store ingest                # the latch: transaction, adoption, corrupt values
+cargo test -p metadata --test store ingest                # the latch: transaction, missing and corrupt values
 cargo test -p server --lib auth::                         # registry: modes, latch, crash points, concurrency
-cargo test -p server --lib config::tests::ingest_auth_modes
 cargo test -p server --test integration auth::            # over HTTP: every endpoint, mode and restart
 cd web && npx vitest run tests/unit/settings-page.test.tsx
 ```
 
 | Acceptance criterion | Tests and evidence |
 |---|---|
-| Config: three modes, default `automatic`, env override, invalid values refused | `config::tests::ingest_auth_modes` (file and `VYRTEL_INGEST_AUTH_MODE`, case and spaces, `vyrtel config` output; `"opened"`, `""`, `true`, `1` and `off` refused), `unknown_setting_variables_are_refused` (28 variables) |
+| Mode: one stored value, set from Settings; default `automatic`; admin only; invalid values refused; in force at once and across restarts | metadata `the_ingest_auth_mode_is_stored_and_read_strictly` (default, every mode, reopening, never touches the latch; five unknown stored values refused with the fix); `auth::tests::mode_changes_are_stored_and_keep_the_latch`, `a_failed_mode_change_changes_nothing` (a refused write publishes nothing and stores nothing); integration `only_admins_set_the_ingest_auth_mode` (anonymous `401`, ingest key `403`, admin session `200`; `"opened"`, `"OPEN"`, `""`, `null`, `1` and unknown fields refused), `an_unreadable_ingest_auth_mode_refuses_to_start`; web `settings-page.test.tsx` (selector, confirmations, cancel, failure) |
 | Latch written with the first ingest key, in one transaction, before success; admin keys never latch | metadata `the_first_ingest_key_latches_protection_for_good` (later keys keep the first latch time), `a_failed_ingest_key_create_latches_nothing` (a duplicate key, an invalid name, and a trigger that refuses the latch insert, which rolls the key back with it); `auth::tests::only_ingest_keys_latch_protection` |
-| Revocation, restart and every key gone never clear it; `open` overrides without erasing; `automatic` restores | `auth::tests::concurrent_key_changes_match_the_store_across_restarts` (revoke every ingest key, then restart), `modes_read_the_same_latch_across_restarts`; integration `ingest_protection_survives_restarts`, `ingest_auth_modes_and_their_transitions` (required → automatic → open → automatic, restarting between each) |
-| Fresh store opens; corrupt or ambiguous state fails closed; adoption never opens active keys | metadata `ingest_key_history_without_a_latch_is_latched` (active and revoked history, persisted), `an_unrecognised_latch_is_refused` (five values, left unchanged); integration `an_unreadable_ingest_latch_refuses_to_start` (the error names the setting and the fix; following it starts protected) |
+| Revocation, restart and every key gone never clear it; `open` overrides without erasing; `automatic` restores | `auth::tests::concurrent_key_changes_match_the_store_across_restarts` (revoke every ingest key, then restart), `mode_changes_are_stored_and_keep_the_latch`; integration `ingest_protection_survives_restarts`, `ingest_auth_modes_and_their_transitions` (required → automatic → open → automatic through `PUT /api/v1/ingest-auth`, each in force at once, with restarts between) |
+| Fresh store opens; corrupt or ambiguous state fails closed | metadata `ingest_key_history_without_a_latch_is_refused` (active and revoked history: refused, nothing written), `an_unrecognised_latch_is_refused` (five values, left unchanged); integration `an_unreadable_ingest_latch_refuses_to_start` (the error names the setting and the fix; following it starts protected) |
 | Table-driven admission: modes × latch × keys × credentials | `auth::tests::ingest_admission_by_mode_latch_and_credential` (9 states × none/ingest/admin/revoked/invalid, and the reported status) |
+| Power-loss durability of an acknowledged latch (review finding) | metadata `tests::commits_are_synced_before_they_return` (new and reopened databases use WAL with `synchronous = FULL`, so SQLite syncs the WAL before a commit returns; with the previous `NORMAL` a power cut could roll back the first key and its latch). A power cut cannot be simulated in a test; the guarantee is SQLite's for that setting |
 | Crash and fault points around commit, publication and response | `auth::tests::a_committed_latch_survives_every_crash_point` (latch insert refused → no key, no latch; write stalled → old set served, nothing on disk; committed → protected in memory before the response and on disk; committed but never published → a restart is protected), `failed_key_writes_publish_nothing`, `cancelled_key_changes_finish_or_never_start`; integration `stalled_key_writes_do_not_hold_up_ingestion` (a create that cannot commit latches nothing, also after a restart) |
 | Concurrency: no anonymous window after the first create returns | `auth::tests::concurrent_first_keys_latch_once_and_for_good` (16 concurrent create/revoke of both scopes), `no_admission_with_a_key_after_its_revoke_returns` (3 checkers: once a set is protected no later one is open; 50 create/revoke rounds); integration `ingest_protection_changes_are_immediate_under_concurrent_requests` (8 producers through the first create and 20 rounds of key replacement, then 16 concurrent creates and revokes) |
 | API: every ingest transport, zero-key rejection, explicit open exposes nothing else | integration `ingest_protection_latches_with_the_first_ingest_key` (`/api/v1/events` and OTLP `/v1/logs`, `/v1/traces`, `/v1/metrics`; anonymous, invalid, revoked and replacement keys; query and key APIs stay `401`), `ingest_auth_modes_and_their_transitions` (`open` leaves `query`, `api-keys` and `system/info` at `401`), `ingestion_without_keys_leaves_the_rest_of_the_api_closed` |
 | Status, startup warnings, banner | `ingestAuth` asserted equal in `system/info` and `api-keys` by every integration test above; `auth::tests::startup_warnings_name_open_and_keyless_protection`; integration `banner_shows_the_ingestion_policy` |
-| UI: state, last-key confirmation, cancel and failure | `web/tests/unit/settings-page.test.tsx` (create → protected → last revoke warns and shows the zero-key notice, never "open"; a cancelled confirmation revokes nothing; a failed revoke shows the error and keeps the key; every state's wording) |
+| UI: state, mode control, last-key confirmation, cancel and failure | `web/tests/unit/settings-page.test.tsx` (create → protected → last revoke warns and shows the zero-key notice, never "open"; a cancelled confirmation revokes nothing; a failed revoke shows the error and keeps the key; the mode selector confirms before opening, sends nothing when cancelled, applies the response, and keeps the mode on failure; every state's wording and prompt) |
 
 **Request path.** Admission still reads only the published `KeySet`: the
 mode and latch are two more fields in it, compared once per request. No
 SQLite read, lock or allocation was added to `require_ingest`; the latch
-is written only inside the existing create transaction (and once at
-startup, for adoption), on the blocking pool, under the existing change
-turn. Memory per key set grows by one `bool` and one enum.
+is written only inside the existing create transaction, and the mode
+only by its own change, both on the blocking pool under the existing
+change turn. Memory per key set grows by one `bool` and one enum.
+
+**Metadata commit cost of `synchronous = FULL`.** Measured once, on the
+Windows development laptop (NVMe), with a throwaway timing loop through
+`Metadata` (300 create + revoke pairs per run, 2 runs each, per commit):
+`NORMAL` p50 22–26 µs, p99 61–284 µs; `FULL` p50 520–530 µs, p99
+826–870 µs, max 2.9 ms. So about 0.5 ms more per metadata commit. Key
+creates and revokes, last-used batches, logins, alert state and query
+statistics each pay it once per transaction, on the blocking pool; ingest
+and API-key admission never wait for it. One machine and one run pair:
+the PERF-GATE-1 key-churn and session cells are the evidence that counts.
 
 **Performance: not measured for this change.** No benchmark was run, so
 no performance claim is made. The open/protected request overhead and
@@ -1400,7 +1410,8 @@ key-churn cells must be taken on the final candidate as part of
 authenticated workloads now need, beyond the existing ones: fresh
 `automatic` (open), latched `automatic` with zero ingest keys (keyless
 senders refused), `required` on a fresh store, explicit `open` over a
-latch, a restart after the last revoke, and removing the `open` override.
+latch, a restart after the last revoke, and switching from `open` back to
+`automatic` under load.
 Zero keys alone no longer implies open ingestion: a harness that revokes
 its ingest key must keep sending with a key. As a candidate-affecting
 change, this invalidates earlier PERF-GATE-1 and

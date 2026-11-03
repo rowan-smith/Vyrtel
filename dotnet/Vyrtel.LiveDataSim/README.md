@@ -54,5 +54,5 @@ The app listens on http://127.0.0.1:5088 and continuously simulates traffic
 - **Environment** comes from the host environment (`Development`, `Production`, …).
 - **Api** is needed once Vyrtel's ingestion is protected: from its first ingest-scoped
   API key on (it stays protected when keys are revoked), or from the start with
-  `ingest.auth_mode = "required"`. Create one under Settings → API keys. It is sent as
+  the `required` ingestion mode. Create one under Settings → API keys. It is sent as
   `X-Api-Key`.

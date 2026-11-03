@@ -205,9 +205,9 @@ export interface Alert extends AlertInput {
   history?: { from: string; to: string; value: number | null; message: string | null; at: number }[];
 }
 
-/** How ingestion is authenticated (`ingest.auth_mode` and its latch). */
+/** How ingestion is authenticated: the ingestion mode and its latch. */
 export interface IngestAuth {
-  /** The configured `ingest.auth_mode`. */
+  /** The ingestion mode, set under Settings → API keys. */
   mode: 'automatic' | 'required' | 'open';
   effective: 'protected' | 'open';
   /** An ingest-scoped key was created once; revoking keys never clears it. */
@@ -309,8 +309,6 @@ export interface SystemInfo {
   startedAt: string;
   dataDir: string;
   durability: string;
-  /** Whether ingestion needs an API key (`ingestAuth.effective === 'protected'`). */
-  ingestKeyRequired: boolean;
   ingestAuth: IngestAuth;
   eventCounts: { logs: number; traces: number; metrics: number };
   storageBytes: number;

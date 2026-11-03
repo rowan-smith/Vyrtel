@@ -355,11 +355,11 @@ fn a_failed_ingest_key_create_latches_nothing() {
     assert!(!m.ingest_latched().unwrap());
 }
 
-// AUTH-250: a store with ingest-key history but no latch (written before
-// the latch existed, or with the row removed) fails closed: it is latched,
-// durably, on the first read.
+// AUTH-250: a store with ingest-key history but no latch can only have had
+// the row removed (every key is stored with it): refused, never read as
+// open, and nothing is written.
 #[test]
-fn ingest_key_history_without_a_latch_is_latched() {
+fn ingest_key_history_without_a_latch_is_refused() {
     for revoked in [false, true] {
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("metadata.db");
@@ -373,8 +373,10 @@ fn ingest_key_history_without_a_latch_is_latched() {
         c.execute("DELETE FROM settings WHERE key = ?1", [INGEST_PROTECTION]).unwrap();
         drop(c);
         let m = Metadata::open(&path).unwrap();
-        assert!(m.ingest_latched().unwrap(), "revoked={revoked}");
-        assert_eq!(m.get_setting(INGEST_PROTECTION).unwrap().as_deref(), Some(INGEST_LATCHED), "persisted");
+        let e = m.ingest_latched().unwrap_err().to_string();
+        assert!(e.contains("is missing although ingest-scoped keys were created"), "revoked={revoked}: {e}");
+        assert!(e.contains("set the value to 'latched'"), "{e}");
+        assert_eq!(m.get_setting(INGEST_PROTECTION).unwrap(), None, "nothing written");
     }
 }
 
@@ -389,6 +391,36 @@ fn an_unrecognised_latch_is_refused() {
         assert!(e.contains("ingestion protection setting (ingest_protection)"), "{e}");
         assert!(e.contains("Restore the metadata database from a backup, or set the value to 'latched'"), "{e}");
         assert_eq!(m.get_setting(INGEST_PROTECTION).unwrap().as_deref(), Some(value), "unchanged");
+    }
+}
+
+// AUTH-250: the ingestion mode is stored, defaults to automatic, survives
+// reopening, never touches the latch, and an unknown value fails closed.
+#[test]
+fn the_ingest_auth_mode_is_stored_and_read_strictly() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("metadata.db");
+    let m = Metadata::open(&path).unwrap();
+    assert_eq!(m.ingest_auth_mode().unwrap(), IngestAuthMode::Automatic, "fresh: automatic");
+    for mode in [IngestAuthMode::Open, IngestAuthMode::Required, IngestAuthMode::Automatic, IngestAuthMode::Open] {
+        m.set_ingest_auth_mode(mode).unwrap();
+        assert_eq!(m.ingest_auth_mode().unwrap(), mode);
+        assert_eq!(IngestAuthMode::parse(mode.as_str()), Some(mode));
+    }
+    assert!(!m.ingest_latched().unwrap(), "setting a mode latches nothing");
+    m.create_api_key("ci", "vyr_i", "hash-i", "ingest").unwrap();
+    m.set_ingest_auth_mode(IngestAuthMode::Automatic).unwrap();
+    assert!(m.ingest_latched().unwrap(), "and clears nothing");
+    m.set_ingest_auth_mode(IngestAuthMode::Open).unwrap();
+    drop(m);
+    let m = Metadata::open(&path).unwrap();
+    assert_eq!(m.ingest_auth_mode().unwrap(), IngestAuthMode::Open, "survives reopening");
+
+    for value in ["", "OPEN", "opened", " open", "auto"] {
+        m.set_setting(INGEST_AUTH_MODE, value).unwrap();
+        let e = m.ingest_auth_mode().unwrap_err().to_string();
+        assert!(e.contains("ingestion mode setting (ingest_auth_mode)"), "{e}");
+        assert!(e.contains("set the value to 'automatic', 'required' or 'open'"), "{e}");
     }
 }
 

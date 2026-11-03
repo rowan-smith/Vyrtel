@@ -3,14 +3,15 @@ import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
 
 import type { ApiKey, IngestAuth } from '../../src/lib/types';
-import { ingestNotice, ingestSummary, revokePrompt, SettingsPage } from '../../src/pages/SettingsPage';
+import { ingestNotice, ingestSummary, modePrompt, revokePrompt, SettingsPage } from '../../src/pages/SettingsPage';
 import { mockFetch, renderWithRouter } from './helpers';
 
 type Mode = IngestAuth['mode'];
 
 /** What the server reports for `keys` under `mode`, latching like it does. */
-function server(mode: Mode, initial: ApiKey[]) {
+function server(initialMode: Mode, initial: ApiKey[]) {
   let keys = initial;
+  let mode = initialMode;
   let latched = keys.some((k) => k.scope === 'ingest');
   const ingestAuth = (): IngestAuth => {
     const ingestKeys = keys.filter((k) => k.scope === 'ingest').length;
@@ -26,7 +27,6 @@ function server(mode: Mode, initial: ApiKey[]) {
   return {
     list: () => ({
       apiKeys: keys,
-      ingestKeyRequired: ingestAuth().effective === 'protected',
       ingestAuth: ingestAuth(),
     }),
     add: (k: ApiKey) => {
@@ -35,6 +35,10 @@ function server(mode: Mode, initial: ApiKey[]) {
     },
     remove: (id: number) => {
       keys = keys.filter((k) => k.id !== id);
+    },
+    setMode: (m: Mode) => {
+      mode = m;
+      return { ingestAuth: ingestAuth() };
     },
   };
 }
@@ -117,9 +121,9 @@ it('describes every ingestion state', () => {
   expect(ingestSummary(latched)).toBe('API key required');
   expect(ingestSummary(keyless)).toBe('API key required — no ingest key exists');
   expect(ingestSummary(required)).toBe('API key required — no ingest key exists');
-  expect(ingestSummary(open)).toBe('open (ingest.auth_mode = "open")');
+  expect(ingestSummary(open)).toBe('open (mode "open")');
 
-  expect(ingestNotice(open)).toMatch(/back to "automatic" protects it again/);
+  expect(ingestNotice(open)).toMatch(/Switching back to "automatic" protects it again/);
   expect(ingestNotice(a({ mode: 'open' }))).not.toMatch(/protects it again/);
   for (const state of [fresh, latched, keyless, open, required]) {
     expect(ingestNotice(state)).not.toMatch(/opens it again|open again/);
@@ -130,4 +134,66 @@ it('describes every ingestion state', () => {
   expect(revokePrompt(ci, latched)).toBe('Revoke key "ci"?');
   expect(revokePrompt(key(1, 'automation', 'admin'), { ...latched, ingestKeys: 1 })).toBe('Revoke key "automation"?');
   expect(revokePrompt(ci, { ...open, ingestKeys: 1 })).toBe('Revoke key "ci"?');
+});
+
+it('changes the ingestion mode from Settings, confirming before it opens ingestion', async () => {
+  const s = server('automatic', [key(2, 'ci', 'ingest')]);
+  const calls = mockFetch({
+    '/api/v1/api-keys': () => s.list(),
+    '/api/v1/ingest-auth': (body) => s.setMode((body as { mode: Mode }).mode),
+  });
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  renderWithRouter(<SettingsPage />, '/settings?tab=keys');
+  const select = await screen.findByLabelText('Ingestion mode');
+  expect(select).toHaveValue('automatic');
+
+  // Cancelled: nothing is sent.
+  await userEvent.selectOptions(select, 'open');
+  expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Open ingestion\?/));
+  expect(calls.some((c) => c.url.endsWith('/api/v1/ingest-auth'))).toBe(false);
+  expect(select).toHaveValue('automatic');
+
+  confirm.mockReturnValue(true);
+  await userEvent.selectOptions(select, 'open');
+  await waitFor(() =>
+    expect(screen.getByTestId('ingest-protection')).toHaveTextContent(/Ingestion is open \(mode "open"\)/),
+  );
+  expect(calls.find((c) => c.url.endsWith('/api/v1/ingest-auth'))?.body).toEqual({ mode: 'open' });
+  expect(select).toHaveValue('open');
+
+  // Back to automatic: protected again by the latch, after confirming.
+  await userEvent.selectOptions(select, 'automatic');
+  expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Require API keys/));
+  await waitFor(() => expect(screen.getByTestId('ingest-protection')).toHaveTextContent(/requires an API key/));
+});
+
+it('keeps the mode and shows the error when changing it fails', async () => {
+  const s = server('automatic', []);
+  mockFetch({
+    '/api/v1/api-keys': () => s.list(),
+    '/api/v1/ingest-auth': () =>
+      new Response(JSON.stringify({ error: { code: 'unavailable', message: 'too many changes' } }), { status: 503 }),
+  });
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  renderWithRouter(<SettingsPage />, '/settings?tab=keys');
+  const select = await screen.findByLabelText('Ingestion mode');
+  await userEvent.selectOptions(select, 'required');
+  expect(await screen.findByText(/too many changes/)).toBeInTheDocument();
+  expect(select).toHaveValue('automatic');
+  expect(select).not.toBeDisabled();
+});
+
+it('asks before each change that widens or narrows who can send', () => {
+  const base: IngestAuth = {
+    mode: 'automatic',
+    effective: 'open',
+    latched: false,
+    ingestKeys: 0,
+    protectedWithoutKeys: false,
+  };
+  expect(modePrompt('open', base)).toMatch(/Open ingestion/);
+  expect(modePrompt('required', base)).toMatch(/Require API keys/);
+  expect(modePrompt('automatic', { ...base, mode: 'required', effective: 'protected' })).toBeNull();
+  expect(modePrompt('automatic', { ...base, mode: 'open', latched: true })).toMatch(/Require API keys/);
+  expect(modePrompt('automatic', { ...base, mode: 'open' })).toBeNull();
 });

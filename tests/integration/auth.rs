@@ -1,5 +1,5 @@
 //! Missing auth, bad auth, scopes, sessions, and ingestion protection:
-//! `ingest.auth_mode` and the latch the first ingest-scoped key sets.
+//! the ingestion mode (Settings) and the latch the first ingest-scoped key sets.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -273,8 +273,8 @@ async fn revoke_key(s: &TestServer, id: i64) {
 async fn key_required(s: &TestServer) -> bool {
     let info: Value = s.client.get(s.u("/api/v1/system/info")).send().await.unwrap().json().await.unwrap();
     let keys: Value = s.client.get(s.u("/api/v1/api-keys")).send().await.unwrap().json().await.unwrap();
-    assert_eq!(info["ingestKeyRequired"], keys["ingestKeyRequired"]);
-    info["ingestKeyRequired"].as_bool().unwrap()
+    assert_eq!(info["ingestAuth"], keys["ingestAuth"]);
+    info["ingestAuth"]["effective"] == "protected"
 }
 
 /// The ingestion policy, as system info and the key list (the UI's
@@ -283,7 +283,6 @@ async fn ingest_auth(s: &TestServer) -> Value {
     let info: Value = s.client.get(s.u("/api/v1/system/info")).send().await.unwrap().json().await.unwrap();
     let keys: Value = s.client.get(s.u("/api/v1/api-keys")).send().await.unwrap().json().await.unwrap();
     assert_eq!(info["ingestAuth"], keys["ingestAuth"]);
-    assert_eq!(info["ingestAuth"]["effective"] == "protected", info["ingestKeyRequired"].as_bool().unwrap());
     info["ingestAuth"].clone()
 }
 
@@ -390,39 +389,54 @@ async fn ingest_protection_survives_restarts() {
     s.stop().await;
 }
 
-/// AUTH-250: `ingest.auth_mode` on a fresh store and over a latched one,
-/// across restarts: `required` protects before any key, `open` admits
-/// anonymous ingestion (and nothing else) without erasing the latch, and
-/// returning to `automatic` restores the protection.
+/// Set the ingestion mode with `client`; returns the status and body.
+async fn set_mode_with(client: &reqwest::Client, s: &TestServer, mode: Value) -> (u16, Value) {
+    let r = client.put(s.u("/api/v1/ingest-auth")).json(&json!({ "mode": mode })).send().await.unwrap();
+    let status = r.status().as_u16();
+    (status, r.json().await.unwrap_or(Value::Null))
+}
+
+/// Set the ingestion mode as the harness's admin; returns the new state.
+async fn set_mode(s: &TestServer, mode: &str) -> Value {
+    let (status, body) = set_mode_with(&s.client, s, json!(mode)).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["ingestAuth"], ingest_auth(s).await, "the response is the state now in force");
+    body["ingestAuth"].clone()
+}
+
+/// AUTH-250: the ingestion mode, set from Settings (`PUT
+/// /api/v1/ingest-auth`), on a fresh store and over a latched one: in force
+/// at once and across restarts; `required` protects before any key, `open`
+/// admits anonymous ingestion (and nothing else) without erasing the latch,
+/// and returning to `automatic` restores the protection.
 #[tokio::test(flavor = "multi_thread")]
 async fn ingest_auth_modes_and_their_transitions() {
-    use server::config::IngestAuthMode;
-    let s = TestServer::start_with(|c| c.ingest.auth_mode = IngestAuthMode::Required).await;
+    let s = TestServer::start().await;
+    assert_eq!(ingest_auth(&s).await["mode"], "automatic", "a fresh store is automatic");
     assert_eq!(
-        ingest_auth(&s).await,
+        set_mode(&s, "required").await,
         json!({
             "mode": "required", "effective": "protected", "latched": false, "ingestKeys": 0, "protectedWithoutKeys": true,
         })
     );
-    assert_eq!(ingest_everywhere(&s, None).await, [401; 4], "required protects a fresh install");
-    let (mut config, dir) = s.stop().await;
+    assert_eq!(ingest_everywhere(&s, None).await, [401; 4], "required protects a fresh install at once");
+    let (config, dir) = s.stop().await;
 
-    config.ingest.auth_mode = IngestAuthMode::Automatic;
     let s = TestServer::launch(config, dir).await;
+    assert_eq!(ingest_auth(&s).await["mode"], "required", "the mode survives a restart");
+    assert_eq!(ingest(&s, None).await, 401);
+    set_mode(&s, "automatic").await;
     assert!(!key_required(&s).await, "required alone latched nothing");
     let (id, key) = create_key(&s, "producers", "ingest").await;
     revoke_key(&s, id).await;
-    let (mut config, dir) = s.stop().await;
 
-    config.ingest.auth_mode = IngestAuthMode::Open;
-    let s = TestServer::launch(config, dir).await;
     assert_eq!(
-        ingest_auth(&s).await,
+        set_mode(&s, "open").await,
         json!({
             "mode": "open", "effective": "open", "latched": true, "ingestKeys": 0, "protectedWithoutKeys": false,
         })
     );
-    assert_eq!(ingest_everywhere(&s, None).await, [200; 4], "explicit open admits anonymous ingestion");
+    assert_eq!(ingest_everywhere(&s, None).await, [200; 4], "explicit open admits anonymous ingestion at once");
     assert_eq!(ingest(&s, Some(&key)).await, 200, "open checks no key");
     let (_, live) = create_key(&s, "while-open", "ingest").await;
     assert_eq!(ingest(&s, None).await, 200, "keys created while open do not close it");
@@ -433,14 +447,73 @@ async fn ingest_auth_modes_and_their_transitions() {
     }
     let r = anonymous.get(s.u("/api/v1/system/info")).send().await.unwrap();
     assert_eq!(r.status(), 401);
-    let (mut config, dir) = s.stop().await;
+    let (config, dir) = s.stop().await;
 
-    config.ingest.auth_mode = IngestAuthMode::Automatic;
     let s = TestServer::launch(config, dir).await;
-    assert!(key_required(&s).await, "automatic restores the latched protection");
+    assert_eq!(ingest_auth(&s).await["mode"], "open", "open survives a restart");
+    assert_eq!(ingest(&s, None).await, 200);
+    set_mode(&s, "automatic").await;
+    assert!(key_required(&s).await, "automatic restores the latched protection at once");
     assert_eq!(ingest_everywhere(&s, None).await, [401; 4]);
     assert_eq!(ingest(&s, Some(&key)).await, 401);
     assert_eq!(ingest(&s, Some(&live)).await, 200);
+    s.stop().await;
+}
+
+/// AUTH-250: only an admin can change the mode, and an invalid one changes
+/// nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_admins_set_the_ingest_auth_mode() {
+    let s = start_secure().await;
+    let (session, ingest_key) = {
+        let r = login(&s, "correct horse").await;
+        let cookie = session_cookie(&r);
+        let session = authorized_client("cookie", &cookie);
+        let (status, body) = set_mode_with(&session, &s, json!("required")).await;
+        assert_eq!((status, body["ingestAuth"]["mode"].as_str()), (200, Some("required")), "an admin session may");
+        let key: Value = session
+            .post(s.u("/api/v1/api-keys"))
+            .json(&json!({"name": "producer", "scope": "ingest"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        (session, key["key"].as_str().unwrap().to_string())
+    };
+    let anonymous = reqwest::Client::new();
+    assert_eq!(set_mode_with(&anonymous, &s, json!("open")).await.0, 401);
+    let producer = authorized_client("authorization", &format!("Bearer {ingest_key}"));
+    assert_eq!(set_mode_with(&producer, &s, json!("open")).await.0, 403, "an ingest key may only ingest");
+    for bad in [json!("opened"), json!("OPEN"), json!(""), json!(null), json!(1)] {
+        let (status, body) = set_mode_with(&session, &s, bad.clone()).await;
+        assert!(matches!(status, 400 | 422) && body["error"]["code"] == "invalid_json", "{bad}: {status} {body}");
+    }
+    let r = session.put(s.u("/api/v1/ingest-auth")).json(&json!({"mode": "open", "extra": 1})).send().await.unwrap();
+    assert_eq!(r.status(), 422);
+    assert_eq!(ingest(&s, None).await, 401, "nothing changed");
+    assert_eq!(ingest(&s, Some(&ingest_key)).await, 200);
+    s.stop().await;
+}
+
+/// AUTH-250: a mode this build cannot read stops the start with what to do,
+/// instead of starting with a default.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_ingest_auth_mode_refuses_to_start() {
+    let s = TestServer::start().await;
+    let (config, dir) = s.stop().await;
+    let db = rusqlite::Connection::open(config.storage.path.join(server::datadir::METADATA_DB)).unwrap();
+    db.execute("INSERT INTO settings (key, value, updated_at) VALUES ('ingest_auth_mode', 'Open ', 0)", []).unwrap();
+    drop(db);
+    let e = format!("{:#}", server::App::build(config.clone()).err().expect("refused to start"));
+    assert!(e.contains("loading API keys") && e.contains("ingestion mode setting (ingest_auth_mode)"), "{e}");
+    assert!(e.contains("'automatic', 'required' or 'open'"), "{e}");
+    let db = rusqlite::Connection::open(config.storage.path.join(server::datadir::METADATA_DB)).unwrap();
+    db.execute("UPDATE settings SET value = 'required' WHERE key = 'ingest_auth_mode'", []).unwrap();
+    drop(db);
+    let s = TestServer::launch(config, dir).await;
+    assert_eq!(ingest(&s, None).await, 401);
     s.stop().await;
 }
 
@@ -471,32 +544,33 @@ async fn an_unreadable_ingest_latch_refuses_to_start() {
 /// The banner says how ingestion is authenticated, in each state.
 #[tokio::test(flavor = "multi_thread")]
 async fn banner_shows_the_ingestion_policy() {
-    use server::config::IngestAuthMode;
+    use metadata::IngestAuthMode;
     let dir = tempfile::tempdir().unwrap();
-    let line = |mode| {
-        let mut c = base_config(dir.path());
-        c.ingest.auth_mode = mode;
-        let app = server::App::build(c).unwrap();
+    let line = || {
+        let app = server::App::build(base_config(dir.path())).unwrap();
         let b = app.banner("127.0.0.1:8080".parse().unwrap());
         let line = b.lines().find(|l| l.starts_with("Authentication")).unwrap().to_string();
         (app, line)
     };
-    let (app, l) = line(IngestAuthMode::Automatic);
+    let (app, l) = line();
     assert!(l.ends_with("ingestion open until an ingest API key is created"), "{l}");
     server::auth::create_api_key(&app.state, "ci", "ingest").await.unwrap();
     app.shutdown().await.unwrap();
-    let (app, l) = line(IngestAuthMode::Automatic);
+    let (app, l) = line();
     assert!(l.ends_with("API keys for ingestion"), "{l}");
+    server::auth::set_ingest_auth_mode(&app.state, IngestAuthMode::Open).await.unwrap();
     app.shutdown().await.unwrap();
-    let (app, l) = line(IngestAuthMode::Open);
-    assert!(l.ends_with("ingestion open (ingest.auth_mode = \"open\")"), "{l}");
+    let (app, l) = line();
+    assert!(l.ends_with("ingestion open (ingestion mode \"open\")"), "{l}");
+    server::auth::set_ingest_auth_mode(&app.state, IngestAuthMode::Required).await.unwrap();
     app.shutdown().await.unwrap();
-    let (app, l) = line(IngestAuthMode::Required);
+    let (app, l) = line();
     assert!(l.ends_with("API keys for ingestion"), "{l}");
     let id = app.state.metadata.list_api_keys().unwrap()[0].id;
     server::auth::revoke_api_key(&app.state, id).await.unwrap();
+    server::auth::set_ingest_auth_mode(&app.state, IngestAuthMode::Automatic).await.unwrap();
     app.shutdown().await.unwrap();
-    let (app, l) = line(IngestAuthMode::Automatic);
+    let (app, l) = line();
     assert!(l.ends_with("API keys for ingestion (no ingest key yet: create one)"), "{l}");
     app.shutdown().await.unwrap();
 }

@@ -97,6 +97,45 @@ fn identify(conn: &Connection) -> Result<Identity> {
 
 pub type Result<T> = std::result::Result<T, MetadataError>;
 
+/// The `settings` key of the ingestion authentication mode.
+pub const INGEST_AUTH_MODE: &str = "ingest_auth_mode";
+
+/// Whether ingestion needs an API key. Set from Settings (or
+/// `PUT /api/v1/ingest-auth`) and kept here only; a store without it is
+/// [`IngestAuthMode::Automatic`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum IngestAuthMode {
+    /// Open until the first ingest-scoped key is created, then protected
+    /// for good: revoking keys never opens it again.
+    #[default]
+    Automatic,
+    /// Always protected, even before any key exists.
+    Required,
+    /// Always open, whatever keys exist. Keeps the protection latch, so
+    /// returning to `automatic` protects ingestion again.
+    Open,
+}
+
+impl IngestAuthMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IngestAuthMode::Automatic => "automatic",
+            IngestAuthMode::Required => "required",
+            IngestAuthMode::Open => "open",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "automatic" => Some(IngestAuthMode::Automatic),
+            "required" => Some(IngestAuthMode::Required),
+            "open" => Some(IngestAuthMode::Open),
+            _ => None,
+        }
+    }
+}
+
 /// The `settings` key of the ingestion protection latch.
 pub const INGEST_PROTECTION: &str = "ingest_protection";
 
@@ -448,8 +487,11 @@ impl Metadata {
         }
         // WAL for concurrent readers and crash safety; foreign keys are
         // off by default in SQLite and must be enabled per connection.
+        // FULL syncs the WAL at every commit, so a write that returned
+        // (an API key and the ingestion latch, a revoke, a logout) survives
+        // a power failure or OS crash too; NORMAL could roll it back.
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         if identity == Identity::Empty {
@@ -595,41 +637,65 @@ impl Metadata {
         Ok(c.query_row("SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL", [], |r| r.get(0))?)
     }
 
+    /// The ingestion authentication mode; [`IngestAuthMode::Automatic`] when
+    /// none was ever set. Fails closed: a value this build does not write is
+    /// refused, never read as a default.
+    pub fn ingest_auth_mode(&self) -> Result<IngestAuthMode> {
+        let Some(value) = self.get_setting(INGEST_AUTH_MODE)? else {
+            return Ok(IngestAuthMode::Automatic);
+        };
+        IngestAuthMode::parse(&value).ok_or_else(|| {
+            MetadataError::Invalid(format!(
+                "the metadata database's ingestion mode setting ({INGEST_AUTH_MODE}) is {value:?}, which this \
+                 Vyrtel does not recognise, so it cannot tell whether ingestion must be protected. Restore the \
+                 metadata database from a backup, or set the value to 'automatic', 'required' or 'open' (see \
+                 docs/configuration.md#ingestion-authentication)"
+            ))
+        })
+    }
+
+    /// Store the ingestion authentication mode. Leaves the latch as it is.
+    pub fn set_ingest_auth_mode(&self, mode: IngestAuthMode) -> Result<()> {
+        self.set_setting(INGEST_AUTH_MODE, mode.as_str())
+    }
+
     /// Whether ingestion protection is latched: the first ingest-scoped key
     /// ever created latches it, and nothing clears it (revoking keys does
     /// not). Read at startup.
     ///
-    /// Fails closed. A latch with any value but [`INGEST_LATCHED`] is
-    /// refused, never read as unlatched. A database that has held an
-    /// ingest-scoped key (active or revoked) but has no latch is latched
-    /// now, so its keys never become anonymously writable. Only a database
-    /// that never had an ingest key is unlatched.
+    /// Fails closed, and never writes. A latch with any value but
+    /// [`INGEST_LATCHED`] is refused, never read as unlatched. So is a
+    /// missing latch in a database that has held an ingest-scoped key
+    /// (active or revoked): every such key was stored with its latch, so the
+    /// row was removed and the database cannot be trusted to say ingestion
+    /// is open.
     pub fn ingest_latched(&self) -> Result<bool> {
-        let mut c = self.conn.lock().unwrap();
-        let tx = c.transaction()?;
-        let value: Option<String> = tx
+        let c = self.conn.lock().unwrap();
+        let value: Option<String> = c
             .prepare_cached("SELECT value FROM settings WHERE key = ?1")?
             .query_row([INGEST_PROTECTION], |r| r.get(0))
             .optional()?;
-        match value.as_deref() {
-            Some(INGEST_LATCHED) => return Ok(true),
-            Some(other) => {
-                return Err(MetadataError::Invalid(format!(
-                    "the metadata database's ingestion protection setting ({INGEST_PROTECTION}) is {other:?}, which \
-                     this Vyrtel does not recognise, so it cannot tell whether ingestion must stay protected. Restore \
-                     the metadata database from a backup, or set the value to '{INGEST_LATCHED}' to keep ingestion \
-                     protected (see docs/configuration.md#ingestion-authentication)"
-                )));
+        let refuse = |found: String| {
+            MetadataError::Invalid(format!(
+                "the metadata database's ingestion protection setting ({INGEST_PROTECTION}) is {found}, so it \
+                 cannot tell whether ingestion must stay protected. Restore the metadata database from a backup, or \
+                 set the value to '{INGEST_LATCHED}' to keep ingestion protected (see \
+                 docs/configuration.md#ingestion-authentication)"
+            ))
+        };
+        match value {
+            Some(v) if v == INGEST_LATCHED => Ok(true),
+            Some(other) => Err(refuse(format!("{other:?}, which this Vyrtel does not recognise"))),
+            None => {
+                let had_ingest_key: bool =
+                    c.query_row("SELECT EXISTS (SELECT 1 FROM api_keys WHERE scope = 'ingest')", [], |r| r.get(0))?;
+                if had_ingest_key {
+                    Err(refuse("missing although ingest-scoped keys were created".into()))
+                } else {
+                    Ok(false)
+                }
             }
-            None => {}
         }
-        let had_ingest_key: bool =
-            tx.query_row("SELECT EXISTS (SELECT 1 FROM api_keys WHERE scope = 'ingest')", [], |r| r.get(0))?;
-        if had_ingest_key {
-            latch_ingest(&tx, now_ms())?;
-            tx.commit()?;
-        }
-        Ok(had_ingest_key)
     }
 
     // ---- users & sessions ---------------------------------------------
@@ -1159,5 +1225,21 @@ mod tests {
         assert_eq!(app_id, APPLICATION_ID);
         let layout: String = c.query_row("SELECT layout FROM vyrtel_layout", [], |r| r.get(0)).unwrap();
         assert_eq!(layout, telemetry::LAYOUT);
+    }
+
+    // AUTH-250 review: an acknowledged write (the ingestion latch above
+    // all) must survive power loss, so every commit syncs the WAL. A
+    // power cut cannot be simulated here; this pins the setting that
+    // gives the guarantee (SQLite: WAL + synchronous=FULL is durable).
+    #[test]
+    fn commits_are_synced_before_they_return() {
+        let d = tempfile::tempdir().unwrap();
+        for path in [d.path().join("new.db"), d.path().join("new.db")] {
+            let m = Metadata::open(&path).unwrap();
+            let c = m.conn.lock().unwrap();
+            let mode: String = c.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
+            let sync: i64 = c.query_row("PRAGMA synchronous", [], |r| r.get(0)).unwrap();
+            assert_eq!((mode.as_str(), sync), ("wal", 2), "WAL with synchronous = FULL (2), new and reopened");
+        }
     }
 }

@@ -271,7 +271,6 @@ pub async fn info(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
         "dataDir": state.config.storage.path,
         "durability": state.config.storage.durability,
         "authEnabled": true,
-        "ingestKeyRequired": state.api_keys.ingest_protected(),
         "ingestAuth": state.api_keys.ingest_status(),
         "sessionAuth": state.sessions.snapshot(),
         "apiKeyTouch": state.api_keys.touch_snapshot(),

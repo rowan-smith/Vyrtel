@@ -77,8 +77,9 @@ default to the last hour).
 
 ## Authentication
 
-Always on for the UI and API. Ingestion follows `ingest.auth_mode`
-([configuration](configuration.md#ingestion-authentication)):
+Always on for the UI and API. Ingestion follows the ingestion mode
+([below](#ingestion-mode),
+[configuration](configuration.md#ingestion-authentication)):
 
 * **Ingestion** (`/api/v1/events`, `/v1/*`), in the default `automatic`
   mode, is open on a fresh install, so producers can send without setup.
@@ -87,20 +88,18 @@ Always on for the UI and API. Ingestion follows `ingest.auth_mode`
   `X-Api-Key: <key>`; ingest or admin scope), with a `401` otherwise.
   Revoking keys, the last ingest key included, and restarting never open it
   again: with no ingest key left, only an admin key or a replacement ingest
-  key can send. Admin keys never protect it. `ingest.auth_mode = "required"`
+  key can send. Admin keys never protect it. The `required` mode
   protects it before any key exists; `"open"` accepts every ingest request
   without a key, whatever keys exist, and opens nothing else.
   `GET /api/v1/api-keys` and `GET /api/v1/system/info` report the state:
 
   ```json
-  "ingestKeyRequired": true,
   "ingestAuth": {"mode": "automatic", "effective": "protected", "latched": true,
                  "ingestKeys": 0, "protectedWithoutKeys": true}
   ```
 
-  `mode` is the configured `ingest.auth_mode`; `effective` is
-  `protected` or `open` (`ingestKeyRequired` is `effective ==
-  "protected"`); `latched` is whether an ingest key has ever been created;
+  `mode` is the ingestion mode; `effective` is
+  `protected` or `open`; `latched` is whether an ingest key has ever been created;
   `protectedWithoutKeys` means senders without an admin key are refused
   until an ingest key is created.
 * **Everything else under `/api/v1`** requires either the admin session
@@ -122,6 +121,22 @@ POST /api/v1/auth/logout
 GET  /api/v1/auth/me       → {"authEnabled": true, "user": "admin" | null}   (authEnabled is always true since 0.1.2)
 ```
 
+### Ingestion mode
+
+```
+PUT /api/v1/ingest-auth    {"mode": "automatic" | "required" | "open"}
+→ 200 {"ingestAuth": {...}}
+```
+
+Admin only (a login or an admin key; an ingest key gets `403`). The mode is
+stored in the metadata database, synced, and then in force for every ingest
+request that starts after the response, like a key change (it takes the same
+turn, so the `503` bound below applies). It survives restarts. The response
+is the new state, as in `GET /api/v1/api-keys`. Any other `mode` or an
+unknown field is refused (`400`/`422 invalid_json`) and changes nothing. The
+latch is never changed by it: leaving `open` restores the protection an
+ingest key latched.
+
 ### API keys
 
 ```
@@ -135,7 +150,8 @@ SHA-256 hash is stored.
 
 Key changes take effect when their response is sent:
 
-* A `201` create or `204` revoke has been committed to the metadata store,
+* A `201` create or `204` revoke has been committed to the metadata store
+  and synced to disk (it survives a power failure),
   and every request that starts afterwards is authenticated against it
   (including the first ingest key's protection, which is committed with
   the key). Requests

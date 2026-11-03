@@ -57,8 +57,8 @@ fn authentication(keys: &crate::auth::KeySet) -> &'static str {
     match (keys.ingest_protected(), keys.ingest_keys()) {
         (true, 0) => "login for the UI/API, API keys for ingestion (no ingest key yet: create one)",
         (true, _) => "login for the UI/API, API keys for ingestion",
-        (false, _) if keys.mode() == crate::config::IngestAuthMode::Open => {
-            "login for the UI/API; ingestion open (ingest.auth_mode = \"open\")"
+        (false, _) if keys.mode() == metadata::IngestAuthMode::Open => {
+            "login for the UI/API; ingestion open (ingestion mode \"open\")"
         }
         (false, _) => "login for the UI/API; ingestion open until an ingest API key is created",
     }
@@ -132,11 +132,12 @@ impl App {
             Metadata::open(&dir.join(crate::datadir::METADATA_DB))
                 .map_err(|e| anyhow::anyhow!("opening metadata store: {e}"))?,
         );
-        let api_keys = crate::auth::ApiKeys::load(&metadata, config.ingest.auth_mode)
-            .map_err(|e| anyhow::anyhow!("loading API keys: {e}"))?;
-        if let Some(warning) = api_keys.snapshot().startup_warning() {
-            tracing::warn!(ingest_auth_mode = config.ingest.auth_mode.as_str(), "{warning}");
+        let api_keys = crate::auth::ApiKeys::load(&metadata).map_err(|e| anyhow::anyhow!("loading API keys: {e}"))?;
+        let keys = api_keys.snapshot();
+        if let Some(warning) = keys.startup_warning() {
+            tracing::warn!(ingest_auth_mode = keys.mode().as_str(), "{warning}");
         }
+        drop(keys);
         // Record the layout before storage recovery changes any telemetry
         // file, and before a new directory gets its first one.
         crate::datadir::record(dir, &layout).context("writing the data directory manifest")?;

@@ -1,9 +1,9 @@
 //! Dashboards, saved queries and API keys (metadata CRUD).
 
-use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use metadata::{PanelInput, PanelKind};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -146,7 +146,6 @@ pub async fn list_api_keys(State(state): State<SharedState>) -> ApiResult<Json<V
     let keys = state.api_keys.snapshot();
     Ok(Json(json!({
         "apiKeys": k,
-        "ingestKeyRequired": keys.ingest_protected(),
         "ingestAuth": keys.ingest_status(),
     })))
 }
@@ -157,6 +156,29 @@ pub async fn create_api_key(State(state): State<SharedState>, ApiJson(b): ApiJso
     let mut v = serde_json::to_value(rec).map_err(ApiError::internal)?;
     v["key"] = Value::String(key);
     Ok((StatusCode::CREATED, Json(v)).into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IngestAuthBody {
+    pub mode: metadata::IngestAuthMode,
+}
+
+/// Set the ingestion mode. In force for every request that starts after
+/// the response; returns the new state, as `GET /api/v1/api-keys` does.
+pub async fn set_ingest_auth(
+    State(state): State<SharedState>,
+    Extension(by): Extension<auth::Principal>,
+    ApiJson(b): ApiJson<IngestAuthBody>,
+) -> ApiResult<Json<Value>> {
+    let from = state.api_keys.snapshot().mode();
+    auth::set_ingest_auth_mode(&state, b.mode).await?;
+    let by = match by {
+        auth::Principal::User(name) => format!("user {name}"),
+        auth::Principal::ApiKey { id, .. } => format!("API key {id}"),
+    };
+    tracing::info!(by, from = from.as_str(), to = b.mode.as_str(), "ingestion mode set");
+    Ok(Json(json!({ "ingestAuth": state.api_keys.ingest_status() })))
 }
 
 pub async fn revoke_api_key(State(state): State<SharedState>, ApiPath(id): ApiPath<i64>) -> ApiResult<StatusCode> {
