@@ -1350,7 +1350,7 @@ h3 {
 
 .install-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 24px;
 }
 
@@ -1476,9 +1476,160 @@ h3 {
 
 .docs-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 220px;
-  gap: 56px;
+  grid-template-columns: 220px minmax(0, 1fr) 200px;
+  gap: 48px;
   padding: 32px 0 80px;
+}
+
+.docs-sidebar {
+  position: sticky;
+  top: calc(var(--header-h) + 24px);
+  align-self: start;
+  max-height: calc(100vh - var(--header-h) - 48px);
+  overflow-y: auto;
+  padding-right: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+.side-group + .side-group {
+  margin-top: 22px;
+}
+
+.side-group h2 {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.side-group a {
+  display: block;
+  padding: 5px 10px;
+  margin-left: -10px;
+  border-left: 2px solid transparent;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--muted);
+  font-size: 14.5px;
+}
+
+.side-group a:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.side-group a[aria-current='page'] {
+  border-left-color: var(--mint);
+  background: var(--bg-tint);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.docs-nav {
+  display: none;
+}
+
+.docs-eyebrow {
+  margin: 4px 0 10px;
+  color: var(--accent-text);
+  font: 600 12px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.callout {
+  margin: 20px 0;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--iris);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+}
+
+.callout p {
+  margin: 0;
+}
+
+.version-notice {
+  max-width: 780px;
+  margin: 0 0 24px;
+  border-left-color: var(--warn);
+  font-size: 14.5px;
+}
+
+/* The docs version picker: the version being read, opening onto every version. */
+.version-picker {
+  margin-bottom: 22px;
+}
+
+.version-picker > summary {
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  font-size: 14px;
+}
+
+.version-picker > summary:hover,
+.version-picker[open] > summary {
+  border-color: var(--line-strong);
+}
+
+.version-picker > summary .chevron {
+  margin-left: auto;
+}
+
+.version-picker-label {
+  color: var(--muted);
+}
+
+.version-picker > summary strong {
+  white-space: nowrap;
+}
+
+.version-menu {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  box-shadow: 0 18px 40px rgba(var(--shadow-rgb), 0.18);
+}
+
+.version-menu a {
+  display: block;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.version-menu a:hover {
+  background: var(--bg-tint);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.version-menu a[aria-current='true'] {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.version-menu .muted {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.docs-nav .version-picker {
+  margin-bottom: 10px;
 }
 
 .docs-toc {
@@ -1487,10 +1638,6 @@ h3 {
   align-self: start;
   max-height: calc(100vh - var(--header-h) - 48px);
   overflow-y: auto;
-}
-
-.docs-nav {
-  margin-bottom: 28px;
 }
 
 .toc h2 {
@@ -2004,13 +2151,29 @@ h3 {
 
 /* ---------- responsive ---------- */
 
-@media (max-width: 1100px) {
+@media (max-width: 1240px) {
   .docs-layout {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: 210px minmax(0, 1fr);
   }
   .docs-toc {
     display: none;
   }
+}
+
+@media (max-width: 900px) {
+  .docs-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .docs-sidebar {
+    display: none;
+  }
+  .docs-nav {
+    display: block;
+    margin-bottom: 20px;
+  }
+}
+
+@media (max-width: 1100px) {
   .cards {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -2161,132 +2324,4 @@ h3 {
     opacity: 1;
     transform: none;
   }
-}
-
-/* Benchmark charts (inline SVG generated at build time). */
-
-/* Build & footprint facts (executable size, bytes stored per event, ...). */
-.facts {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.4rem 1.4rem;
-  margin: 1rem 0 2rem;
-  padding: 1rem 1.1rem;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  font-size: 0.88rem;
-}
-
-.facts dt {
-  color: var(--text-dim);
-}
-
-.facts dd {
-  margin: 0;
-  color: var(--text);
-}
-.chart-figure {
-  margin: 1.5rem 0 2rem;
-  padding: 1rem 1.1rem 0.4rem;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-}
-
-.chart-figure figcaption {
-  margin-bottom: 0.75rem;
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.chart-figure figcaption .muted {
-  display: block;
-  margin-top: 0.15rem;
-  font-size: 0.78rem;
-  font-weight: 400;
-}
-
-.chart {
-  display: block;
-  width: 100%;
-  height: auto;
-  font-family: var(--sans);
-}
-
-.chart .chart-label {
-  font-size: 12px;
-  font-weight: 500;
-  fill: var(--text-dim);
-}
-
-.chart .chart-value {
-  font-size: 12px;
-  fill: var(--muted);
-}
-
-.chart .chart-bar {
-  fill: var(--iris);
-}
-
-.chart .chart-range {
-  stroke: var(--muted);
-  stroke-width: 2;
-  stroke-linecap: round;
-  opacity: 0.5;
-}
-
-.chart .chart-axis {
-  stroke: var(--line);
-  stroke-width: 1;
-}
-
-.chart .chart-tick {
-  font-size: 11px;
-  fill: var(--muted);
-}
-
-.chart .chart-line {
-  fill: none;
-  stroke: var(--iris);
-  stroke-width: 2;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-}
-
-.chart .chart-dot {
-  fill: var(--iris);
-  stroke: var(--bg-raised);
-  stroke-width: 2;
-}
-
-/* Build/footprint facts (executable size, data directory, storage efficiency). */
-.facts {
-  display: grid;
-  grid-template-columns: minmax(8rem, max-content) 1fr;
-  gap: 0.15rem 1.25rem;
-  margin: 1rem 0 2rem;
-  padding: 0.9rem 1.1rem;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  font-size: 0.88rem;
-}
-
-.facts dt {
-  color: var(--muted);
-}
-
-.facts dd {
-  color: var(--text);
-}
-
-/* Version-history rows that measure footprint, not latency. */
-.row-extra td {
-  background: color-mix(in srgb, var(--iris) 6%, transparent);
-}
-
-.row-extra td:first-child {
-  font-weight: 600;
 }

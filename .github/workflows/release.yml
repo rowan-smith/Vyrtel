@@ -343,6 +343,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -361,3 +362,10 @@ jobs:
           generate_release_notes: true
           prerelease: ${{ needs.preflight.outputs.prerelease }}
           make_latest: ${{ needs.preflight.outputs.make_latest }}
+      # Releases made with GITHUB_TOKEN trigger no workflows, so redeploy the website explicitly:
+      # it adds this version's docs and makes a stable release the default docs version.
+      - name: Redeploy the website
+        if: needs.preflight.outputs.prerelease != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main

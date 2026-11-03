@@ -977,7 +977,7 @@ mod tests {
         c.validate().unwrap();
     }
 
-    /// The performance baseline's pinned configuration (docs/benchmarks.md) must stay loadable,
+    /// The performance baseline's pinned configuration (dotnet/Vyrtel.Baseline/README.md) must stay loadable,
     /// and its explicit ingest concurrency must equal what Vyrtel would derive, so the pin
     /// documents the default rather than quietly diverging from it.
     #[test]

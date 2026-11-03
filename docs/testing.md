@@ -509,13 +509,7 @@ IMAGE=rust:1.96-bookworm IDLE_AFTER=60 scripts/bench/transport-soak.sh out/soak 
 
 Each run directory holds `resources.csv`, `resources.json`,
 `samples.csv`, `summary.json`, `connload.log` and `server.log`. The budgets
-were declared before the candidate was measured in
-[`docs/benchmarks/transport/budgets.md`](benchmarks/transport/budgets.md); the
-results, per budget with PASS/FAIL, are in
-[`docs/benchmarks/transport/2026-10-17-wsl2`](benchmarks/transport/2026-10-17-wsl2/README.md).
-They come from a developer laptop's WSL2 VM, not the release sign-off host:
-[#170](https://github.com/rowan-smith/Vyrtel/issues/170) repeats them on the
-final candidate.
+are in [`scripts/bench/transport-budgets.md`](../scripts/bench/transport-budgets.md).
 
 ### Restore drill
 
@@ -589,29 +583,13 @@ wire) for 4 s, retrying 429s after 5 ms. It asserts that:
 cargo test -p server --test overload -- --nocapture
 ```
 
-One run on the Windows 11 laptop used for the benchmarks below (test
-profile), before and after REL-02 moved admission from "while the body is
-read" to "until the write is acknowledged":
-
-| Metric                      | Before                | After               |
-|-----------------------------|-----------------------|---------------------|
-| Peak heap growth            | 298.4 MB (4.7× budget) | 55.3 MB (< 64 MB)  |
-| Slowest 429                 | 1.1 s                 | 161 ms              |
-| Connection resets           | 223                   | 0                   |
-| Batches accepted in 4 s     | 14                    | 40                  |
-
-Five consecutive runs after the change peaked at 54.3–55.8 MB. Parsing one
-1.79 MB body alone peaks at +8.3 MB, and one request end to end at +10.6 MB.
-
 `flood_of_rejected_slow_uploads_is_bounded`, in the same binary, holds the
 only ingest slot and opens 600 uploads that announce 1 MB, send 64 KB and
 stall. All are rejected at admission. It asserts that rejected bodies kept
 for discarding stop at the 256 cap (32 being read), that the runtime gains
 no more than one task per connection plus that cap, that kept clients read
 the 429, that peak heap growth stays below `max_memory`, and that everything
-is released after the 10 s discard timeout. One run: 256 discard tasks,
-512 new runtime tasks, 18.2 MB peak heap growth; without the cap, 1,200 new
-tasks and 38.2 MB.
+is released after the 10 s discard timeout.
 
 The two REL-02 tests set `ingest.max_concurrent` explicitly, so they are
 unaffected by the derived sizing below (and log its over-budget warning).
@@ -900,121 +878,6 @@ No per-request database read was added: authentication still only reads
 the in-memory set, and last-used is still persisted at most once a minute
 per key (bounded since AUTH-PERF-03, [below](#api-key-last-used-tracking-auth-perf-03)).
 
-#### API key churn benchmark
-
-`keychurn` logs in as the admin, creates one ingest key so every ingest
-request is authenticated, and for the duration runs closed-loop producers
-with that key, an auth probe (a keyless ingest request every 10 ms,
-answered 401 by the authentication layer alone, so its latency is the time
-to an authentication decision including scheduler wait), a `/health`
-heartbeat every 10 ms, and, in churn cells, one admin that creates and
-revokes an ingest key every 20 ms. At the end it counts the acknowledged
-events back with a query. `scripts/bench/keychurn.sh` runs a matched
-baseline and candidate on fresh data directories for every cell of
-producers {4, 64} × events per request {1, 100} × churn {off, on},
-alternating the binaries within each repetition, and records the server's
-CPU seconds and peak memory around each run (Linux `/proc`, or PowerShell
-`Get-Process` under Git Bash on Windows):
-
-```bash
-git worktree add ../vyrtel-baseline <baseline-sha> && (cd ../vyrtel-baseline && cargo build --release -p server)
-cargo build --release -p server -p loadgen
-RUNS=3 DURATION=20s scripts/bench/keychurn.sh ../vyrtel-baseline/target/release/vyrtel target/release/vyrtel
-node scripts/bench/keychurn-report.mjs target/keychurn --json target/keychurn/report.json
-# a subset, e.g. a rerun of two cells with 5 repetitions:
-CELLS='^high-batched' RUNS=5 OUT=target/keychurn-rerun scripts/bench/keychurn.sh BASELINE CANDIDATE
-node scripts/bench/keychurn-report.mjs target/keychurn-rerun --cells '^high-batched' --min-runs 5
-```
-
-Settings: `RUNS`, `DURATION`, `LOW`/`HIGH` (producers), `SMALL`/`BATCHED`
-(events per request), `CHURN` (pause between create/revoke pairs), `CELLS`
-(a regex of cells to run), `OUT`, `KEYCHURN`. The server runs with its default configuration plus a random
-admin password and alerts off; the generator runs on the same host.
-
-**Evidence completeness**, checked by `keychurn-report.mjs` before any
-budget (exit 1 when incomplete): every expected cell (all 8, or those
-matching `--cells`) has results for both binaries and no other cell is
-present; each has at least `--min-runs` (default 3) usable runs per binary,
-the same number for both, with the same workload settings; a run is usable
-when both its files parse, its gated values are finite, it acknowledged
-events and measured the auth probe, and it changed keys exactly when its
-cell is a churn cell. An empty or partial results directory therefore
-fails rather than reporting “All budgets met”. The report's own tests:
-`node --test scripts/bench/*.test.mjs` (CI job **Release gate tests**).
-
-**Budgets**, fixed before the first run and checked by
-`keychurn-report.mjs` (exit 1 when missed):
-
-* every run, both binaries: every acknowledged event persisted; no ingest
-  401, 5xx, timeout or transport error; every key create and revoke
-  succeeded; every auth probe answered 401 (429s from ingest admission are
-  reported, not failures: the high-concurrency cells exceed
-  `ingest.max_concurrent` by design);
-* per cell, candidate median against baseline median: accepted events/s at
-  least 90%; server CPU per accepted event at most 110%; auth probe p99 at
-  most max(110%, +1 ms); peak memory at most 110%.
-
-**Results, 2026-10-26** (raw per-run values in
-[`docs/benchmarks/auth-perf-01/`](benchmarks/auth-perf-01/)). Baseline
-`ad346b6` (main before this change), candidate: this change on top of it;
-both `cargo build --release` with Rust 1.96.1 on Windows 11, Intel Core
-Ultra 7 155H (16 cores, 22 threads), 31.5 GB, generator on the same host,
-20 s per run, uninstrumented (no profiler attached). Medians of 3 runs:
-
-| Cell (producers-size-churn) | events/s base → cand | auth p99 ms base → cand | ACK p99 ms base → cand | CPU µs/event base → cand | peak MiB base → cand |
-|---|---|---|---|---|---|
-| low-small-steady | 9,920 → 10,058 | 0.62 → 0.61 | 0.84 → 0.73 | 271 → 261 | 101 → 102 |
-| low-small-churn | 9,958 → 9,503 | 0.66 → 0.72 | 0.76 → 0.84 | 271 → 286 | 102 → 104 |
-| low-batched-steady | 255,818 → 242,473 | 1.17 → 1.52 | 3.65 → 4.62 | 13.3 → 14.2 | 149 → 149 |
-| low-batched-churn | 236,535 → 276,152 | 1.39 → 1.09 | 4.63 → 3.31 | 14.5 → 12.8 | 150 → 146 |
-| high-small-steady | 5,747 → 6,241 | 4.64 → 4.40 | 5.74 → 4.95 | 1,107 → 1,031 | 110 → 111 |
-| high-small-churn | 6,095 → 6,858 | 4.65 → 3.78 | 4.76 → 4.17 | 1,071 → 1,000 | 110 → 111 |
-| high-batched-steady | 163,115 → 145,317 | 9.97 → 11.26 | 13.96 → 17.30 | 38.2 → 42.2 | 179 → 179 |
-| high-batched-churn | 143,294 → 119,352 | 14.41 → 16.98 | 20.23 → 22.52 | 41.8 → 44.9 | 175 → 183 |
-
-Every run of both binaries passed the correctness budgets: all
-acknowledged events persisted; no ingest 401, 5xx, timeout or transport
-error; all 19,171 create/revoke pairs succeeded. The first pass missed
-five throughput/latency budgets, all in the two `high-batched` cells, one
-of which has no key changes at all. Those cells were rerun with 5 more
-repetitions each:
-
-| Rerun (5 runs) | events/s base → cand | auth p99 ms base → cand | CPU µs/event base → cand | Budgets |
-|---|---|---|---|---|
-| high-batched-steady | 154,778 → 159,617 | 7.32 → 6.22 | 42.9 → 43.9 | met |
-| high-batched-churn | 166,843 → 159,848 | 8.45 → 9.80 | 39.7 → 40.5 | auth p99 missed (+1.35 ms; allowed +1 ms) |
-
-and the baseline was run against an identical copy of itself (A/A, 3 runs
-of `high-batched-steady`): events/s 182,262 vs 193,662 (+6.3%), auth p99
-5.64 vs 4.13 ms (−27%). On this host the run-to-run spread of the
-high-concurrency cells is larger than the budgets, so these runs neither
-show nor rule out a difference there; in the six other cells the candidate
-is within budget, and lower-latency in the churn cells for small requests.
-The budgets stay as declared; the missed one is recorded, not waived.
-
-**Open before 0.1.2 performance sign-off:** the `high-batched-churn` auth
-p99 budget is neither met nor shown to be a regression. It is to be rerun
-on the dedicated Linux benchmark host, with the generator on a separate
-machine, comparing a quiet baseline with the exact candidate build
-(`CELLS='^high-batched-churn' RUNS=5`, `--min-runs 5`), and must pass or be
-explicitly dispositioned by the reviewer as part of
-[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170).
-
-**Limitations.** One laptop, generator and server sharing 22 threads, no
-CPU pinning; the A/A spread above bounds what these numbers can resolve.
-The closed-loop producers retry immediately, so in every cell most requests
-are 429s from ingest admission (even 4 producers exceed the derived
-`ingest.max_concurrent` on this host): the throughput figures are of
-an admission-saturated server. Lock and scheduler wait are not measured
-directly: the auth probe and heartbeat latencies stand in for them; a
-profile, taken separately from these runs, would be needed to attribute
-time. CPU is process time from `Get-Process` and memory is the Windows peak
-working set. This is not the release profile: as a candidate-affecting
-change, it invalidates earlier
-[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170)
-evidence, which must be taken again on the final candidate, preferably on a
-quiet Linux host with this harness included.
-
 ### Session authentication (AUTH-PERF-02)
 
 Session-cookie requests are authenticated from a bounded in-memory cache
@@ -1042,165 +905,6 @@ since [AUTH-250](#ingestion-protection-latch-auth-250) the latch) is not
 touched: ingestion never uses sessions, and the existing tests above
 (`ingest_protection_*`, `ingestion_without_keys_leaves_the_rest_of_the_api_closed`)
 pass unchanged.
-
-#### Session authentication benchmark
-
-`sessionauth` (in `tools/loadgen`) seeds 20,000 events, creates an admin
-key, an ingest key and a dashboard with one log-count panel, then runs
-the load with **one credential only**: the session cookie, or the admin key
-(`Authorization: Bearer`). Closed-loop clients run the cell's workload:
-
-* `auth`: `GET /api/v1/system/config` (no SQLite, no query: authentication
-  plus routing);
-* `query`: in turn a search (`/query/logs`, 50 events), facets (`level`,
-  `service`) and a dashboard view (`GET /dashboards/{id}` then its panel's
-  histogram);
-* `mixed`: `query`, plus 4 producers sending 100 events per request with
-  the ingest key and one writer creating and deleting a saved query every
-  50 ms with the load credential.
-
-Alongside, an auth probe (`GET /api/v1/system/config` every 10 ms with the
-load credential) measures the authentication decision apart from query
-work, and a `/health` heartbeat the runtime. The first 3 s are reported as
-cold, the rest as warm. `scripts/bench/sessionauth.sh` runs every cell of
-workload {auth, query, mixed} × clients {4, 32} with each credential on
-the same binary, a fresh data directory per run, alternating the
-credentials (and which goes first, by repetition), and records server CPU
-seconds and peak memory around each run:
-
-```bash
-cargo build --release -p server -p loadgen
-RUNS=3 DURATION=20s scripts/bench/sessionauth.sh target/release/vyrtel
-node scripts/bench/sessionauth-report.mjs target/sessionauth --json target/sessionauth/report.json
-# one cell, 5 repetitions:
-CELLS='^mixed-low$' RUNS=5 OUT=target/sessionauth-rerun scripts/bench/sessionauth.sh target/release/vyrtel
-node scripts/bench/sessionauth-report.mjs target/sessionauth-rerun --cells '^mixed-low$' --min-runs 5
-# a longer run of the heaviest cell (soak):
-CELLS='^mixed-high$' RUNS=1 DURATION=4m OUT=target/sessionauth-soak scripts/bench/sessionauth.sh target/release/vyrtel
-```
-
-Settings: `RUNS`, `DURATION`, `LOW`/`HIGH` (clients), `CELLS`, `OUT`,
-`SESSIONAUTH`, `DURABILITY` (`storage.durability`, default `normal`). The
-server runs with its default configuration plus a random admin password and
-alerts off; the generator runs on the same host. Credentials are synthetic
-(a random password per invocation; the keys and the session created for the
-run) and are never written to the results.
-
-**Evidence completeness**, checked by `sessionauth-report.mjs` before any
-budget (exit 1 when incomplete): every expected cell has results for both
-credentials and no other cell is present; each has at least `--min-runs`
-(default 3) usable runs per credential, the same number for both, with the
-same workload; a run is usable when both files parse, it used the
-credential and workload of its directory, its gated values are finite, and
-it completed load requests and warm probes.
-
-**Budgets**, fixed before the first run and checked by
-`sessionauth-report.mjs` (exit 1 when missed):
-
-* every run, both credentials: no load, probe, write or ingest request
-  answered 401, 403, 5xx other than 503, another error status, a timeout
-  or a transport error (503s from busy query slots and ingest 429s are
-  reported, not failures); every probe succeeded; no session lookup
-  failed; in mixed cells every acknowledged event persisted and the writer
-  made changes; key runs used no session (no cookie was sent); session runs
-  authenticated every successful request by session (cache hit or SQLite
-  lookup);
-* session runs, absolute: mean SQLite session lookup (queue + metadata
-  lock + query) at most 1 ms; warm probe p99 at most 25 ms;
-* per cell, session median against key median: successful requests/s at
-  least 90%; warm load p99 and warm probe p99 at most max(110%, +1 ms);
-  server CPU per successful request at most 110%; peak memory at most 110%.
-
-**Results, 2026-10-27** (raw per-run values in
-[`docs/benchmarks/auth-perf-02/`](benchmarks/auth-perf-02/)). Baseline
-`308d74b` (main before this change, plus only the `sessionAuth` counters,
-which time each lookup and change nothing else); candidate: this change
-with the session cache. Both `cargo build --release` with Rust 1.96.1 on
-Windows 11, Intel Core Ultra 7 155H (16 cores, 22 threads), 31.5 GB,
-generator on the same host, 20 s per run, uninstrumented (no profiler).
-Medians of 3 runs, key → session:
-
-*Without the cache* (`2026-10-27-windows-laptop-before-cache`): budgets
-missed in every cell.
-
-| Cell (workload-clients) | requests/s | load p99 ms | probe p99 ms | CPU µs/request | SQLite lookups/s | mean lock wait µs |
-|---|---|---|---|---|---|---|
-| auth-low | 18,910 → 12,351 | 0.52 → 0.71 | 0.58 → 0.88 | 98 → 210 | 12,451 | 38 |
-| auth-high | 37,616 → 11,413 | 1.65 → 10.34 | 1.73 → 11.31 | 162 → 304 | 11,512 | 2,401 |
-| query-low | 241 → 252 | 36.4 → 38.4 | 0.95 → 1.33 | 15,050 → 14,200 | 419 | 20 |
-| query-high | 274 → 243 | 183 → 238 | 1.06 → 1.87 | 15,152 → 14,685 | 404 | 28 |
-| mixed-low | 14.4 → 12.1 | 1,980 → 1,872 | 1.08 → 1.91 | 294,233 → 324,561 | 144 | 7 |
-| mixed-high | 16.2 → 14.2 | 6,339 → 6,521 | 1.04 → 1.71 | 274,045 → 283,731 | 144 | 21 |
-
-Every session request read SQLite through the one metadata connection; at
-32 clients requests queued for it (mean lock wait 2.4 ms, over the 1 ms
-absolute budget) and throughput fell 70%. That decided AC3: the fix is the
-cache.
-
-*With the cache* (`2026-10-27-windows-laptop-matrix`):
-
-| Cell (workload-clients) | requests/s | load p99 ms | probe p99 ms | CPU µs/request | cache hits per run | SQLite lookups in the run |
-|---|---|---|---|---|---|---|
-| auth-low | 12,902 → 14,223 | 0.85 → 0.77 | 0.91 → 0.87 | 156 → 141 | 286,633 | 0 |
-| auth-high | 22,584 → 24,933 | 5.41 → 5.25 | 7.94 → 8.39 | 229 → 220 | 500,719 | 0 |
-| query-low | 163 → 164 | 69.1 → 64.2 | 1.26 → 1.17 | 23,583 → 23,626 | 5,878 | 0 |
-| query-high | 209 → 193 | 256 → 245 | 1.11 → 1.24 | 19,699 → 21,181 | 6,714 | 0 |
-| mixed-low | 13.2 → 11.8 | 2,019 → 2,262 | 1.51 → 1.50 | 347,411 → 396,639 | 3,001 | 0 |
-| mixed-high | 12.9 → 13.8 | 7,740 → 6,542 | 1.69 → 1.51 | 323,185 → 323,738 | 3,145 | 0 |
-
-Five cells meet every budget. Session requests no longer read SQLite once
-cached (the one lookup per session happens during setup), and in the
-auth-only cells they are as fast as key requests. Every run of both
-credentials passed the correctness checks: no 401, 403, 5xx, timeout or
-transport error; all acknowledged events persisted; key runs used no
-session.
-
-`mixed-low` missed throughput, load p99 and CPU. Rerun with 5 repetitions
-(`2026-10-27-windows-laptop-mixed-low-rerun`): requests/s 12.26 → 12.57
-(met), CPU µs/request 378,828 → 358,238 (met), probe p99 1.40 → 1.59 ms
-(met), peak memory met; **load p99 2,275 → 2,672 ms (+17%) missed**, from
-the dashboard histogram queries (2,423 → 2,904 ms) while ingestion runs.
-Those session runs did no SQLite lookup (only about 3,000 cache hits each,
-sub-microsecond), and their auth probe is within budget, so the extra time
-is in query execution under ingestion, not authentication; the key runs
-alone ranged 1,588–2,561 ms, wider than the budget.
-
-*Soak* (`2026-10-27-windows-laptop-soak`, `mixed-high`, 4 minutes per
-credential): authentication stayed flat (probe p99 1.51 → 1.90 ms, max
-11.8 → 54.5 ms, 33,741 cache hits and no SQLite lookup) while the data
-grew and the query clients saturated the 4 query slots: both credentials
-had the same share of 10 s client timeouts (494 of 1,295 key, 469 of 1,248
-session), which fails the correctness budget for both. That is query-engine
-load, independent of the credential, and belongs to
-[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170).
-
-**Open before 0.1.2 performance sign-off**, both retained under
-[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170); neither
-is shown to come from session authentication, and neither is waived:
-
-1. the `mixed-low` load p99 budget (+17.4% session against key over 5
-   runs, with the auth probe within budget and the difference in histogram
-   query time);
-2. the `mixed-high` soak correctness budget (10 s client timeouts for both
-   credentials alike: 494 of 1,295 key, 469 of 1,248 session).
-
-Both are to be rerun on the dedicated Linux benchmark host, with the
-generator on a separate machine (`CELLS='^mixed-low$' RUNS=5`,
-`--min-runs 5`; the soak at the #170 duration), and must pass or be
-explicitly dispositioned by the reviewer.
-
-**Limitations.** One laptop, generator and server sharing 22 threads, no
-CPU pinning. Key-only throughput in the auth cells moved by up to 40%
-between the two matrices, which use the same key path, so compare session
-with key only within one matrix. Queue and lock time are measured directly
-(`sessionAuth`), but runtime scheduling is not; no profile was taken. CPU
-is process time from `Get-Process`, memory the Windows peak working set.
-The soak is 4 minutes, not the #170 soak. Query workloads use one service
-over the last hour, so their time grows with ingested data. As a
-candidate-affecting change, this invalidates earlier
-[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170) evidence,
-which must be taken again on the final candidate with this harness
-included.
 
 ### API key last-used tracking (AUTH-PERF-03)
 
@@ -1235,127 +939,6 @@ test now checks that revoked keys stay refused once every ingest key is
 revoked, as [AUTH-250](#ingestion-protection-latch-auth-250) keeps
 ingestion protected. No configuration was added and the schema is
 unchanged.
-
-#### API key last-used benchmark
-
-`keytouch` logs in as the admin, creates the cell's active ingest keys and
-for the duration runs 16 closed-loop producers that use those keys in turn
-(each request the next key), an auth probe (a keyless ingest request every
-10 ms, answered 401) and one churner that creates an ingest key, ingests
-one event with it, revokes it and waits 2 ms, so revoked keys accumulate
-with the run. It samples `/api/v1/system/info` every second, waits 5 s
-after the load, samples again (post-load cleanup) and counts the
-acknowledged events back. `scripts/bench/keytouch.sh` runs a matched
-baseline and candidate on fresh data directories for each cell, alternating
-the binaries within each repetition, and records the server's CPU seconds
-(from just before the keys are created), peak memory and RSS every 5 s:
-
-* `few-churn`: 8 active keys, churn on;
-* `cap-churn`: 5,000 active keys (past the 4,096-entry cap), churn on.
-
-```bash
-git worktree add ../vyrtel-baseline <baseline-sha> && (cd ../vyrtel-baseline && cargo build --release -p server)
-cargo build --release -p server -p loadgen
-RUNS=3 DURATION=70s scripts/bench/keytouch.sh ../vyrtel-baseline/target/release/vyrtel target/release/vyrtel
-node scripts/bench/keytouch-report.mjs target/keytouch --json target/keytouch/report.json
-```
-
-Settings: `RUNS`, `DURATION`, `FEW`/`CAP` (active keys), `PRODUCERS`,
-`CHURN` (pause between rounds), `CELLS`, `OUT`, `KEYTOUCH`. The server runs
-with its default configuration plus a random admin password and alerts off;
-the generator runs on the same host. Runs are 70 s so each key's one-minute
-throttle expires within the run.
-
-**Evidence completeness**, checked by `keytouch-report.mjs` before any
-budget (exit 1 when incomplete): both cells (or those matching `--cells`)
-for both binaries and no others; at least `--min-runs` (default 3) usable
-runs per binary, the same number for both, with the same workload; a run is
-usable when its files parse, its gated values are finite, it acknowledged
-events, measured the auth probe and completed churn rounds; a candidate run
-must also report `apiKeyTouch`.
-
-**Budgets**, fixed before the first run and checked by
-`keytouch-report.mjs` (exit 1 when missed):
-
-* every run, both binaries: every acknowledged event persisted; no ingest
-  401, 5xx, timeout or transport error; every key create and revoke
-  succeeded and no churn ingest got a 401, 5xx, timeout or transport error
-  (429s from ingest admission are reported, not failures); every auth probe
-  answered 401;
-* every candidate run: at most 4,096 keys tracked and 1,024 waiting at
-  every sample and at most 1 writer; after the settle period nothing
-  waiting, no writer, at most as many keys tracked as are active (not
-  growing with the revoked ones), and no failed write batch;
-* per cell, candidate median against baseline median: accepted events/s at
-  least 90%; server CPU per accepted event at most 110%; auth probe p99 and
-  ingest ACK p99 at most max(110%, +1 ms); peak memory at most 110%.
-
-**Results, 2026-10-28** (report and raw per-run values in
-[`docs/benchmarks/auth-perf-03/`](benchmarks/auth-perf-03/)). Baseline
-`c232a6f` (main before this change), candidate: this change on top of it;
-both `cargo build --release` with Rust 1.96.1 on Windows 11, Intel Core
-Ultra 7 155H (16 cores, 22 threads), 31.5 GB, generator on the same host,
-70 s per run plus 5 s settle, uninstrumented (no profiler attached).
-Medians of 3 runs; **all budgets met** on the first pass:
-
-| Cell | events/s base → cand | ACK p99 ms | auth p99 ms | CPU µs/event | peak MiB |
-|---|---|---|---|---|---|
-| few-churn | 13,162 → 13,808 | 1.05 → 0.99 | 0.90 → 0.83 | 497 → 480 | 117 → 116 |
-| cap-churn | 8,559 → 10,143 | 3.37 → 1.87 | 1.55 → 1.41 | 953 → 640 | 140 → 128 |
-
-Every run of both binaries persisted every acknowledged event, with no
-ingest 401, 5xx, timeout or transport error and every key create and
-revoke succeeding (about 15,400–16,000 churn rounds per `few-churn` run and
-7,300–8,900 per `cap-churn` run).
-
-Bookkeeping, candidate (medians; `apiKeyTouch`):
-
-| Cell | peak tracked | tracked after settle | peak waiting | writer threads | rows written (per s) | write batches | deferred | dropped | revoked keys forgotten |
-|---|---|---|---|---|---|---|---|---|---|
-| few-churn | 9 | 8 | 3 | ≤ 1 | 15,856 (≈ 227) | 15,851 | 0 | 0 | 15,840 |
-| cap-churn | 4,096 | 4,096 | 1,024 | ≤ 1 | 8,222 (≈ 117) | 1,828 | 326,087 | 172 | 30 |
-
-The baseline does not report its bookkeeping. From its code, it keeps one
-map entry for every key ever authenticated and never removes one, and
-spawns one blocking task per due write: over these runs that is about
-15,400 retained entries and as many spawned writes per `few-churn` run, and
-about 12,900 of each per `cap-churn` run (the churned keys plus the 5,000
-active keys), growing for as long as keys are churned. The candidate keeps
-at most the active keys (8) or the cap (4,096) and at most one writer
-thread, independent of how many keys were revoked, and nothing was left
-waiting after the load. In `cap-churn` the 4,096 tracked keys were all
-written within the minute, so the other active keys and every churned key
-were deferred (not written) rather than evicting anything: 8,222 rows were
-written there against roughly 12,900 baseline writes. Touches count
-authenticated requests, including those then refused `429` by ingest
-admission, as before.
-
-Retained heap: at about 50 bytes per baseline entry, its growth here is
-under 1 MB per run, below this host's RSS noise. The RSS slopes over the
-second half of the load (sampled every 5 s from the Windows working set)
-range from −62 to +51 MiB/min for both binaries alike, so they neither
-show nor rule out a slope difference at these run lengths; RSS after the
-5 s settle was lower for the candidate (median 58 vs 87 MiB `few-churn`,
-97 vs 133 MiB `cap-churn`), within the same spread.
-
-**Open before 0.1.2 performance sign-off:** none of these budgets. The
-retained-memory comparison needs a longer authenticated soak on the
-dedicated Linux benchmark host (where `system/info` reports RSS itself),
-with the generator on a separate machine: `CELLS='^cap-churn$'` at the
-[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170) soak
-duration, comparing the RSS slope and the number of revoked keys.
-
-**Limitations.** One laptop, generator and server sharing 22 threads, no
-CPU pinning, 3 runs per cell. Most ingest requests are 429s from ingest
-admission (16 producers exceed the derived `ingest.max_concurrent` here),
-so throughput is of an admission-saturated server. Write rate and queue
-depth are the candidate's own counters; the baseline's are derived from
-its code, not measured. CPU is process time from `Get-Process` (including
-creating the active keys), memory the Windows peak and current working set.
-No profile was taken. As a candidate-affecting change, this invalidates
-earlier [PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170)
-evidence, which must be taken again on the final candidate with this
-harness included.
 
 ### Ingestion protection latch (AUTH-250)
 
@@ -1511,67 +1094,21 @@ settings do not affect them.
 
 ## Benchmarks
 
-Criterion benchmarks (`cargo bench -p storage -p query`). Results from one
-run on a Windows 11 laptop, release profile — treat them as relative, not
-absolute:
-
-| Benchmark                                                       | Result                    |
-|-----------------------------------------------------------------|---------------------------|
-| WAL append, 1-event batch                                       | 5.0 µs (no fsync)         |
-| WAL append, 100-event batch                                     | 34 µs (~2.9 M events/s)   |
-| Encode 1,000 events                                             | 213 µs                    |
-| Decode 1,000 events                                             | 2.8 ms (allocation-bound) |
-| Create 20k-event segment (sort, encode, compress, index, fsync) | 183 ms (~110k events/s)   |
-| Decode a whole 20k-event segment                                | 71 ms                     |
-| Decompress one block, all columns                               | 556 µs (~470 MiB/s)       |
-| Decompress one block, meta column only                          | 34 µs                     |
-| Parse a 5-clause query                                          | 3.2 µs                    |
-| 200k events / 4 segments: `message contains` (scan)             | 39 ms                     |
-| … `traceId = …` (Bloom filter)                                  | 1.6 ms                    |
-| … `level = Error` (bitmap)                                      | 4.9 ms                    |
-| … `durationMs > 1990` (zone map)                                | 14 ms                     |
-| … latest 200 events                                             | 0.66 ms                   |
-| … count all (block counts, no decode)                           | 2.9 µs                    |
-
-The benchmark dataset is synthetic and very regular (13.6× compression;
-its unique-per-event `requestId` makes Bloom filters a large share of a tiny
-segment). The load generator's data is more realistic: see below.
-
-### End-to-end benchmarks
-
-The Criterion benchmarks above measure library code in-process. For HTTP-level
-numbers (ingest throughput and query latency against a real release server; the
-[baseline](benchmarks.md#reproducible-baselines) adds a mixed-load p50/p90/p95/p99
-profile), use the .NET harness under `dotnet/`. Results are published at [benchmarks](benchmarks.md):
+Performance is measured for releases, not in this guide: every stable release is signed off
+against performance gates on a fixed host, and the results are attached to the GitHub release
+([releasing](releasing.md#pre-tag-performance-sign-off)). The tools used to produce them:
 
 ```bash
+cargo bench -p storage -p query                                          # Criterion micro-benchmarks
 cargo build --release -p server
-dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short
+dotnet run --project dotnet/Vyrtel.Benchmark -c Release -- --job short   # ingest + query over HTTP
+dotnet run --project dotnet/Vyrtel.Baseline -c Release -- --runs 5       # reproducible baseline + budgets
 ```
 
-### Reproducible baselines
-
-`dotnet/Vyrtel.Baseline` records repeated runs of a seeded workload against a server with a
-pinned configuration and proposes regression budgets from the run-to-run variance (see
-[Reproducible baselines](benchmarks.md#reproducible-baselines)):
-
-```bash
-cargo build --release -p server
-dotnet run --project dotnet/Vyrtel.Baseline -c Release -- --runs 5
-dotnet run --project dotnet/Vyrtel.Baseline -c Release -- compare old.json target/baseline/report.json
-```
-
-Its logic is unit-tested without a server in `dotnet/Vyrtel.Baseline.Tests` (xUnit;
-`dotnet test dotnet/Vyrtel.slnx -c Release`, CI job **.NET**). The tests check arithmetic, report
-contents and determinism; they never assert a machine-specific timing. Measured runs keep their
-raw numbers in the report instead.
-
-| Acceptance criterion (REL-10) | Tests and evidence |
-|---|---|
-| AC1: a seeded workload with a pinned configuration records accepted/rejected counts and latency percentiles | `DatasetCheckTests` (spans and data points counted from the fixture payloads; a complete dataset passes; events acknowledged but not stored, under-acknowledged events, and a shortfall or surplus in any signal fail the run with both counts); `RequestTallyTests` (each status classified: 2xx accepted, 429/503 backpressure, 413 too large, other rejected, 0 transport error; counts by outcome and status, exact under concurrency, summed across operations); `BaselineReportWriterTests.States_accepted_and_rejected_counts_and_percentiles`; `WorkloadTests.Each_worker_issues_the_same_sequence_every_run`, `The_sequence_is_fixed_across_processes`, `Seeded_events_are_identical_apart_from_timestamps`; `HostAndOptionsTests.Finds_the_checked_in_pinned_configuration`; Rust `config::tests::baseline_config_file_is_valid_and_pins_the_derived_ingest_concurrency` (the pinned file loads, keeps compaction off, and its ingest concurrency equals the derived value); measured: the reference baseline's accepted/rejected table |
-| AC2: selective queries and message scans include cold/warm behaviour and diagnostics | `QueryMeasurerTests` (a healthy endpoint is measured cold and 20× warm; every warm request returning 500, a 503 on the cold request, a single 500 among warm requests, and repeated timeouts each stop the run with the query, request and status named, so a broken endpoint cannot record 0 ms; through the real HTTP client, a local server answering 500 yields no measurement); `WorkloadTests.Queries_cover_selective_lookups_and_message_scans`, `Reads_the_servers_diagnostics` (every diagnostics field, including indexes), `Missing_or_malformed_diagnostics_are_null`; `BaselineReportWriterTests.States_cold_and_warm_timings_with_diagnostics`; measured: the reference baseline's cold/warm table |
-| AC3: the report states hardware, duration, peak RSS, binary size and compression method | `BaselineReportWriterTests.States_hardware_duration_peak_rss_binary_size_and_compression`; `HostAndOptionsTests` (`/proc/cpuinfo` on x86 and arm64, this host's CPU, memory and disk, peak RSS source: OS peak vs sampling, never under-reporting) |
-| AC4: budgets are justified by measured variance | `BaselineStatisticsTests` (sample standard deviation and CV; the 90% upper-bound factor k(n) for 3, 5, 10, 31 and 41 runs; `3 × CV × k(n)` rounded up, wider for fewer runs; timing and size floors; `Same_commit_noise_measured_on_the_reference_laptop_is_not_a_regression` replays the false regression two same-commit baselines produced before k(n); fewer than 3 runs, zero mean and a budget over 50% are not gated, with the reason); `BaselineComparerTests` (regression, improvement and within-budget verdicts in both directions; throughput is higher-is-better; peak RSS growth; `Collapsing_successful_throughput_behind_fast_429s_fails`: attempted requests/s rises while successful requests/s, accepted events/s and the unsuccessful share regress, so the comparison fails with exit status 2; a rise in rejections from a 0% baseline is caught by the 1-point floor; a missing gated metric, a report missing every metric, a 2-run baseline that gates nothing, and configuration, CPU or seed changes all fail; a missing ungated metric and a different number of runs do not); `BaselineStatisticsTests.Successful_throughput_counts_only_accepted_requests`, `Attempted_throughput_is_informational_and_never_gated`, `Ratio_budgets_are_absolute_points`; `BaselineReportWriterTests.States_budgets_with_their_justification`, `Json_round_trips_and_samples_go_to_csv`, `Refuses_a_report_with_another_schema`; measured: two independent baselines compared in [Run-to-run evidence](benchmarks.md#run-to-run-evidence) |
+The baseline tool, its method and its regression budgets are described in
+[`dotnet/Vyrtel.Baseline/README.md`](../dotnet/Vyrtel.Baseline/README.md). Its logic is unit-tested
+without a server in `dotnet/Vyrtel.Baseline.Tests` (`dotnet test dotnet/Vyrtel.slnx -c Release`, CI job
+**.NET**); the tests check arithmetic, report contents and determinism, never a machine-specific timing.
 
 ## Load generator
 
@@ -1606,7 +1143,7 @@ acknowledged event is missing afterwards.
 
 `keychurn`, in the same package, measures authenticated ingest while an
 admin creates and revokes API keys (see
-[API key churn benchmark](#api-key-churn-benchmark)):
+[API key changes](#api-key-changes-and-authentication-auth-perf-01)):
 
 ```bash
 cargo run --release -p loadgen --bin keychurn -- --target http://localhost:8080   --duration 20s --concurrency 64 --batch 1 --churn-interval 20ms
@@ -1620,7 +1157,7 @@ acknowledged event is missing afterwards.
 
 `sessionauth` runs the same load with only a session cookie or only an
 admin key (see
-[Session authentication benchmark](#session-authentication-benchmark)):
+[session authentication](#session-authentication-auth-perf-02)):
 
 ```bash
 cargo run --release -p loadgen --bin sessionauth -- --target http://localhost:8080 \
@@ -1636,7 +1173,7 @@ and exits with status 1 if any acknowledged event is missing afterwards.
 
 `keytouch` uses many API keys in turn while one churner creates, uses and
 revokes keys, sampling the server's RSS and last-used bookkeeping (see
-[API key last-used benchmark](#api-key-last-used-benchmark)):
+[last-used tracking](#api-key-last-used-tracking-auth-perf-03)):
 
 ```bash
 cargo run --release -p loadgen --bin keytouch -- --target http://localhost:8080   --active-keys 5000 --concurrency 16 --churn-interval 2ms --duration 70s

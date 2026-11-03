@@ -49,8 +49,8 @@ jobs:
           dotnet-version: '10.0.x'
       - name: Build
         run: dotnet build dotnet/Vyrtel.slnx -c Release
-      # Baseline arithmetic, comparison and report contents (docs/benchmarks.md#reproducible-baselines).
-      # No server needed; the measured run is in benchmark.yml.
+      # Baseline arithmetic, comparison and report contents (dotnet/Vyrtel.Baseline/README.md).
+      # No server needed; measured runs are made on the sign-off host for release performance gates.
       - name: Tests
         run: dotnet test dotnet/Vyrtel.slnx -c Release --no-build
 

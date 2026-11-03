@@ -8,14 +8,18 @@
 {{HEADER}}
 
 <div class="wrap docs-layout">
+  <nav class="docs-sidebar" aria-label="Documentation">{{VERSIONS}}{{SIDEBAR}}</nav>
   <main id="main" class="docs-main">
-    <nav class="docs-nav" aria-label="Documentation">
+    <nav class="docs-nav" aria-label="Documentation pages">
+      {{VERSIONS}}
       {{PICKER}}
     </nav>
+    {{NOTICE}}
+    <p class="docs-eyebrow">{{GROUP}}</p>
     <article class="prose">
 {{CONTENT}}
     </article>
-    <p class="edit-link small"><a href="{{EDIT_URL}}">Edit this page on GitHub</a></p>
+    <p class="edit-link small">{{SOURCE}}</p>
     {{PAGER}}
   </main>
   <aside class="docs-toc">{{TOC}}</aside>

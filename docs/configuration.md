@@ -675,8 +675,8 @@ warning; Vyrtel pauses accepting for 250 ms and retries.
 
 ### Choosing the limits
 
-The defaults come from the measurements above and the Linux runs in
-[`docs/benchmarks/transport`](benchmarks/transport/2026-10-17-wsl2/README.md):
+The defaults come from the measurements above and Linux transport soak runs
+([budgets](../scripts/bench/transport-budgets.md)):
 
 * **`max_connections = 256`.** OpenTelemetry SDKs and Collectors, log
   shippers and browsers reuse a handful of keep-alive connections each, so
@@ -721,12 +721,10 @@ docker run --memory 384m --ulimit nofile=1024 -p 8080:8080 \
   -e VYRTEL_SERVER_CONNECTION_BUFFER=16KB ghcr.io/rowan-smith/vyrtel
 ```
 
-With waves of 1,000 simultaneous connection attempts every minute for 30
-minutes, alongside steady ingest and queries, this configuration held at
-most 64 connections and 64 waiting, peaked at 92 MiB RSS (130 MiB for the
-whole container, kernel buffers and page cache included) and settled at
-77 MiB afterwards, with every acknowledged event stored
-([report](benchmarks/transport/2026-10-17-wsl2/README.md)).
+Under waves of 1,000 simultaneous connection attempts alongside steady
+ingest and queries, this configuration holds at most 64 connections and 64
+waiting, stays inside the container's memory limit, and stores every
+acknowledged event.
 
 **Behind a reverse proxy or load balancer.** Vyrtel then sees the proxy's
 upstream connections, not the clients': set `max_connections` at least as

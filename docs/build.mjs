@@ -2,9 +2,10 @@
 //
 // - site/index.html is the front page; {{PLACEHOLDERS}} are filled from the repo (version from
 //   Cargo.toml, repository from $GITHUB_REPOSITORY or the git remote, logo path from the web UI).
-// - README.md (as "Overview"), docs/*.md and docs/brand/README.md are rendered to
-//   build/docs/<slug>.html, so every doc lives under /docs/ on the site. Links between docs become
-//   site links; links to other repo files point at GitHub.
+// - The docs (docs/guide/*.md, docs/*.md, CONTRIBUTING.md, docs/brand/README.md) are rendered once
+//   per documentation version: `latest` from this checkout and every release from its git tag, at
+//   build/docs/<version>/<slug>.html, with the newest release also at build/docs/<slug>.html. Links
+//   between docs become site links; links to other repo files point at GitHub at that version.
 // - Brand assets, favicons, screenshots and fonts are copied from where the repo already keeps them,
 //   so the site never drifts from the app.
 //
@@ -70,19 +71,6 @@ const chevron = `<svg class="chevron" viewBox="0 0 16 16" width="14" height="14"
 const sunIcon = `<svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
 const moonIcon = `<svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>`;
 
-/** Docs pages grouped for the menus: filled in once the docs are parsed (see build()). */
-let docNav = [];
-
-/** The grouped list of docs pages, shared by the header dropdown and the docs page picker. */
-const docMenu = (base, currentSlug) =>
-  `<div class="dropdown-panel">${docNav
-    .map(
-      (g) => `<div class="dd-group"><h3>${g.group}</h3>${g.pages
-        .map((d) => `<a href="${base}docs/${d.slug}.html"${d.slug === currentSlug ? ' aria-current="page"' : ''}>${d.title}</a>`)
-        .join('')}</div>`,
-    )
-    .join('')}</div>`;
-
 const themeToggle = (cls) =>
   `<button class="theme-toggle ${cls}" type="button" data-theme-toggle aria-label="Switch colour theme">${sunIcon}${moonIcon}</button>`;
 
@@ -94,11 +82,8 @@ const header = (base, current, currentSlug) => `
     <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu"><span></span><span></span></button>
     <nav id="site-nav" class="site-nav" aria-label="Main">
       <a href="${base}index.html#features"${current === 'features' ? ' aria-current="page"' : ''}>Features</a>
-      <details class="dropdown nav-dropdown">
-        <summary${current === 'docs' ? ' aria-current="page"' : ''}>Docs ${chevron}</summary>
-        ${docMenu(base, currentSlug)}
-      </details>
-      <a href="${base}index.html#download">Download</a>
+      <a href="${base}docs/index.html"${current === 'docs' && currentSlug !== 'benchmarks' ? ' aria-current="page"' : ''}>Docs</a>
+      <a href="${base}docs/benchmarks.html"${currentSlug === 'benchmarks' ? ' aria-current="page"' : ''}>Benchmarks</a>
       <a href="${repoUrl}/releases">Releases</a>
       <a class="nav-source" href="${repoUrl}">${githubIcon}<span>Source</span></a>
       ${themeToggle('theme-toggle-desktop')}
@@ -121,14 +106,16 @@ const footer = (base) => `
         <a href="${base}index.html#features">Features</a>
         <a href="${base}index.html#download">Download</a>
         <a href="${repoUrl}/releases">Release notes</a>
+        <a href="${base}docs/benchmarks.html">Benchmarks</a>
         <a href="${base}docs/roadmap.html">Roadmap</a>
       </div>
       <div>
         <h2>Docs</h2>
-        <a href="${base}docs/overview.html">Quick start</a>
+        <a href="${base}docs/quickstart.html">Quickstart</a>
+        <a href="${base}docs/opentelemetry.html">OpenTelemetry</a>
         <a href="${base}docs/query-language.html">Query language</a>
-        <a href="${base}docs/api.html">HTTP API</a>
         <a href="${base}docs/configuration.html">Configuration</a>
+        <a href="${base}docs/api.html">HTTP API</a>
       </div>
       <div>
         <h2>Project</h2>
@@ -178,44 +165,149 @@ const fill = (s, vars) => s.replace(/\{\{([A-Z_]+)\}\}/g, (m, k) => (k in vars ?
 
 // ---------- docs ----------
 
+/**
+ * Every docs page. Pages outside the Project group are versioned: each documentation version renders
+ * them from its own git ref, and a version simply lacks the pages its ref does not have. Project
+ * pages (roadmap, benchmarks, contributing...) describe the project rather than a release, so every
+ * version shows them from the current checkout.
+ */
 const DOCS = [
-  { slug: 'overview', file: 'README.md', title: 'Overview', group: 'Start here' },
-  { slug: 'query-language', file: 'docs/query-language.md', group: 'Using Vyrtel' },
-  { slug: 'api', file: 'docs/api.md', group: 'Using Vyrtel' },
-  { slug: 'configuration', file: 'docs/configuration.md', group: 'Running Vyrtel' },
-  { slug: 'architecture', file: 'docs/architecture.md', group: 'Internals' },
-  { slug: 'storage-format', file: 'docs/storage-format.md', group: 'Internals' },
-  { slug: 'development', file: 'docs/development.md', group: 'Contributing' },
-  { slug: 'testing', file: 'docs/testing.md', group: 'Contributing' },
-  { slug: 'releasing', file: 'docs/releasing.md', group: 'Contributing' },
-  { slug: 'contributing', file: 'CONTRIBUTING.md', group: 'Project' },
-  { slug: 'cla-individual', file: 'docs/cla/individual.md', title: 'Individual CLA', group: 'Project' },
-  { slug: 'cla-corporate', file: 'docs/cla/corporate.md', title: 'Corporate CLA', group: 'Project' },
-  { slug: 'roadmap', file: 'docs/roadmap.md', group: 'Project' },
+  { slug: 'introduction', file: 'docs/guide/introduction.md', group: 'Get started' },
+  { slug: 'quickstart', file: 'docs/guide/quickstart.md', group: 'Get started' },
+  { slug: 'installation', file: 'docs/guide/installation.md', group: 'Get started' },
+  { slug: 'opentelemetry', file: 'docs/guide/opentelemetry.md', title: 'OpenTelemetry', group: 'Send data' },
+  { slug: 'http-ingestion', file: 'docs/guide/http-ingestion.md', title: 'HTTP and JSON', group: 'Send data' },
+  { slug: 'query-language', file: 'docs/query-language.md', group: 'Search' },
+  { slug: 'docker', file: 'docs/guide/docker.md', title: 'Docker', group: 'Operate' },
+  { slug: 'security', file: 'docs/guide/security.md', group: 'Operate' },
+  { slug: 'backups-and-upgrades', file: 'docs/guide/backups-and-upgrades.md', group: 'Operate' },
+  { slug: 'configuration', file: 'docs/configuration.md', group: 'Reference' },
+  { slug: 'api', file: 'docs/api.md', group: 'Reference' },
+  { slug: 'architecture', file: 'docs/architecture.md', group: 'How it works' },
+  { slug: 'storage-format', file: 'docs/storage-format.md', group: 'How it works' },
   { slug: 'benchmarks', file: 'docs/benchmarks.md', title: 'Benchmarks', group: 'Project' },
+  { slug: 'roadmap', file: 'docs/roadmap.md', group: 'Project' },
+  { slug: 'contributing', file: 'CONTRIBUTING.md', title: 'Contributing', group: 'Project' },
+  { slug: 'development', file: 'docs/development.md', group: 'Project' },
   { slug: 'brand', file: 'docs/brand/README.md', title: 'Brand guide', group: 'Project' },
+  // Rendered and linked from other pages, but not listed in the navigation.
+  { slug: 'cla-individual', file: 'docs/cla/individual.md', title: 'Individual CLA', group: 'Project', hidden: true },
+  { slug: 'cla-corporate', file: 'docs/cla/corporate.md', title: 'Corporate CLA', group: 'Project', hidden: true },
 ];
-const bySource = new Map(DOCS.map((d) => [d.file, d]));
+const isProjectPage = (d) => d.group === 'Project';
+
+/** Releases before the guides existed opened with the README; it stands in for the introduction. */
+const README_OVERVIEW = { slug: 'overview', file: 'README.md', title: 'Overview', group: 'Get started' };
+
+/** Pages that used to exist, so old links still land somewhere useful. Maintainer docs live on GitHub. */
+const REDIRECTS = {
+  overview: 'introduction.html',
+  testing: `${repoUrl}/blob/main/docs/testing.md`,
+  releasing: `${repoUrl}/blob/main/docs/releasing.md`,
+};
+
+// ---------- versions ----------
+
+/** The oldest release with docs on the site. 0.1.0 shipped under the product's earlier name. */
+const OLDEST_DOCS_RELEASE = '0.1.1';
+
+const semver = (v) => v.split('.').map(Number);
+const compareVersions = (a, b) => {
+  const [x, y] = [semver(a), semver(b)];
+  return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+};
+
+/** Stable release tags (vX.Y.Z, no prereleases) back to OLDEST_DOCS_RELEASE, newest first. */
+function releaseVersions() {
+  let tags = '';
+  try {
+    tags = execSync('git tag --list v*', { cwd: root, encoding: 'utf8' });
+  } catch {
+    return [];
+  }
+  return tags
+    .split('\n')
+    .map((t) => t.trim())
+    .filter((t) => /^v\d+\.\d+\.\d+$/.test(t))
+    .map((t) => t.slice(1))
+    .filter((v) => compareVersions(v, OLDEST_DOCS_RELEASE) >= 0)
+    .sort((a, b) => compareVersions(b, a));
+}
+
+/** A repo file as it is at `ref`, or in the working tree when `ref` is null; null if it is absent. */
+function readAt(ref, file) {
+  if (!ref) {
+    const full = path.join(root, file);
+    return fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null;
+  }
+  try {
+    return execSync(`git show ${ref}:${file}`, {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The documentation versions: `latest` (this checkout, i.e. main, with unreleased changes) and every
+ * stable release, each rendered under docs/<id>/. The newest release is the default and is also
+ * rendered at docs/ itself; `latest` is the default only before the first release.
+ */
+function docVersions() {
+  const releases = releaseVersions();
+  const list = [
+    { id: 'latest', label: 'Latest', ref: null, released: false },
+    ...releases.map((v) => ({ id: v, label: v, ref: `v${v}`, released: true })),
+  ];
+  for (const v of list) {
+    const pages = DOCS.filter((d) => isProjectPage(d) || readAt(v.ref, d.file) !== null).map((d) => ({
+      ...d,
+      ref: isProjectPage(d) ? null : v.ref,
+    }));
+    if (!pages.some((d) => d.slug === 'introduction') && readAt(v.ref, README_OVERVIEW.file) !== null) {
+      pages.unshift({ ...README_OVERVIEW, ref: v.ref });
+    }
+    v.pages = pages;
+    v.slugs = new Set(pages.map((d) => d.slug));
+  }
+  const latestRelease = list.find((v) => v.released) ?? null;
+  return { list, defaultVersion: latestRelease ?? list[0], latestRelease };
+}
+
+// ---------- rendering ----------
+
 const copiedDirs = ['docs/screenshots/', 'docs/brand/'];
 const ASSET = /\.(png|svg|jpe?g|gif|webp|json)$/i;
 
-let currentSource = '';
+/** What the Markdown renderer is working on: set before each page is parsed. */
+const current = { source: '', ref: null, bySource: new Map(), assetPrefix: '', crossToLatest: false };
 
-/** Rewrites a link or image target written relative to `currentSource` in the repo. */
+/** Rewrites a link or image target written relative to `current.source` in the repo. */
 function rewrite(href) {
   if (!href || /^(https?:|mailto:|#|\/\/)/.test(href)) return href;
   const [p, hash = ''] = href.split('#');
   const frag = hash ? `#${hash}` : '';
-  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(currentSource), p));
-  const doc = bySource.get(resolved);
+  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(current.source), p));
+  const doc = current.bySource.get(resolved);
+  // Project pages are written against main, so in a release's docs their links to versioned pages
+  // go to the latest docs, where the sections they name exist.
+  if (doc && current.crossToLatest && !isProjectPage(doc)) return `${current.assetPrefix}latest/${doc.slug}.html${frag}`;
   if (doc) return `${doc.slug}.html${frag}`;
-  // Images and data files in these folders are copied next to the pages; anything else (scripts,
-  // READMEs) links to GitHub like other repo files.
+  if (current.crossToLatest) {
+    const latestDoc = DOCS.find((d) => d.file === resolved && !isProjectPage(d));
+    if (latestDoc) return `${current.assetPrefix}latest/${latestDoc.slug}.html${frag}`;
+  }
+  // Images and data files in these folders are copied to docs/; anything else (scripts, READMEs)
+  // links to GitHub at the version's ref, like other repo files.
   const copied = copiedDirs.find((d) => resolved.startsWith(d));
-  if (copied && ASSET.test(resolved)) return resolved.slice('docs/'.length);
+  if (copied && ASSET.test(resolved)) return current.assetPrefix + resolved.slice('docs/'.length);
   const full = path.join(root, resolved);
   const kind = fs.existsSync(full) && fs.statSync(full).isDirectory() ? 'tree' : 'blob';
-  return `${repoUrl}/${kind}/main/${resolved}${frag}`;
+  return `${repoUrl}/${kind}/${current.ref ?? 'main'}/${resolved}${frag}`;
 }
 
 const marked = new Marked({ gfm: true });
@@ -236,7 +328,7 @@ marked.use({
 });
 
 function docSource(d) {
-  let src = read(d.file);
+  let src = readAt(d.ref, d.file);
   if (d.file === 'README.md') {
     // The README opens with a centred logo block (GitHub-only <picture> markup); the site has its
     // own header. Start at the first paragraph and give the page a heading.
@@ -246,426 +338,127 @@ function docSource(d) {
   return src;
 }
 
-/** Reads a repo JSON file if present, else null (benchmark results are only committed by CI). */
-function readJson(rel) {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(root, rel), 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-const num = (n, digits = 2) =>
-  typeof n === 'number' ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—';
-
-/** Human byte counts matching the harness' ByteFormat, e.g. 11.9 MB. */
-const fmtBytes = (b) => {
-  if (typeof b !== 'number' || b <= 0) return '—';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let value = b;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit++;
-  }
-  const digits = unit === 0 ? 0 : value < 10 ? 2 : 1;
-  return `${value.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })} ${units[unit]}`;
-};
-
-const toMb = (b) => (typeof b === 'number' && b > 0 ? b / (1024 * 1024) : null);
-
-/** Build artefacts and storage footprint for the current run (below the chart). */
-function buildFacts(data) {
-  const build = data.build;
-  const storage = data.storage;
-  if (!build && !storage) {
-    return '';
-  }
-  const facts = [];
-  if (build?.executableBytes) {
-    facts.push(['Executable', `${fmtBytes(build.executableBytes)} (${escapeHtml(build.profile ?? 'release')})`]);
-  }
-  if (build?.dataDirBytes) {
-    facts.push(['Data directory', `${fmtBytes(build.dataDirBytes)} on disk after seeding`]);
-  }
-  if (storage?.eventCount) {
-    facts.push(['Events stored', `${num(storage.eventCount, 0)} events in ${num(storage.segmentCount, 0)} segments`]);
-    facts.push(['Bytes stored per event', `${num(storage.bytesStoredPerEvent, 2)} B`]);
-    if (typeof storage.compressionRatio === 'number' && storage.compressionRatio > 0) {
-      facts.push(['Compression', `${num(storage.compressionRatio, 2)}× (${fmtBytes(storage.rawBytes)} raw → ${fmtBytes(storage.storedBytes)} stored)`]);
-    }
-    if (typeof storage.indexOverhead === 'number' && storage.indexOverhead > 0) {
-      facts.push(['Index overhead', `${num(storage.indexOverhead * 100, 1)}% of segment bytes`]);
-    }
-  }
-  if (facts.length === 0) {
-    return '';
-  }
-  return (
-    `<h2 id="build-footprint">Build and footprint</h2>` +
-    `<dl class="facts">${facts.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${v}</dd>`).join('')}</dl>`
-  );
-}
-
-const escapeHtml = (s) =>
-  String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
-const shorten = (s, max = 40) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
-
-/** Inline-SVG horizontal bar chart (log scale) so the site needs no chart library. */
-function barChart(rows) {
-  const rowHeight = 26;
-  const padTop = 6;
-  const labelW = 276;
-  const valueW = 104;
-  const width = 760;
-  const plotW = width - labelW - valueW;
-  const height = padTop * 2 + rows.length * rowHeight;
-  const scale = (v) => Math.log10(1 + Math.max(Number(v) || 0, 0));
-  const max = Math.max(...rows.map((r) => scale(r.value)), 0.0001);
-
-  const body = rows
-    .map((r, i) => {
-      const cy = padTop + i * rowHeight + rowHeight / 2;
-      const w = Math.max(1.5, (scale(r.value) / max) * plotW);
-      let range = '';
-      if (Number.isFinite(r.min) && Number.isFinite(r.max) && r.max > r.min) {
-        const x1 = labelW + (scale(r.min) / max) * plotW;
-        const x2 = labelW + (scale(r.max) / max) * plotW;
-        range = `<line class="chart-range" x1="${x1.toFixed(1)}" y1="${cy}" x2="${x2.toFixed(1)}" y2="${cy}"></line>`;
-      }
-      return (
-        `<text class="chart-label" x="${labelW - 10}" y="${cy + 4}" text-anchor="end">${escapeHtml(shorten(r.label))}</text>` +
-        range +
-        `<rect class="chart-bar" x="${labelW}" y="${(cy - 7).toFixed(1)}" width="${w.toFixed(1)}" height="14" rx="3"></rect>` +
-        `<text class="chart-value" x="${(labelW + w + 8).toFixed(1)}" y="${cy + 4}">${escapeHtml(r.display)}</text>`
-      );
-    })
-    .join('');
-
-  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img">${body}</svg>`;
-}
-
-function chartFigure(title, caption, rows) {
-  if (rows.length === 0) {
-    return '';
-  }
-  return `<figure class="chart-figure"><figcaption>${escapeHtml(title)} <span class="muted">${escapeHtml(caption)}</span></figcaption>${barChart(rows)}</figure>`;
-}
-
-/** Inline-SVG line chart of one metric across released versions (dots + connecting line). */
-function lineChart(points) {
-  const width = 760;
-  const height = 220;
-  const padTop = 16;
-  const padBottom = 34;
-  const padLeft = 56;
-  const padRight = 24;
-  const plotW = width - padLeft - padRight;
-  const plotH = height - padTop - padBottom;
-  const max = Math.max(...points.map((p) => p.value), 0.0001);
-  const x = (i) => (points.length === 1 ? padLeft + plotW / 2 : padLeft + (i / (points.length - 1)) * plotW);
-  const y = (v) => padTop + plotH - (v / max) * plotH;
-  const fmt = (v) => (v >= 1000 ? Math.round(v / 100) / 10 + 'k' : v >= 10 ? Math.round(v) : Math.round(v * 100) / 100);
-
-  const grid = [0, 0.25, 0.5, 0.75, 1]
-    .map((t) => {
-      const gy = padTop + plotH - t * plotH;
-      return (
-        `<line class="chart-axis" x1="${padLeft}" y1="${gy.toFixed(1)}" x2="${(padLeft + plotW).toFixed(1)}" y2="${gy.toFixed(1)}"></line>` +
-        `<text class="chart-tick" x="${padLeft - 8}" y="${(gy + 4).toFixed(1)}" text-anchor="end">${fmt(max * t)}</text>`
-      );
-    })
-    .join('');
-
-  const lines =
-    points.length > 1
-      ? `<polyline class="chart-line" points="${points.map((p, i) => `${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ')}"></polyline>`
-      : '';
-
-  const dots = points
-    .map((p, i) => {
-      const cx = x(i).toFixed(1);
-      const cy = y(p.value).toFixed(1);
-      return (
-        `<circle class="chart-dot" cx="${cx}" cy="${cy}" r="4"></circle>` +
-        `<text class="chart-value" x="${x(i).toFixed(1)}" y="${(y(p.value) - 9).toFixed(1)}" text-anchor="middle">${escapeHtml(p.display)}</text>` +
-        `<text class="chart-tick" x="${x(i).toFixed(1)}" y="${(padTop + plotH + 20).toFixed(1)}" text-anchor="middle">${escapeHtml(p.label)}</text>`
-      );
-    })
-    .join('');
-
-  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img">${grid}${lines}${dots}</svg>`;
-}
-
-/** Reads docs/benchmarks/versions/*.json (one snapshot per released tag), sorted oldest → newest. */
-function versionSnapshots() {
-  const dir = path.join(root, 'docs', 'benchmarks', 'versions');
-  let files = [];
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
-  } catch {
-    return [];
-  }
-  const parse = (s) => {
-    const m = String(s).match(/(\d+)\.(\d+)\.(\d+)/);
-    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : [0, 0, 0];
-  };
-  return files
-    .map((f) => {
-      const data = readJson(`docs/benchmarks/versions/${f}`);
-      if (!data || !Array.isArray(data.benchmarks) || data.benchmarks.length === 0) return null;
-      const label = data.label || data.vyrtelVersion || f.replace(/\.json$/, '');
-      return { ...data, label };
-    })
-    .filter(Boolean)
-    .sort((a, b) => {
-      const av = parse(a.label);
-      const bv = parse(b.label);
-      return av[0] - bv[0] || av[1] - bv[1] || av[2] - bv[2];
-    });
-}
-
-/** Renders the per-version comparison (chart per headline metric + full table) for released tags. */
-function versionHistory(snapshots) {
-  if (snapshots.length === 0) {
-    return '';
-  }
-  const labels = snapshots.map((s) => s.label);
-  const maps = snapshots.map((s) => new Map(s.benchmarks.map((b) => [b.id, b])));
-  const newest = snapshots[snapshots.length - 1];
-
-  const order = [];
-  const seen = new Set();
-  for (const b of [...newest.benchmarks, ...snapshots.flatMap((s) => s.benchmarks)]) {
-    if (!seen.has(b.id)) {
-      order.push(b);
-      seen.add(b.id);
-    }
-  }
-
-  const cell = (b) => {
-    if (!b) return '—';
-    if (b.metric === 'throughput') return `${num(b.value, 0)} ${escapeHtml(b.unit)}`;
-    return `${num(b.meanMs, b.meanMs < 1 ? 3 : b.meanMs < 100 ? 2 : 0)} ms`;
-  };
-
-  // Headline metrics for the version charts: each returns { value, display } per snapshot.
-  const byId = (s, id) => s.benchmarks.find((x) => x.id === id);
-  const msCell = (b) => `${num(b.meanMs, b.meanMs < 1 ? 3 : b.meanMs < 100 ? 2 : 0)} ms`;
-  const throughput = (s, id) => {
-    const b = byId(s, id);
-    return b ? { value: b.value, display: `${num(b.value, 0)} ${b.unit}` } : null;
-  };
-  const latency = (s, id) => {
-    const b = byId(s, id);
-    return b ? { value: b.meanMs, display: msCell(b) } : null;
-  };
-
-  const headline = [
-    { label: 'Ingest NDJSON', better: 'higher', get: (s) => throughput(s, 'IngestBatch') },
-    { label: 'Ingest JSON', better: 'higher', get: (s) => throughput(s, 'IngestBatchJson') },
-    { label: 'Latest logs', better: 'lower', get: (s) => latency(s, 'LogsLatest') },
-    { label: 'Full-text scan', better: 'lower', get: (s) => latency(s, 'LogsMessageContains') },
-    {
-      label: 'Executable size',
-      better: 'lower',
-      get: (s) => {
-        const mb = toMb(s.build?.executableBytes);
-        return mb ? { value: mb, display: `${num(mb, 2)} MB` } : null;
-      },
-    },
-    {
-      label: 'Bytes stored per event',
-      better: 'lower',
-      get: (s) =>
-        s.storage?.eventCount ? { value: s.storage.bytesStoredPerEvent, display: `${num(s.storage.bytesStoredPerEvent, 2)} B` } : null,
-    },
-  ];
-
-  const figures = headline
-    .map(({ label, better, get }) => {
-      const points = snapshots
-        .map((s) => {
-          const p = get(s);
-          return p ? { label: s.label, ...p } : null;
-        })
-        .filter(Boolean);
-      if (points.length === 0) return '';
-      const caption = points.length === 1 ? 'first released snapshot' : `${better} is better`;
-      return `<figure class="chart-figure"><figcaption>${escapeHtml(label)} <span class="muted">${escapeHtml(caption)}</span></figcaption>${lineChart(points)}</figure>`;
-    })
-    .join('');
-
-  // Extra rows in the comparison table that aren't benchmark rows.
-  const extras = [
-    { name: 'Executable size', display: (s) => fmtBytes(s.build?.executableBytes) },
-    { name: 'Data directory on disk', display: (s) => fmtBytes(s.build?.dataDirBytes) },
-    {
-      name: 'Bytes stored per event',
-      display: (s) => (s.storage?.eventCount ? `${num(s.storage.bytesStoredPerEvent, 2)} B` : '—'),
-    },
-    {
-      name: 'Compression ratio',
-      display: (s) => (s.storage?.compressionRatio ? `${num(s.storage.compressionRatio, 2)}×` : '—'),
-    },
-  ];
-
-  const extraRows = extras
-    .map((e) => `<tr class="row-extra"><td>${escapeHtml(e.name)}</td>${snapshots.map((s) => `<td>${e.display(s)}</td>`).join('')}</tr>`)
-    .join('');
-
-  const rows = `${order
-    .map((sample) => `<tr><td>${escapeHtml(sample.name)}</td>${maps.map((m) => `<td>${cell(m.get(sample.id))}</td>`).join('')}</tr>`)
-    .join('')}${extraRows}`;
-  const table = `<table><thead><tr><th>Benchmark</th>${labels.map((l) => `<th>${escapeHtml(l)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>`;
-
-  return (
-    `<h2 id="version-history">Version history</h2>` +
-    `<p class="muted">A snapshot is captured for every released tag (<code>v*</code>), so progress is visible between versions. Older versions are on the left; each column in the table is a full benchmark run.</p>` +
-    `${figures}${table}`
-  );
-}
-
-
-/** Renders the benchmark rollup injected into docs/benchmarks.md from docs/benchmarks/results.json. */
-function benchmarkResults() {
-  const data = readJson('docs/benchmarks/results.json');
-  if (!data || !Array.isArray(data.benchmarks) || data.benchmarks.length === 0) {
-    return `<p class="muted">No benchmark results have been published yet. They are regenerated automatically on the CI machine whenever <code>main</code> changes — see the <a href="${repoUrl}/actions/workflows/benchmark.yml">benchmark workflow</a>.</p>`;
-  }
-
-  const meta = [
-    `Vyrtel ${data.vyrtelVersion ?? '?'}`,
-    `${data.job ?? 'short'} job`,
-    data.dataset?.events ? `${data.dataset.events.toLocaleString('en-US')} events` : null,
-    data.generatedAt ? `generated ${new Date(data.generatedAt).toISOString().slice(0, 10)}` : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
-
-  const hw = data.hardware ?? {};
-  const machine = [
-    hw.os,
-    hw.logicalCores ? `${hw.logicalCores} logical cores` : null,
-    hw.runtime,
-    hw.benchmarkDotNet ? `BenchmarkDotNet ${hw.benchmarkDotNet}` : null,
-  ]
-    .filter(Boolean)
-    .join('; ');
-
-  const groups = [...new Set(data.benchmarks.map((b) => b.group))];
-  const byGroup = (g) => data.benchmarks.filter((b) => b.group === g);
-
-  const latencyRows = (list) =>
-    list
-      .map((b) => ({
-        label: b.name,
-        value: b.meanMs,
-        display: `${num(b.meanMs, b.meanMs < 1 ? 3 : b.meanMs < 100 ? 2 : 0)} ms`,
-        min: b.minMs,
-        max: b.maxMs,
-      }))
-      .sort((a, b) => b.value - a.value);
-
-  const throughputRows = (list) =>
-    list
-      .map((b) => ({ label: `${b.name} (${b.unit})`, value: b.value, display: `${num(b.value, 0)} ${b.unit}` }))
-      .sort((a, b) => b.value - a.value);
-
-  const charts = [];
-  for (const group of groups) {
-    const list = byGroup(group);
-    charts.push(
-      chartFigure(
-        `${group} latency`,
-        'mean ms per request · log scale · whisker = min–max · shorter is better',
-        latencyRows(list),
-      ),
-    );
-    if (group === 'Query') {
-      charts.push(
-        chartFigure(
-          'Query throughput',
-          'requests per second · log scale · longer is better',
-          list
-            .map((b) => ({ label: b.name, value: b.throughput ?? 0, display: `${num(b.throughput, 0)} ops/s` }))
-            .sort((a, b) => b.value - a.value),
-        ),
-      );
-    } else {
-      charts.push(
-        chartFigure(
-          `${group} throughput`,
-          'per-series throughput · log scale · unit shown per row · longer is better',
-          throughputRows(list),
-        ),
-      );
-    }
-  }
-
-  const tables = groups
-    .map((group) => {
-      const rows = data.benchmarks
-        .filter((b) => b.group === group)
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((b) => {
-          const speed = b.metric === 'throughput' ? `${num(b.value, 0)} ${b.unit}` : `${num(b.throughput, 0)} ${b.throughputUnit ?? ''}`.trim();
-          return `<tr><td>${b.name}</td><td>${num(b.meanMs, 3)} ms</td><td>${num(b.medianMs, 3)} ms</td><td>${num(b.minMs, 3)} ms</td><td>${num(b.maxMs, 3)} ms</td><td>${speed}</td></tr>`;
-        })
-        .join('');
-      return `<h3>${group}</h3><table><thead><tr><th>Benchmark</th><th>Mean</th><th>Median</th><th>Min</th><th>Max</th><th>Throughput</th></tr></thead><tbody>${rows}</tbody></table>`;
-    })
-    .join('');
-
-  return `<p class="muted">${meta}</p><p class="muted small">Measured on ${machine}.</p>${buildFacts(data)}${charts.join('')}${tables}${versionHistory(versionSnapshots())}`;
-}
-
-function parseDocs() {
-  return DOCS.map((d) => {
-    currentSource = d.file;
-    let html = marked.parse(docSource(d));
-    if (d.slug === 'benchmarks') {
-      html = html.replace('<!--BENCHMARK_RESULTS-->', benchmarkResults());
-    }
+/** Parses a version's pages for output at a directory `assetPrefix` away from docs/. */
+function parseDocs(v, assetPrefix) {
+  current.bySource = new Map(v.pages.map((d) => [d.file, d]));
+  current.assetPrefix = assetPrefix;
+  return v.pages.map((d) => {
+    current.source = d.file;
+    current.ref = d.ref;
+    current.crossToLatest = v.released && isProjectPage(d);
+    const html = marked.parse(docSource(d));
     const headings = getHeadingList();
     const h1 = headings.find((h) => h.level === 1);
     const title = d.title ?? h1?.raw ?? d.slug;
-    return { ...d, title, html, toc: headings.filter((h) => h.level === 2) };
+    // The first paragraph doubles as the page's meta description.
+    const first = html.match(/<p>([\s\S]*?)<\/p>/);
+    const description = first ? first[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 200) : null;
+    return { ...d, title, html, description, toc: headings.filter((h) => h.level === 2) };
   });
 }
 
-function renderDocs(rendered) {
-  const template = fs.readFileSync(path.join(here, 'site/doc.html'), 'utf8');
-  fs.mkdirSync(path.join(out, 'docs'), { recursive: true });
+/** Listed pages by group, for the sidebar and the mobile page picker. */
+const navGroups = (docs) => {
+  const listed = docs.filter((d) => !d.hidden);
+  return [...new Set(listed.map((d) => d.group))].map((group) => ({ group, pages: listed.filter((d) => d.group === group) }));
+};
 
-  rendered.forEach((d, i) => {
-    // The docs navigation is a dropdown ("page picker") rather than a full sidebar.
-    const picker = `<details class="dropdown doc-picker"><summary><span class="doc-picker-group">${d.group}</span><span class="doc-picker-title">${d.title}</span>${chevron}</summary>${docMenu('../', d.slug)}</details>`;
+const pageLinks = (pages, currentSlug) =>
+  pages.map((d) => `<a href="${d.slug}.html"${d.slug === currentSlug ? ' aria-current="page"' : ''}>${d.title}</a>`).join('');
+
+const sidebar = (groups, currentSlug) =>
+  groups.map((g) => `<div class="side-group"><h2>${g.group}</h2>${pageLinks(g.pages, currentSlug)}</div>`).join('');
+
+const pageMenu = (groups, currentSlug) =>
+  `<div class="dropdown-panel">${groups.map((g) => `<div class="dd-group"><h3>${g.group}</h3>${pageLinks(g.pages, currentSlug)}</div>`).join('')}</div>`;
+
+const redirectPage = (to, title) =>
+  `<!doctype html><meta charset="utf-8"><title>${title}</title><meta name="robots" content="noindex"><meta http-equiv="refresh" content="0; url=${to}"><link rel="canonical" href="${to}"><a href="${to}">${title}</a>`;
+
+/**
+ * Renders one version into `dir` (docs/ or docs/<id>/). `toDocs` is the relative path from that
+ * directory back to docs/, so links to other versions and the default docs resolve from either.
+ */
+function renderVersion(versions, v, dir, toDocs) {
+  const template = fs.readFileSync(path.join(here, 'site/doc.html'), 'utf8');
+  const base = `${toDocs}../`;
+  const docs = parseDocs(v, toDocs);
+  const groups = navGroups(docs);
+  const listed = docs.filter((d) => !d.hidden);
+  const { defaultVersion, latestRelease } = versions;
+  // Link to `slug` in another version: the same page if it has one, else that version's first page.
+  const inVersion = (other, slug) => {
+    const target = other.slugs.has(slug) ? slug : other.pages[0].slug;
+    return `${toDocs}${other.id}/${target}.html`;
+  };
+  fs.mkdirSync(path.join(out, dir), { recursive: true });
+
+  for (const d of docs) {
+    const picker = `<details class="dropdown doc-picker"><summary><span class="doc-picker-group">${d.group}</span><span class="doc-picker-title">${d.title}</span>${chevron}</summary>${pageMenu(groups, d.slug)}</details>`;
+    const versionPicker = `<details class="dropdown version-picker"><summary><span class="version-picker-label">Version</span><strong>${v.label}</strong>${chevron}</summary><div class="version-menu">${versions.list
+      .map(
+        (o) =>
+          `<a href="${inVersion(o, d.slug)}"${o.id === v.id ? ' aria-current="true"' : ''}>${o.label}${o === defaultVersion ? ' <span class="muted">current release</span>' : ''}${o.released ? '' : ' <span class="muted">unreleased</span>'}</a>`,
+      )
+      .join('')}</div></details>`;
     const toc = d.toc.length
       ? `<nav class="toc" aria-label="On this page"><h2>On this page</h2>${d.toc.map((h) => `<a href="#${h.id}">${h.text}</a>`).join('')}</nav>`
       : '';
-    const prev = rendered[i - 1];
-    const next = rendered[i + 1];
+    const i = listed.indexOf(d);
+    const prev = i > 0 ? listed[i - 1] : null;
+    const next = i >= 0 ? listed[i + 1] : null;
     const pager = `<nav class="pager" aria-label="Pages">${prev ? `<a class="prev" href="${prev.slug}.html"><span>Previous</span>${prev.title}</a>` : '<span></span>'}${next ? `<a class="next" href="${next.slug}.html"><span>Next</span>${next.title}</a>` : ''}</nav>`;
+
+    // Versioned pages say when they are not the docs most readers want; project pages are the same in every version.
+    let notice = '';
+    if (!isProjectPage(d) && v !== defaultVersion) {
+      notice = v.released
+        ? `You're reading the docs for Vyrtel ${v.label}. <a href="${inVersion(defaultVersion, d.slug)}">Read the current docs</a>.`
+        : `You're reading the docs for unreleased changes on main. Some behaviour differs in the current release. <a href="${inVersion(defaultVersion, d.slug)}">Read the ${defaultVersion.label} docs</a>.`;
+    }
+    const source = d.ref
+      ? `<a href="${repoUrl}/blob/${d.ref}/${d.file}">View the source of this page</a>`
+      : `<a href="${repoUrl}/edit/main/${d.file}">Edit this page on GitHub</a>`;
+
     const page = fill(template, {
-      HEAD: head('../', `${d.title} · Vyrtel docs`, `Vyrtel documentation: ${d.title}.`),
-      HEADER: header('../', 'docs', d.slug),
-      FOOTER: footer('../'),
+      HEAD: head(base, `${d.title} · Vyrtel docs`, d.description ?? `Vyrtel documentation: ${d.title}.`),
+      HEADER: header(base, 'docs', d.slug),
+      FOOTER: footer(base),
+      VERSIONS: versionPicker,
+      SIDEBAR: sidebar(groups, d.slug),
       PICKER: picker,
+      GROUP: d.group,
+      NOTICE: notice ? `<div class="callout version-notice" role="note"><p>${notice}</p></div>` : '',
       TOC: toc,
       CONTENT: d.html,
       PAGER: pager,
-      EDIT_URL: `${repoUrl}/edit/main/${d.file}`,
+      SOURCE: source,
     });
-    fs.writeFileSync(path.join(out, 'docs', `${d.slug}.html`), page);
-  });
-  // /docs/ itself opens the first page.
-  fs.writeFileSync(
-    path.join(out, 'docs', 'index.html'),
-    `<!doctype html><meta charset="utf-8"><title>Vyrtel docs</title><meta http-equiv="refresh" content="0; url=${rendered[0].slug}.html"><link rel="canonical" href="${rendered[0].slug}.html"><a href="${rendered[0].slug}.html">Vyrtel docs</a>`,
-  );
-  return rendered.length;
+    fs.writeFileSync(path.join(out, dir, `${d.slug}.html`), page);
+  }
+  // The directory itself opens the first page; retired pages forward to their replacement.
+  fs.writeFileSync(path.join(out, dir, 'index.html'), redirectPage(`${listed[0].slug}.html`, 'Vyrtel docs'));
+  for (const [slug, to] of Object.entries(REDIRECTS)) {
+    if (!v.slugs.has(slug)) fs.writeFileSync(path.join(out, dir, `${slug}.html`), redirectPage(to, 'Moved'));
+  }
+  // Site-wide links (front page, header, footer) point at docs/<slug>.html. Where the default version
+  // has no such page (it predates it), send them to that version's first page instead of a 404.
+  if (dir === 'docs') {
+    for (const d of DOCS) {
+      if (!v.slugs.has(d.slug) && !(d.slug in REDIRECTS)) {
+        fs.writeFileSync(path.join(out, dir, `${d.slug}.html`), redirectPage(`${listed[0].slug}.html`, 'Vyrtel docs'));
+      }
+    }
+  }
+  return listed.length;
+}
+
+/** Renders every version under docs/<id>/, and the default one at docs/ as well. */
+function renderDocs() {
+  const versions = docVersions();
+  for (const v of versions.list) renderVersion(versions, v, `docs/${v.id}`, '../');
+  const n = renderVersion(versions, versions.defaultVersion, 'docs', '');
+  return { versions, n };
 }
 
 // ---------- assets ----------
@@ -678,9 +471,6 @@ function copy(from, to, filter) {
 function build() {
   fs.rmSync(out, { recursive: true, force: true });
   fs.mkdirSync(out, { recursive: true });
-
-  const docs = parseDocs();
-  docNav = [...new Set(docs.map((d) => d.group))].map((group) => ({ group, pages: docs.filter((d) => d.group === group) }));
 
   const vars = {
     REPO: repo,
@@ -721,8 +511,9 @@ function build() {
 
   copy(path.join(here, 'node_modules/mermaid/dist/mermaid.min.js'), 'assets/mermaid.min.js');
 
-  const n = renderDocs(docs);
-  console.log(`Built ${path.relative(root, out)}: front page + ${n} docs pages for ${repo} (v${version}), site URL ${siteUrl}`);
+  const { versions, n } = renderDocs();
+  const ids = versions.list.map((v) => (v === versions.defaultVersion ? `${v.id} (default)` : v.id)).join(', ');
+  console.log(`Built ${path.relative(root, out)}: front page + ${n} docs pages in versions ${ids} for ${repo}, site URL ${siteUrl}`);
 }
 
 build();
