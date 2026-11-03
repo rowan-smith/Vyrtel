@@ -97,6 +97,20 @@ fn identify(conn: &Connection) -> Result<Identity> {
 
 pub type Result<T> = std::result::Result<T, MetadataError>;
 
+/// The `settings` key of the ingestion protection latch.
+pub const INGEST_PROTECTION: &str = "ingest_protection";
+
+/// The only value [`INGEST_PROTECTION`] has: latched.
+pub const INGEST_LATCHED: &str = "latched";
+
+/// Latch ingestion protection in `tx`. A latch already there is kept as it
+/// is, with the time it was first set.
+fn latch_ingest(tx: &rusqlite::Transaction, now: i64) -> rusqlite::Result<()> {
+    tx.prepare_cached("INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(key) DO NOTHING")?
+        .execute(params![INGEST_PROTECTION, INGEST_LATCHED, now])?;
+    Ok(())
+}
+
 pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
@@ -484,7 +498,9 @@ impl Metadata {
     // ---- API keys -------------------------------------------------------
 
     /// Store a new key. Only the hash is persisted; the caller shows the
-    /// plaintext to the user once.
+    /// plaintext to the user once. An ingest-scoped key also latches
+    /// ingestion protection (see [`Metadata::ingest_latched`]) in the same
+    /// transaction, so a key that was stored has always latched it.
     pub fn create_api_key(&self, name: &str, prefix: &str, key_hash: &str, scope: &str) -> Result<ApiKey> {
         if name.trim().is_empty() {
             return Err(MetadataError::Invalid("key name is required".into()));
@@ -492,14 +508,20 @@ impl Metadata {
         if scope != "ingest" && scope != "admin" {
             return Err(MetadataError::Invalid("scope must be 'ingest' or 'admin'".into()));
         }
-        let c = self.conn.lock().unwrap();
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
         let now = now_ms();
-        c.prepare_cached(
+        tx.prepare_cached(
             "INSERT INTO api_keys (name, prefix, key_hash, scope, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
         )?
         .execute(params![name.trim(), prefix, key_hash, scope, now])?;
+        let id = tx.last_insert_rowid();
+        if scope == "ingest" {
+            latch_ingest(&tx, now)?;
+        }
+        tx.commit()?;
         Ok(ApiKey {
-            id: c.last_insert_rowid(),
+            id,
             name: name.trim().to_string(),
             prefix: prefix.to_string(),
             scope: scope.to_string(),
@@ -571,6 +593,43 @@ impl Metadata {
     pub fn count_api_keys(&self) -> Result<i64> {
         let c = self.conn.lock().unwrap();
         Ok(c.query_row("SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL", [], |r| r.get(0))?)
+    }
+
+    /// Whether ingestion protection is latched: the first ingest-scoped key
+    /// ever created latches it, and nothing clears it (revoking keys does
+    /// not). Read at startup.
+    ///
+    /// Fails closed. A latch with any value but [`INGEST_LATCHED`] is
+    /// refused, never read as unlatched. A database that has held an
+    /// ingest-scoped key (active or revoked) but has no latch is latched
+    /// now, so its keys never become anonymously writable. Only a database
+    /// that never had an ingest key is unlatched.
+    pub fn ingest_latched(&self) -> Result<bool> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let value: Option<String> = tx
+            .prepare_cached("SELECT value FROM settings WHERE key = ?1")?
+            .query_row([INGEST_PROTECTION], |r| r.get(0))
+            .optional()?;
+        match value.as_deref() {
+            Some(INGEST_LATCHED) => return Ok(true),
+            Some(other) => {
+                return Err(MetadataError::Invalid(format!(
+                    "the metadata database's ingestion protection setting ({INGEST_PROTECTION}) is {other:?}, which \
+                     this Vyrtel does not recognise, so it cannot tell whether ingestion must stay protected. Restore \
+                     the metadata database from a backup, or set the value to '{INGEST_LATCHED}' to keep ingestion \
+                     protected (see docs/configuration.md#ingestion-authentication)"
+                )));
+            }
+            None => {}
+        }
+        let had_ingest_key: bool =
+            tx.query_row("SELECT EXISTS (SELECT 1 FROM api_keys WHERE scope = 'ingest')", [], |r| r.get(0))?;
+        if had_ingest_key {
+            latch_ingest(&tx, now_ms())?;
+            tx.commit()?;
+        }
+        Ok(had_ingest_key)
     }
 
     // ---- users & sessions ---------------------------------------------

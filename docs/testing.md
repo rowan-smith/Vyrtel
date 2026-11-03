@@ -891,8 +891,8 @@ cargo test -p server --test integration auth::            # over HTTP, including
 | Acceptance criterion (AUTH-PERF-01) | Tests and evidence |
 |---|---|
 | AC1: key writes on blocking execution; requests never wait behind SQLite; mutations serialised and bounded | `auth::tests::slow_key_writes_block_neither_requests_nor_the_runtime` (a runtime with 1 worker and 2 blocking threads: while one key write is stalled behind a barrier, 15 more changes queue without taking a blocking thread, the 17th is refused `503 unavailable`, a heartbeat keeps ticking, another `spawn_blocking` runs at once, and requests are decided from the published set); integration `auth::stalled_key_writes_do_not_hold_up_ingestion` (a second SQLite connection holds the write lock: 40 ingest requests are decided by the keys in force while the revoke waits, which fails on the pre-change code because requests waited for the revoke) |
-| AC2: linearisation, failure and cancellation ordering | `auth::tests::failed_key_writes_publish_nothing` (failed, invalid and panicking writes publish nothing and release their turn; a failed first ingest key leaves ingestion open; a failed revoke keeps the key accepted and ingestion protected); `cancelled_key_changes_finish_or_never_start` (a create whose caller is gone mid-write still commits and is published; a change cancelled while waiting never writes; every permit returns); `no_admission_with_a_key_after_its_revoke_returns` (50 first/last ingest-key rounds against 3 concurrent checkers); integration `stalled_key_writes_do_not_hold_up_ingestion` (a create that cannot commit within the store's 5 s busy timeout returns 500 and accepts nothing) |
-| AC3: open/protected policy unchanged; one admission decision | `auth::tests::only_ingest_keys_protect_ingestion`, `concurrent_key_changes_match_the_store_across_restarts` (only ingest keys toggle protection), `no_admission_with_a_key_after_its_revoke_returns` (policy and key from one set: keyless is admitted exactly when the set is open, a revoked key never yields a principal, a valid admin key is always admitted); integration `ingest_protection_follows_the_ingest_keys`, `ingest_protection_changes_are_immediate_under_concurrent_requests`, `ui_api_requires_session_or_admin_key`, `ingestion_without_keys_leaves_the_rest_of_the_api_closed` (unchanged) |
+| AC2: linearisation, failure and cancellation ordering | `auth::tests::failed_key_writes_publish_nothing` (failed, invalid and panicking writes publish nothing and release their turn; a failed first ingest key leaves ingestion open; a failed revoke keeps the key accepted and ingestion protected; since AUTH-250 a successful last revoke keeps it protected too); `cancelled_key_changes_finish_or_never_start` (a create whose caller is gone mid-write still commits and is published; a change cancelled while waiting never writes; every permit returns); `no_admission_with_a_key_after_its_revoke_returns` (50 first/last ingest-key rounds against 3 concurrent checkers); integration `stalled_key_writes_do_not_hold_up_ingestion` (a create that cannot commit within the store's 5 s busy timeout returns 500 and accepts nothing) |
+| AC3: open/protected policy unchanged; one admission decision | `auth::tests::only_ingest_keys_latch_protection` (named `only_ingest_keys_protect_ingestion` before AUTH-250), `concurrent_key_changes_match_the_store_across_restarts` (only ingest keys protect it), `no_admission_with_a_key_after_its_revoke_returns` (policy and key from one set: keyless is admitted exactly when the set is open, a revoked key never yields a principal, a valid admin key is always admitted); integration `ingest_protection_latches_with_the_first_ingest_key` (was `ingest_protection_follows_the_ingest_keys`), `ingest_protection_changes_are_immediate_under_concurrent_requests`, `ui_api_requires_session_or_admin_key`, `ingestion_without_keys_leaves_the_rest_of_the_api_closed` (unchanged). AUTH-250 later replaced the policy, [below](#ingestion-protection-latch-auth-250) |
 | AC4: concurrent create/create/revoke, first/last transitions, slow/failed writes, restart parity | `concurrent_key_changes_match_the_store_across_restarts` (16 concurrent creates, then 8 revokes with 8 creates at once; scopes and the refused revoked keys checked; the published set equals what a reload of the database gives, before and after reopening it); every registry test ends with `assert_matches_store`; integration `ingest_protection_survives_restarts` |
 | AC5: matched steady vs churn benchmark | `scripts/bench/keychurn.sh` with `tools/loadgen` `keychurn`, below; `scripts/bench/keychurn-report.test.mjs` (empty, partial, short, unmatched and non-finite evidence fails; each budget at and past its limit) |
 
@@ -1037,7 +1037,8 @@ node --test scripts/bench/*.test.mjs                      # the benchmark report
 | AC4: cache entry and byte caps, eviction, bounded fills, no raw tokens, expiry, immediate invalidation (logout and password change), fill vs revoke, no unbounded negative cache | `auth::tests::cached_sessions_are_used_until_their_expiry_only`, `the_cache_is_bounded_in_bytes_too` (256-byte names: the 1 MiB byte cap binds before the entry cap; an 8 KiB name is authenticated but never cached; the byte count stays exact through expiry, logout and re-fills), `clearing_forgets_everything_including_fills_in_flight`, metadata `rotating_a_password_ends_only_that_users_sessions`, integration `a_changed_admin_password_ends_existing_sessions` (fails before this change: a session from before the rotation was still accepted), `invalidation_wins_over_a_fill_in_flight`, `the_cache_is_bounded_and_unknown_tokens_never_grow_it` (10,000 unknown tokens cache nothing; 100 expired and 4,596 live sessions leave exactly 4,096 live ones), `concurrent_fills_are_bounded` (64 misses: 16 read at once, waiters hold no blocking thread, cancelled waiters release their turn); integration `logout_is_immediate_under_concurrent_cached_requests` |
 | AC5: expiry, invalid cookie with key fallback, concurrent invalidation, DB failure, restart, missing users; no bypass | `auth::tests::lookup_failures_fail_closed`, `sessions_follow_the_store` (login, never-issued token, expiry while cached, logout, restart with an empty cache); integration `invalid_cookies_fall_back_to_keys_and_logout_is_immediate`, `sessions_end_at_their_expiry_and_survive_restarts`, `session_lookups_wait_for_metadata_writes_and_fail_closed` (an unreadable session table is a 500 even with a valid key alongside), `logout_is_immediate_under_concurrent_cached_requests`; existing `ui_api_requires_session_or_admin_key` and the ingest-policy tests unchanged |
 
-The ingest policy (no ingest key = open, ingest key = protected) is not
+The ingest policy (then: no ingest key = open, ingest key = protected;
+since [AUTH-250](#ingestion-protection-latch-auth-250) the latch) is not
 touched: ingestion never uses sessions, and the existing tests above
 (`ingest_protection_*`, `ingestion_without_keys_leaves_the_rest_of_the_api_closed`)
 pass unchanged.
@@ -1225,13 +1226,15 @@ node --test scripts/bench/*.test.mjs                      # the benchmark report
 | AC4: ≥10,000 sequential create → use → revoke with bounded active keys; concurrent touch/revoke; saturated worker/queue; slow/failed DB; restart | `ten_thousand_revoked_keys_leave_nothing_behind` (10,000 rounds through the real registry and SQLite with at most 8 keys active: at most 9 entries at any time, 8 at the end, 9,992 forgotten, every active key's `last_used_at` written); the stalled, failing and concurrent tests above; `last_used_survives_a_restart_and_bookkeeping_starts_empty` |
 | AC5: before/after entries, queue, workers, heap/RSS slope, CPU, write rate, p99 ingest/auth latency, post-load cleanup; predeclared budgets | `tools/loadgen` `keytouch`, `scripts/bench/keytouch.sh` and `keytouch-report.mjs`, below |
 
-The ingest policy (no ingest key = open, an ingest key = protected) and
-query/UI authentication are unchanged: `ingest_protection_*`,
+The ingest policy (then: no ingest key = open, an ingest key = protected)
+and query/UI authentication were unchanged by AUTH-PERF-03:
+`ingest_protection_*`,
 `ingestion_without_keys_leaves_the_rest_of_the_api_closed` and
-`ui_api_requires_session_or_admin_key` pass unchanged, and the new
-integration test checks that revoking the last ingest key reopens
-ingestion and that revoked keys are then refused once another ingest key
-exists. No configuration was added and the schema is unchanged.
+`ui_api_requires_session_or_admin_key` passed unchanged. Its integration
+test now checks that revoked keys stay refused once every ingest key is
+revoked, as [AUTH-250](#ingestion-protection-latch-auth-250) keeps
+ingestion protected. No configuration was added and the schema is
+unchanged.
 
 #### API key last-used benchmark
 
@@ -1353,6 +1356,56 @@ No profile was taken. As a candidate-affecting change, this invalidates
 earlier [PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170)
 evidence, which must be taken again on the final candidate with this
 harness included.
+
+### Ingestion protection latch (AUTH-250)
+
+[#250](https://github.com/rowan-smith/Vyrtel/issues/250): revoking the
+last ingest key no longer opens ingestion. `ingest.auth_mode`
+(`automatic`, `required`, `open`) and a latch the first ingest key writes
+decide it ([configuration](configuration.md#ingestion-authentication),
+[API](api.md#authentication)).
+
+```bash
+cargo test -p metadata --test store ingest                # the latch: transaction, adoption, corrupt values
+cargo test -p server --lib auth::                         # registry: modes, latch, crash points, concurrency
+cargo test -p server --lib config::tests::ingest_auth_modes
+cargo test -p server --test integration auth::            # over HTTP: every endpoint, mode and restart
+cd web && npx vitest run tests/unit/settings-page.test.tsx
+```
+
+| Acceptance criterion | Tests and evidence |
+|---|---|
+| Config: three modes, default `automatic`, env override, invalid values refused | `config::tests::ingest_auth_modes` (file and `VYRTEL_INGEST_AUTH_MODE`, case and spaces, `vyrtel config` output; `"opened"`, `""`, `true`, `1` and `off` refused), `unknown_setting_variables_are_refused` (28 variables) |
+| Latch written with the first ingest key, in one transaction, before success; admin keys never latch | metadata `the_first_ingest_key_latches_protection_for_good` (later keys keep the first latch time), `a_failed_ingest_key_create_latches_nothing` (a duplicate key, an invalid name, and a trigger that refuses the latch insert, which rolls the key back with it); `auth::tests::only_ingest_keys_latch_protection` |
+| Revocation, restart and every key gone never clear it; `open` overrides without erasing; `automatic` restores | `auth::tests::concurrent_key_changes_match_the_store_across_restarts` (revoke every ingest key, then restart), `modes_read_the_same_latch_across_restarts`; integration `ingest_protection_survives_restarts`, `ingest_auth_modes_and_their_transitions` (required → automatic → open → automatic, restarting between each) |
+| Fresh store opens; corrupt or ambiguous state fails closed; adoption never opens active keys | metadata `ingest_key_history_without_a_latch_is_latched` (active and revoked history, persisted), `an_unrecognised_latch_is_refused` (five values, left unchanged); integration `an_unreadable_ingest_latch_refuses_to_start` (the error names the setting and the fix; following it starts protected) |
+| Table-driven admission: modes × latch × keys × credentials | `auth::tests::ingest_admission_by_mode_latch_and_credential` (9 states × none/ingest/admin/revoked/invalid, and the reported status) |
+| Crash and fault points around commit, publication and response | `auth::tests::a_committed_latch_survives_every_crash_point` (latch insert refused → no key, no latch; write stalled → old set served, nothing on disk; committed → protected in memory before the response and on disk; committed but never published → a restart is protected), `failed_key_writes_publish_nothing`, `cancelled_key_changes_finish_or_never_start`; integration `stalled_key_writes_do_not_hold_up_ingestion` (a create that cannot commit latches nothing, also after a restart) |
+| Concurrency: no anonymous window after the first create returns | `auth::tests::concurrent_first_keys_latch_once_and_for_good` (16 concurrent create/revoke of both scopes), `no_admission_with_a_key_after_its_revoke_returns` (3 checkers: once a set is protected no later one is open; 50 create/revoke rounds); integration `ingest_protection_changes_are_immediate_under_concurrent_requests` (8 producers through the first create and 20 rounds of key replacement, then 16 concurrent creates and revokes) |
+| API: every ingest transport, zero-key rejection, explicit open exposes nothing else | integration `ingest_protection_latches_with_the_first_ingest_key` (`/api/v1/events` and OTLP `/v1/logs`, `/v1/traces`, `/v1/metrics`; anonymous, invalid, revoked and replacement keys; query and key APIs stay `401`), `ingest_auth_modes_and_their_transitions` (`open` leaves `query`, `api-keys` and `system/info` at `401`), `ingestion_without_keys_leaves_the_rest_of_the_api_closed` |
+| Status, startup warnings, banner | `ingestAuth` asserted equal in `system/info` and `api-keys` by every integration test above; `auth::tests::startup_warnings_name_open_and_keyless_protection`; integration `banner_shows_the_ingestion_policy` |
+| UI: state, last-key confirmation, cancel and failure | `web/tests/unit/settings-page.test.tsx` (create → protected → last revoke warns and shows the zero-key notice, never "open"; a cancelled confirmation revokes nothing; a failed revoke shows the error and keeps the key; every state's wording) |
+
+**Request path.** Admission still reads only the published `KeySet`: the
+mode and latch are two more fields in it, compared once per request. No
+SQLite read, lock or allocation was added to `require_ingest`; the latch
+is written only inside the existing create transaction (and once at
+startup, for adoption), on the blocking pool, under the existing change
+turn. Memory per key set grows by one `bool` and one enum.
+
+**Performance: not measured for this change.** No benchmark was run, so
+no performance claim is made. The open/protected request overhead and
+key-churn cells must be taken on the final candidate as part of
+[PERF-GATE-1](https://github.com/rowan-smith/Vyrtel/issues/170), whose
+authenticated workloads now need, beyond the existing ones: fresh
+`automatic` (open), latched `automatic` with zero ingest keys (keyless
+senders refused), `required` on a fresh store, explicit `open` over a
+latch, a restart after the last revoke, and removing the `open` override.
+Zero keys alone no longer implies open ingestion: a harness that revokes
+its ingest key must keep sending with a key. As a candidate-affecting
+change, this invalidates earlier PERF-GATE-1 and
+[COMPAT-GATE-0.1.2](https://github.com/rowan-smith/Vyrtel/issues/229)
+evidence.
 
 ## Frontend tests
 

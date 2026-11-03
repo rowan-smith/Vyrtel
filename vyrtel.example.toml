@@ -33,6 +33,12 @@ traces = "14d"
 metrics = "30d"
 
 [ingest]
+# Whether ingestion needs an API key. "automatic": open until the first
+# ingest-scoped API key is created (Settings → API keys), then protected for
+# good, also after every ingest key is revoked. "required": protected from the
+# start. "open": never needs a key. Create a key (or use "required") before
+# exposing Vyrtel beyond a trusted network. See docs/configuration.md.
+auth_mode = "automatic"
 max_request_size = "1MB"     # per request, after gzip decoding; larger bodies get 413
 queue_capacity = 10000
 # Requests in progress at once. 0 derives it from max_memory: each admitted
@@ -50,9 +56,8 @@ max_trace_spans = 50000      # spans one trace may return; 422 beyond
 max_metric_names = 10000     # names GET /api/v1/metrics returns; "truncated": true beyond
 
 [auth]
-# The UI and API always need a login (or an admin API key). Ingestion is
-# open until an ingest-scoped API key exists (Settings → API keys), and then
-# needs one; create one before exposing Vyrtel beyond a trusted network.
+# The UI and API always need a login (or an admin API key). Ingestion is set
+# by ingest.auth_mode above.
 # admin_username = "admin"
 # admin_password = "change-me"
 

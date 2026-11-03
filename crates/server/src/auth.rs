@@ -6,10 +6,11 @@
 //! * Sessions are random tokens in an HttpOnly, SameSite=Lax cookie; only
 //!   their SHA-256 is stored.
 //!
-//! The UI and API always need a session or an admin key. Ingestion needs an
-//! API key while at least one ingest-scoped key exists, and is open while
-//! none does (see [`ApiKeys`]). The boundaries are kept small so OIDC etc.
-//! can be added later as another way of producing a [`Principal`].
+//! The UI and API always need a session or an admin key. Whether ingestion
+//! needs an API key follows `ingest.auth_mode` and the protection latch
+//! that the first ingest-scoped key sets for good (see [`KeySet`]). The
+//! boundaries are kept small so OIDC etc. can be added later as another way
+//! of producing a [`Principal`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,6 +28,7 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Semaphore};
 
+use crate::config::IngestAuthMode;
 use crate::error::{ApiError, ApiResult};
 use crate::state::{AppState, SharedState};
 
@@ -94,19 +96,125 @@ pub fn session_from(headers: &HeaderMap) -> Option<String> {
 pub const MAX_PENDING_KEY_CHANGES: usize = 16;
 
 /// The active API keys at one moment, by SHA-256 of the key with its id
-/// and scope. Ingestion is protected while it holds an ingest-scoped key;
-/// admin keys do not count. Never changed once published: a change builds
-/// the next set (see [`ApiKeys`]).
+/// and scope, with the ingestion policy they are checked under. Never
+/// changed once published: a change builds the next set (see [`ApiKeys`]).
+///
+/// Whether ingestion is protected depends on `ingest.auth_mode` and the
+/// latch, never on how many keys are active:
+///
+/// | mode        | not latched | latched   |
+/// |-------------|-------------|-----------|
+/// | `automatic` | open        | protected |
+/// | `required`  | protected   | protected |
+/// | `open`      | open        | open      |
+///
+/// The first ingest-scoped key latches it (persisted with the key, see
+/// `Metadata::create_api_key`), and nothing in a running server or a
+/// restart clears it: revoking the last ingest key leaves ingestion
+/// protected with no ingest key, so only an admin key or a new ingest key
+/// can send. Admin keys never latch it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct KeySet {
     by_hash: HashMap<String, (i64, String)>,
     ingest: usize,
+    latched: bool,
+    mode: IngestAuthMode,
 }
 
 impl KeySet {
+    /// No keys yet, under `mode`, with the persisted `latched` state.
+    pub fn new(mode: IngestAuthMode, latched: bool) -> Self {
+        Self { mode, latched, ..Self::default() }
+    }
+
     /// Whether ingestion needs an API key.
     pub fn ingest_protected(&self) -> bool {
-        self.ingest > 0
+        match self.mode {
+            IngestAuthMode::Automatic => self.latched,
+            IngestAuthMode::Required => true,
+            IngestAuthMode::Open => false,
+        }
+    }
+
+    /// The configured `ingest.auth_mode`.
+    pub fn mode(&self) -> IngestAuthMode {
+        self.mode
+    }
+
+    /// Whether the first ingest-scoped key has latched protection.
+    pub fn latched(&self) -> bool {
+        self.latched
+    }
+
+    /// Active ingest-scoped keys.
+    pub fn ingest_keys(&self) -> usize {
+        self.ingest
+    }
+
+    /// Ingestion is protected, but no ingest-scoped key exists to send with
+    /// (an admin key still can).
+    pub fn protected_without_keys(&self) -> bool {
+        self.ingest_protected() && self.ingest == 0
+    }
+
+    /// The ingestion policy, for Settings and `/api/v1/system/info`. Holds
+    /// no key material.
+    pub fn ingest_status(&self) -> serde_json::Value {
+        serde_json::json!({
+            "mode": self.mode.as_str(),
+            "effective": if self.ingest_protected() { "protected" } else { "open" },
+            "latched": self.latched,
+            "ingestKeys": self.ingest,
+            "protectedWithoutKeys": self.protected_without_keys(),
+        })
+    }
+
+    /// What to warn about at startup: ingestion open to anyone, or
+    /// protected with no ingest key to send with. `None` otherwise.
+    pub fn startup_warning(&self) -> Option<String> {
+        match (self.mode, self.ingest_protected()) {
+            (IngestAuthMode::Open, _) => Some(format!(
+                "ingest.auth_mode = \"open\": anyone who can reach Vyrtel can send data, whatever API keys exist{}",
+                if self.latched {
+                    "; ingestion protection is still latched, and ingest.auth_mode = \"automatic\" restores it"
+                } else {
+                    ""
+                }
+            )),
+            (_, false) => Some(
+                "ingestion is open: anyone who can reach Vyrtel can send data until an ingest-scoped API key is \
+                 created (Settings → API keys), or set ingest.auth_mode = \"required\""
+                    .into(),
+            ),
+            (_, true) if self.ingest == 0 => Some(
+                "ingestion requires an API key but no ingest-scoped key exists: only admin keys can send until one \
+                 is created (Settings → API keys)"
+                    .into(),
+            ),
+            _ => None,
+        }
+    }
+
+    /// Log what a published change did to the ingestion policy: once per
+    /// change, never per request.
+    fn log_transition(&self, next: &KeySet) {
+        if !self.ingest_protected() && next.ingest_protected() {
+            tracing::info!(
+                "an ingest-scoped API key was created: ingestion now requires an API key, and stays protected \
+                 when keys are revoked"
+            );
+        } else if !self.latched && next.latched {
+            tracing::info!(
+                mode = next.mode.as_str(),
+                "an ingest-scoped API key was created: ingestion protection is latched"
+            );
+        }
+        if self.ingest > 0 && next.protected_without_keys() {
+            tracing::warn!(
+                "the last ingest-scoped API key was revoked: ingestion stays protected, so senders are refused \
+                 unless they use an admin key, until a replacement ingest key is created"
+            );
+        }
     }
 
     /// The `(id, scope)` of an active key.
@@ -129,8 +237,12 @@ impl KeySet {
         self.find(&key).map(Some)
     }
 
+    /// Accept a key; an ingest-scoped one also latches protection.
     fn add(&mut self, hash: String, id: i64, scope: String) {
-        self.ingest += usize::from(scope == "ingest");
+        if scope == "ingest" {
+            self.ingest += 1;
+            self.latched = true;
+        }
         self.by_hash.insert(hash, (id, scope));
     }
 
@@ -142,8 +254,9 @@ impl KeySet {
         self.by_hash.values().any(|(key_id, _)| *key_id == id)
     }
 
+    /// Stop accepting a key. The latch is kept.
     fn remove(&mut self, id: i64) {
-        let Self { by_hash, ingest } = self;
+        let Self { by_hash, ingest, .. } = self;
         by_hash.retain(|_, (key_id, scope)| {
             let revoked = *key_id == id;
             if revoked && scope == "ingest" {
@@ -194,8 +307,10 @@ impl ApiKeys {
         }
     }
 
-    pub fn load(m: &Arc<Metadata>) -> metadata::Result<Self> {
-        let mut keys = KeySet::default();
+    /// The keys and latch in `m`, checked under `mode`. Fails (and the
+    /// server does not start) if the latch cannot be read for certain.
+    pub fn load(m: &Arc<Metadata>, mode: IngestAuthMode) -> metadata::Result<Self> {
+        let mut keys = KeySet::new(mode, m.ingest_latched()?);
         for (id, hash, scope) in m.active_api_keys()? {
             keys.add(hash, id, scope);
         }
@@ -212,6 +327,11 @@ impl ApiKeys {
     /// Whether ingestion needs an API key.
     pub fn ingest_protected(&self) -> bool {
         self.snapshot().ingest_protected()
+    }
+
+    /// See [`KeySet::ingest_status`].
+    pub fn ingest_status(&self) -> serde_json::Value {
+        self.snapshot().ingest_status()
     }
 
     /// Run `write` (the SQLite change) on the blocking pool, then publish
@@ -240,8 +360,10 @@ impl ApiKeys {
         tokio::task::spawn_blocking(move || {
             let _held = (queued, turn);
             let out = write()?;
-            let mut next = KeySet::clone(&keys.snapshot());
+            let current = keys.snapshot();
+            let mut next = KeySet::clone(&current);
             apply(&mut next, &out);
+            current.log_transition(&next);
             let next = Arc::new(next);
             *keys.current.write().unwrap() = next.clone();
             // After the swap: a touch that checks the current set from
@@ -533,13 +655,15 @@ impl Drop for TouchWriter {
     }
 }
 
-/// Store a new key and accept it; an ingest key also protects ingestion
-/// from here on. Returns the record and the plaintext key.
+/// Store a new key and accept it; an ingest key also latches ingestion
+/// protection, durably, before this returns. Returns the record and the
+/// plaintext key.
 pub async fn create_api_key(state: &AppState, name: &str, scope: &str) -> ApiResult<(metadata::ApiKey, String)> {
     state.api_keys.create(&state.metadata, name, scope).await
 }
 
-/// Revoke a key; revoking the last ingest key opens ingestion.
+/// Revoke a key. Ingestion protection is kept, even when this was the
+/// last ingest key.
 pub async fn revoke_api_key(state: &AppState, id: i64) -> ApiResult<()> {
     state.api_keys.revoke(&state.metadata, id).await
 }
@@ -829,8 +953,8 @@ async fn check_session(state: &SharedState, token: String) -> Result<Option<Prin
     Ok(state.sessions.check(sha256_hex(&token), lookup).await?.map(Principal::User))
 }
 
-/// Ingestion endpoints: open while no ingest-scoped key exists, otherwise
-/// any valid API key. Both are decided from one [`KeySet`].
+/// Ingestion endpoints: open, or any valid API key, as one [`KeySet`]
+/// decides; read from memory, never SQLite.
 pub async fn require_ingest(
     State(state): State<SharedState>,
     mut req: Request,
@@ -945,22 +1069,118 @@ mod tests {
         assert_eq!(session_from(&h).as_deref(), Some("tok"));
     }
 
+    // AUTH-250: only ingest keys latch protection, and nothing unlatches it.
     #[test]
-    fn only_ingest_keys_protect_ingestion() {
+    fn only_ingest_keys_latch_protection() {
         let mut k = KeySet::default();
         k.add("a".into(), 1, "admin".into());
-        assert!(!k.ingest_protected());
+        assert!(!k.ingest_protected() && !k.latched(), "admin keys never latch");
         k.add("i1".into(), 2, "ingest".into());
         k.add("i2".into(), 3, "ingest".into());
-        assert!(k.ingest_protected());
+        assert!(k.ingest_protected() && k.latched());
         k.remove(2);
         assert!(k.ingest_protected());
         k.remove(1);
         k.remove(99);
         assert!(k.ingest_protected());
         k.remove(3);
-        assert!(!k.ingest_protected());
         assert!(k.by_hash.is_empty());
+        assert!(k.ingest_protected() && k.latched(), "the last ingest key's revoke keeps it protected");
+        assert!(k.protected_without_keys());
+        k.add("i4".into(), 4, "ingest".into());
+        assert!(k.ingest_protected() && !k.protected_without_keys(), "a replacement key sends again");
+    }
+
+    /// The headers an ingest request may carry.
+    #[derive(Debug, Clone, Copy)]
+    enum Sends {
+        Nothing,
+        Ingest,
+        Admin,
+        Revoked,
+        Invalid,
+    }
+
+    /// AUTH-250: every mode against every latch state, key population and
+    /// credential, decided from one set.
+    #[test]
+    fn ingest_admission_by_mode_latch_and_credential() {
+        use IngestAuthMode::{Automatic, Open, Required};
+        use Sends::*;
+        // (mode, latched, ingest key active) → protected
+        let table = [
+            (Automatic, false, false, false), // fresh install
+            (Automatic, true, true, true),    // first/additional keys
+            (Automatic, true, false, true),   // last key revoked, or restart after it
+            (Required, false, false, true),   // fresh, but required
+            (Required, true, true, true),
+            (Required, true, false, true),
+            (Open, false, false, false),
+            (Open, true, true, false), // explicit open overrides keys and the latch
+            (Open, true, false, false),
+        ];
+        for (mode, latched, active, protected) in table {
+            let mut set = KeySet::new(mode, latched);
+            set.add(sha256_hex("vyr_admin"), 1, "admin".into());
+            set.add(sha256_hex("vyr_revoked"), 2, "ingest".into());
+            set.remove(2);
+            if active {
+                set.add(sha256_hex("vyr_ingest"), 3, "ingest".into());
+            }
+            // Revoking one ingest key latched it, as any create would have.
+            assert!(set.latched());
+            if !latched {
+                set = KeySet { latched: false, ..set };
+            }
+            let case = format!("{mode:?} latched={latched} active={active}");
+            assert_eq!(set.ingest_protected(), protected, "{case}");
+            assert_eq!(set.protected_without_keys(), protected && !active, "{case}");
+            let status = set.ingest_status();
+            assert_eq!(status["mode"], mode.as_str());
+            assert_eq!(status["effective"], if protected { "protected" } else { "open" });
+            assert_eq!(
+                (status["latched"].as_bool(), status["ingestKeys"].as_u64()),
+                (Some(latched), Some(active as u64))
+            );
+            for sends in [Nothing, Ingest, Admin, Revoked, Invalid] {
+                let headers = match sends {
+                    Nothing => HeaderMap::new(),
+                    Ingest => bearer("vyr_ingest"),
+                    Admin => bearer("vyr_admin"),
+                    Revoked => bearer("vyr_revoked"),
+                    Invalid => bearer("vyr_never_issued"),
+                };
+                let got = set.admit_ingest(&headers);
+                match (protected, sends) {
+                    (false, _) => assert_eq!(got.unwrap(), None, "{case} {sends:?}: open checks no key"),
+                    (true, Ingest) if active => assert_eq!(got.unwrap(), Some((3, "ingest".into())), "{case}"),
+                    (true, Admin) => assert_eq!(got.unwrap(), Some((1, "admin".into())), "{case}"),
+                    (true, _) => assert_eq!(got.unwrap_err().status.as_u16(), 401, "{case} {sends:?}"),
+                }
+            }
+        }
+    }
+
+    /// AUTH-250: the startup warning names an open ingestion, an explicit
+    /// open override and protection with no ingest key; nothing otherwise.
+    #[test]
+    fn startup_warnings_name_open_and_keyless_protection() {
+        let warn = |mode, latched, active: bool| {
+            let mut set = KeySet::new(mode, latched);
+            if active {
+                set.add("h".into(), 1, "ingest".into());
+            }
+            set.startup_warning()
+        };
+        assert!(warn(IngestAuthMode::Automatic, false, false).unwrap().starts_with("ingestion is open"));
+        assert_eq!(warn(IngestAuthMode::Automatic, true, true), None);
+        assert_eq!(warn(IngestAuthMode::Required, false, true), None);
+        for mode in [IngestAuthMode::Automatic, IngestAuthMode::Required] {
+            assert!(warn(mode, true, false).unwrap().contains("no ingest-scoped key exists"), "{mode:?}");
+        }
+        assert!(!warn(IngestAuthMode::Open, false, false).unwrap().contains("latched"));
+        let w = warn(IngestAuthMode::Open, true, true).unwrap();
+        assert!(w.starts_with("ingest.auth_mode = \"open\"") && w.contains("\"automatic\" restores it"), "{w}");
     }
 
     // ---- AUTH-PERF-01: key changes off the request path -------------------
@@ -1004,13 +1224,13 @@ mod tests {
 
     fn in_memory() -> (Arc<Metadata>, Arc<ApiKeys>) {
         let m = Arc::new(Metadata::open_in_memory().unwrap());
-        let keys = Arc::new(ApiKeys::load(&m).unwrap());
+        let keys = Arc::new(ApiKeys::load(&m, IngestAuthMode::Automatic).unwrap());
         (m, keys)
     }
 
     /// The published set equals what a restart would load.
     fn assert_matches_store(keys: &ApiKeys, m: &Arc<Metadata>) {
-        assert_eq!(*keys.snapshot(), *ApiKeys::load(m).unwrap().snapshot());
+        assert_eq!(*keys.snapshot(), *ApiKeys::load(m, keys.snapshot().mode()).unwrap().snapshot());
     }
 
     // AC1: while a key write is stalled, the runtime keeps running, requests
@@ -1096,9 +1316,119 @@ mod tests {
         assert_matches_store(&keys, &m);
 
         keys.revoke(&m, rec.id).await.unwrap();
-        assert!(!keys.ingest_protected());
+        assert!(keys.ingest_protected(), "the last ingest key's revoke keeps ingestion protected");
         assert_eq!(keys.revoke(&m, rec.id).await.unwrap_err().status.as_u16(), 404, "revoked once");
         assert_matches_store(&keys, &m);
+    }
+
+    // AUTH-250: the latch and the published set around a create's commit.
+    // A create that fails or never commits latches nothing, durably or in
+    // memory; one that committed is protected after a restart even if the
+    // process stopped before publishing it or before responding.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_committed_latch_survives_every_crash_point() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("metadata.db");
+        let reload = |m: &Arc<Metadata>| ApiKeys::load(m, IngestAuthMode::Automatic).unwrap().snapshot();
+
+        // Before the commit: the write fails (here, the latch insert is
+        // refused), so the key is rolled back with it and nothing latches.
+        let m = Arc::new(Metadata::open(&path).unwrap());
+        let keys = Arc::new(ApiKeys::load(&m, IngestAuthMode::Automatic).unwrap());
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        raw.execute_batch(
+            "CREATE TRIGGER no_latch BEFORE INSERT ON settings BEGIN SELECT RAISE(ABORT, 'injected'); END",
+        )
+        .unwrap();
+        assert_eq!(keys.create(&m, "ci", "ingest").await.unwrap_err().status.as_u16(), 500);
+        assert!(!keys.ingest_protected() && m.list_api_keys().unwrap().is_empty(), "no key without its latch");
+        assert!(!reload(&m).latched());
+        // An admin key writes no latch, so the trigger never fires.
+        keys.create(&m, "automation", "admin").await.unwrap();
+        raw.execute_batch("DROP TRIGGER no_latch").unwrap();
+
+        // While the write is stalled: requests see the old set; a crash
+        // here loses the unacknowledged key and its latch together.
+        let (gate, started, release) = gated(Ok(()));
+        let creating = tokio::spawn({
+            let (keys, m) = (keys.clone(), m.clone());
+            async move {
+                let (_, prefix, hash) = new_api_key();
+                let write = move || {
+                    gate()?;
+                    m.create_api_key("ci", &prefix, &hash, "ingest")
+                };
+                keys.change(write, move |k, rec| k.add(String::new(), rec.id, rec.scope.clone())).await
+            }
+        });
+        started.await.unwrap();
+        assert!(!keys.ingest_protected());
+        assert!(!reload(&m).latched(), "nothing committed yet");
+
+        // After the commit: protected in memory before the response, and on
+        // disk whether or not the response was ever sent.
+        release.send(()).unwrap();
+        creating.await.unwrap().unwrap();
+        assert!(keys.ingest_protected());
+        assert!(reload(&m).ingest_protected());
+
+        // Committed but never published (the process stopped between the
+        // two): a restart reads the latch from disk.
+        let (_, prefix, hash) = new_api_key();
+        m.create_api_key("unpublished", &prefix, &hash, "ingest").unwrap();
+        for rec in m.list_api_keys().unwrap().into_iter().filter(|k| k.scope == "ingest") {
+            m.revoke_api_key(rec.id).unwrap();
+        }
+        drop((keys, m, raw));
+        let m = Arc::new(Metadata::open(&path).unwrap());
+        let set = reload(&m);
+        assert!(set.latched() && set.protected_without_keys(), "a restart with every key revoked stays protected");
+    }
+
+    // AUTH-250: concurrent first creates, admin creates and revokes latch
+    // exactly once, never unlatch, and match the store.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_first_keys_latch_once_and_for_good() {
+        let (m, keys) = in_memory();
+        let tasks: Vec<_> = (0..16)
+            .map(|i| {
+                let (keys, m) = (keys.clone(), m.clone());
+                tokio::spawn(async move {
+                    let scope = if i % 4 == 0 { "ingest" } else { "admin" };
+                    let (rec, _) = keys.create(&m, &format!("k{i}"), scope).await.unwrap();
+                    assert!(keys.ingest_protected() || scope == "admin", "an ingest create returns protected");
+                    keys.revoke(&m, rec.id).await.unwrap();
+                })
+            })
+            .collect();
+        for t in tasks {
+            t.await.unwrap();
+        }
+        assert!(keys.snapshot().protected_without_keys());
+        assert_matches_store(&keys, &m);
+        assert_eq!(m.get_setting(metadata::INGEST_PROTECTION).unwrap().as_deref(), Some(metadata::INGEST_LATCHED));
+    }
+
+    // AUTH-250: `open` overrides a latch without erasing it; `automatic`
+    // restores it and `required` protects a fresh store.
+    #[test]
+    fn modes_read_the_same_latch_across_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("metadata.db");
+        let start = |mode| {
+            let m = Arc::new(Metadata::open(&path).unwrap());
+            ApiKeys::load(&m, mode).unwrap().snapshot()
+        };
+        assert!(start(IngestAuthMode::Required).protected_without_keys(), "required protects a fresh store");
+        assert!(!start(IngestAuthMode::Automatic).ingest_protected(), "required wrote no latch");
+        {
+            let m = Metadata::open(&path).unwrap();
+            let k = m.create_api_key("ci", "vyr_x", "h", "ingest").unwrap();
+            m.revoke_api_key(k.id).unwrap();
+        }
+        let open = start(IngestAuthMode::Open);
+        assert!(!open.ingest_protected() && open.latched());
+        assert!(start(IngestAuthMode::Automatic).protected_without_keys(), "automatic restores it");
     }
 
     // AC2: a change whose caller goes away while it waits never runs; one
@@ -1152,7 +1482,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("metadata.db");
         let m = Arc::new(Metadata::open(&path).unwrap());
-        let keys = Arc::new(ApiKeys::load(&m).unwrap());
+        let keys = Arc::new(ApiKeys::load(&m, IngestAuthMode::Automatic).unwrap());
         let create = |name: String, scope: &'static str| {
             let (keys, m) = (keys.clone(), m.clone());
             tokio::spawn(async move { keys.create(&m, &name, scope).await.unwrap() })
@@ -1196,11 +1526,11 @@ mod tests {
         let before = keys.snapshot();
         drop((keys, m));
         let m = Arc::new(Metadata::open(&path).unwrap());
-        let keys = Arc::new(ApiKeys::load(&m).unwrap());
+        let keys = Arc::new(ApiKeys::load(&m, IngestAuthMode::Automatic).unwrap());
         assert_eq!(*keys.snapshot(), *before);
 
-        // Revoking every ingest key but one keeps ingestion protected; the
-        // last reopens it; the admin keys left never protect it.
+        // Revoking every ingest key keeps ingestion protected (AUTH-250),
+        // also across a restart; admin keys can still send.
         let ingest: Vec<_> = live.iter().filter(|(rec, _)| rec.scope == "ingest").map(|(rec, _)| rec.id).collect();
         let (last, rest) = ingest.split_last().unwrap();
         let revokes: Vec<_> = rest
@@ -1215,12 +1545,16 @@ mod tests {
         }
         assert!(keys.ingest_protected(), "one ingest key is left");
         keys.revoke(&m, *last).await.unwrap();
-        assert!(!keys.ingest_protected());
+        assert!(keys.ingest_protected() && keys.snapshot().protected_without_keys());
         assert!(!keys.snapshot().by_hash.is_empty(), "admin keys remain");
         let (_, admin) = keys.create(&m, "another admin", "admin").await.unwrap();
-        assert!(!keys.ingest_protected(), "admin keys do not protect ingestion");
-        assert!(keys.snapshot().find(&admin).is_ok());
+        assert!(keys.snapshot().protected_without_keys(), "an admin key is no ingest key");
+        assert!(matches!(keys.snapshot().admit_ingest(&bearer(&admin)), Ok(Some(_))));
         assert_matches_store(&keys, &m);
+        drop((keys, m));
+        let m = Arc::new(Metadata::open(&path).unwrap());
+        let keys = Arc::new(ApiKeys::load(&m, IngestAuthMode::Automatic).unwrap());
+        assert!(keys.snapshot().protected_without_keys(), "a restart after the last revoke stays protected");
     }
 
     // AC2/AC3: under churn of the first/last ingest key, every admission is
@@ -1236,9 +1570,13 @@ mod tests {
                 let (keys, revoked, done, admin) = (keys.clone(), revoked.clone(), done.clone(), admin.clone());
                 tokio::spawn(async move {
                     let mut checks = 0u64;
+                    let mut seen_protected = false;
                     while !done.load(Ordering::SeqCst) {
                         let gone = revoked.lock().unwrap().clone();
                         let set = keys.snapshot();
+                        // AUTH-250: once protected, never open again.
+                        assert!(set.ingest_protected() || !seen_protected, "ingestion reopened");
+                        seen_protected |= set.ingest_protected();
                         for key in &gone {
                             match set.admit_ingest(&bearer(key)) {
                                 Ok(None) => assert!(!set.ingest_protected()),
@@ -1264,7 +1602,9 @@ mod tests {
             let (rec, key) = keys.create(&m, &format!("k{round}"), "ingest").await.unwrap();
             assert!(keys.snapshot().admit_ingest(&HeaderMap::new()).is_err(), "protected at once");
             keys.revoke(&m, rec.id).await.unwrap();
-            assert_eq!(keys.snapshot().admit_ingest(&bearer(&key)).unwrap(), None, "open again at once");
+            let set = keys.snapshot();
+            assert_eq!(set.admit_ingest(&bearer(&key)).unwrap_err().status.as_u16(), 401, "refused at once");
+            assert!(set.admit_ingest(&HeaderMap::new()).is_err(), "still protected with no ingest key");
             revoked.lock().unwrap().push(key);
         }
         done.store(true, Ordering::SeqCst);
@@ -1980,7 +2320,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("metadata.db");
         let m = Arc::new(Metadata::open(&path).unwrap());
-        let keys = Arc::new(ApiKeys::load(&m).unwrap());
+        let keys = Arc::new(ApiKeys::load(&m, IngestAuthMode::Automatic).unwrap());
         let (_, key) = keys.create(&m, "ci", "ingest").await.unwrap();
         let set = keys.snapshot();
         let (id, _) = set.find(&key).unwrap();
@@ -1991,7 +2331,7 @@ mod tests {
 
         let m = Arc::new(Metadata::open(&path).unwrap());
         assert_eq!(m.list_api_keys().unwrap()[0].last_used_at, Some(first));
-        let keys = Arc::new(ApiKeys::load(&m).unwrap());
+        let keys = Arc::new(ApiKeys::load(&m, IngestAuthMode::Automatic).unwrap());
         assert_eq!(tstat(&keys, "tracked"), 0);
         tokio::time::sleep(Duration::from_millis(5)).await;
         let set = keys.snapshot();

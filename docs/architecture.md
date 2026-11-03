@@ -175,8 +175,9 @@ history, aggregated query statistics. Telemetry never goes to SQLite.
 ### API keys and request authentication
 
 Authenticating a request by API key never reads SQLite. The active API keys (hash →
-id and scope, plus the count of ingest-scoped keys that decides whether
-ingestion is protected) are loaded at startup into an immutable `KeySet`
+id and scope, the count of ingest-scoped keys, the ingestion protection
+latch and `ingest.auth_mode`, which together decide whether ingestion is
+protected) are loaded at startup into an immutable `KeySet`
 (`crates/server/src/auth.rs`). Requests clone an `Arc` to the current set
 under a read lock that is only ever held for a pointer copy or swap, and
 take every part of one decision (is ingestion open, is this key valid,

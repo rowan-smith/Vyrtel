@@ -47,9 +47,10 @@ replaces the former `Vyrtel.Profiling` tool.
 
 The tools sign in as `admin` with the password they launch the server with
 (`VYRTEL_AUTH_ADMIN_PASSWORD`, default `vyrtel-harness`) and use that session for queries. A
-session does not authorize ingestion, which a server they launch leaves open (it has no
-ingest-scoped API keys). Against a server that is already running, set
-`VYRTEL_AUTH_ADMIN_PASSWORD` to its admin password, and if it has ingest keys, pass one
+session does not authorize ingestion, which a server they launch leaves open (a fresh data
+directory, in the default `ingest.auth_mode = "automatic"`). Against a server that is already
+running, set `VYRTEL_AUTH_ADMIN_PASSWORD` to its admin password, and if its ingestion is
+protected (it has ever had an ingest key, or uses `ingest.auth_mode = "required"`), pass one
 with `--ingest-key <key>` (benchmark) or `VYRTEL_HARNESS_INGEST_KEY`; it is sent on ingest
 requests only.
 

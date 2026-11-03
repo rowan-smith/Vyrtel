@@ -143,8 +143,12 @@ fn ingest_scope() -> String {
 
 pub async fn list_api_keys(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
     let k = state.db(|m| m.list_api_keys()).await?;
-    let protected = state.api_keys.ingest_protected();
-    Ok(Json(json!({ "apiKeys": k, "ingestKeyRequired": protected })))
+    let keys = state.api_keys.snapshot();
+    Ok(Json(json!({
+        "apiKeys": k,
+        "ingestKeyRequired": keys.ingest_protected(),
+        "ingestAuth": keys.ingest_status(),
+    })))
 }
 
 /// The plaintext key appears in this response only.

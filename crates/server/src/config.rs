@@ -299,9 +299,46 @@ impl Default for RetentionSection {
     }
 }
 
+/// Whether ingestion needs an API key (`ingest.auth_mode`). See
+/// docs/configuration.md#ingestion-authentication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum IngestAuthMode {
+    /// Open until the first ingest-scoped key is created, then protected
+    /// for good: revoking keys never opens it again.
+    #[default]
+    Automatic,
+    /// Always protected, even before any key exists.
+    Required,
+    /// Always open, whatever keys exist. Keeps the protection latch, so
+    /// returning to `automatic` protects ingestion again.
+    Open,
+}
+
+impl IngestAuthMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IngestAuthMode::Automatic => "automatic",
+            IngestAuthMode::Required => "required",
+            IngestAuthMode::Open => "open",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "automatic" => Ok(IngestAuthMode::Automatic),
+            "required" => Ok(IngestAuthMode::Required),
+            "open" => Ok(IngestAuthMode::Open),
+            _ => Err("must be 'automatic', 'required' or 'open'".into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct IngestSection {
+    /// Whether ingestion needs an API key; read at startup only.
+    pub auth_mode: IngestAuthMode,
     pub max_request_size: ByteSize,
     /// Events waiting to be written, per signal. Beyond this, 429.
     pub queue_capacity: usize,
@@ -316,6 +353,7 @@ pub struct IngestSection {
 impl Default for IngestSection {
     fn default() -> Self {
         Self {
+            auth_mode: IngestAuthMode::Automatic,
             max_request_size: ByteSize(1 << 20),
             queue_capacity: 10_000,
             ack_timeout: Duration::from_secs(30),
@@ -439,6 +477,7 @@ pub const ENV_VARS: &[&str] = &[
     "VYRTEL_RETENTION_LOGS",
     "VYRTEL_RETENTION_TRACES",
     "VYRTEL_RETENTION_METRICS",
+    "VYRTEL_INGEST_AUTH_MODE",
     "VYRTEL_INGEST_MAX_REQUEST_SIZE",
     "VYRTEL_INGEST_QUEUE_CAPACITY",
     "VYRTEL_INGEST_MAX_CONCURRENT",
@@ -469,17 +508,11 @@ const ENV_SECTIONS: &[&str] = &[
 /// do instead: `(section, key, hint)`. Refused rather than ignored so an
 /// upgrade never silently changes what a configuration meant.
 const REMOVED_SETTINGS: &[(&str, &str, &str)] = &[
-    (
-        "auth",
-        "enabled",
-        "the UI and API now always require a login; remove it (ingestion requires an API key once an \
-         ingest-scoped key exists)",
-    ),
+    ("auth", "enabled", "the UI and API now always require a login; remove it (ingestion is set by ingest.auth_mode)"),
     (
         "auth",
         "ingest_api_key",
-        "ingestion requires an API key automatically while an ingest-scoped key exists, and is open while none \
-         does; remove it",
+        "remove it and create ingest-scoped API keys instead; ingest.auth_mode sets whether ingestion needs one",
     ),
     ("storage", "zstd_level", "segments are always compressed at level 3; remove it"),
     ("storage", "block_events", "blocks always hold up to 1024 events; remove it"),
@@ -584,6 +617,7 @@ impl Config {
                     "VYRTEL_RETENTION_LOGS" => self.retention.logs = parse_retention(&v)?,
                     "VYRTEL_RETENTION_TRACES" => self.retention.traces = parse_retention(&v)?,
                     "VYRTEL_RETENTION_METRICS" => self.retention.metrics = parse_retention(&v)?,
+                    "VYRTEL_INGEST_AUTH_MODE" => self.ingest.auth_mode = IngestAuthMode::parse(&v)?,
                     "VYRTEL_INGEST_MAX_REQUEST_SIZE" => self.ingest.max_request_size = ByteSize::parse(&v)?,
                     "VYRTEL_INGEST_QUEUE_CAPACITY" => {
                         self.ingest.queue_capacity = v.trim().parse().map_err(|_| "must be a number".to_string())?
@@ -963,7 +997,7 @@ mod tests {
             e.starts_with(
                 "unknown environment variable VYRTEL_AUTH_ENABLE: not a setting Vyrtel reads from the environment. \
                  Remove it, or set the option in the configuration file instead (see \
-                 docs/configuration.md#environment-variables for the 27 supported variables)"
+                 docs/configuration.md#environment-variables for the 28 supported variables)"
             ),
             "{e}"
         );
@@ -992,6 +1026,49 @@ mod tests {
         assert!(c.ingest_admission().within_budget());
     }
 
+    /// `ingest.auth_mode`: automatic by default, the three modes from the
+    /// file and the environment, and anything else refused.
+    #[test]
+    fn ingest_auth_modes() {
+        assert_eq!(Config::default().ingest.auth_mode, IngestAuthMode::Automatic);
+        for (text, mode) in [
+            ("automatic", IngestAuthMode::Automatic),
+            ("required", IngestAuthMode::Required),
+            ("open", IngestAuthMode::Open),
+        ] {
+            let c = Config::from_toml(&format!(
+                "[ingest]
+auth_mode = \"{text}\""
+            ))
+            .unwrap();
+            assert_eq!(c.ingest.auth_mode, mode);
+            assert_eq!(mode.as_str(), text);
+            let mut c = Config::default();
+            c.apply_env(|k| (k == "VYRTEL_INGEST_AUTH_MODE").then(|| format!(" {} ", text.to_uppercase()))).unwrap();
+            assert_eq!(c.ingest.auth_mode, mode);
+        }
+        for bad in ["\"opened\"", "\"\"", "true", "1"] {
+            assert!(
+                Config::from_toml(&format!(
+                    "[ingest]
+auth_mode = {bad}"
+                ))
+                .is_err(),
+                "{bad}"
+            );
+        }
+        let mut c = Config::default();
+        let e = c.apply_env(|k| (k == "VYRTEL_INGEST_AUTH_MODE").then(|| "off".into())).unwrap_err();
+        assert_eq!(e, "VYRTEL_INGEST_AUTH_MODE: must be 'automatic', 'required' or 'open'");
+        // Printed by `vyrtel config` as it is written.
+        let printed = toml::to_string(&Config {
+            ingest: IngestSection { auth_mode: IngestAuthMode::Open, ..Default::default() },
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(printed.contains("auth_mode = \"open\""), "{printed}");
+    }
+
     #[test]
     fn unknown_keys_rejected() {
         assert!(Config::from_toml("[storage]\nmax_memroy = \"1GB\"").is_err());
@@ -1009,7 +1086,7 @@ mod tests {
         let e = check_env_names(["VYRTEL_AUTH_ENABLED"]).unwrap_err();
         assert!(e.starts_with("VYRTEL_AUTH_ENABLED: auth.enabled is no longer a setting"), "{e}");
         let e = Config::from_toml("[auth]\ningest_api_key = true").unwrap_err();
-        assert!(e.contains("automatically while an ingest-scoped key exists"), "{e}");
+        assert!(e.contains("ingest.auth_mode sets whether ingestion needs one"), "{e}");
         let e = check_env_names(["VYRTEL_AUTH_INGEST_API_KEY"]).unwrap_err();
         assert!(e.starts_with("VYRTEL_AUTH_INGEST_API_KEY: auth.ingest_api_key is no longer a setting"), "{e}");
     }
