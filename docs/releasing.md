@@ -4,14 +4,14 @@ Releases are published by [`.github/workflows/release.yml`](../.github/workflows
 when a `v*` tag is pushed. The workflow publishes only after the release has been validated:
 if any check fails, no binaries, image or GitHub release are published.
 
-Validation starts before the tag exists. Every tagged release, stable, patch or prerelease, has
-a compatibility-cleanup gate ([Pre-tag compatibility sign-off](#pre-tag-compatibility-sign-off)),
-and every stable version has performance gates
-([Pre-tag performance sign-off](#pre-tag-performance-sign-off)). A reviewer signs both off for
-the exact candidate commit before it is tagged, the cleanup first
-([Release order](#release-order)). The supported way to create a tag refuses without those
-sign-offs, and the release workflow independently refuses to publish a tag whose sign-off is
-missing, failed, stale or recorded after tagging.
+Validation starts before the tag exists. Every stable version has performance gates
+([Pre-tag performance sign-off](#pre-tag-performance-sign-off)), which a reviewer signs off for
+the exact candidate commit before it is tagged. The supported way to create a tag refuses
+without that sign-off, and the release workflow independently refuses to publish a tag whose
+sign-off is missing, failed, stale or recorded after tagging. Prereleases need no performance
+sign-off. The compatibility cleanup
+([Pre-tag compatibility review](#pre-tag-compatibility-review)) is a manual step the maintainer
+does before tagging; no tool checks it.
 
 ## What gets published
 
@@ -32,18 +32,16 @@ The jobs run in this order. A failed job skips every job after it.
 |-------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------|
 | `preflight` | The tag is `v<major>.<minor>.<patch>[-<prerelease>]` and its version equals the `[workspace.package]` version in `Cargo.toml`, the `server` entry in `Cargo.lock` and `web/package.json`. Works out the channel (stable or prerelease) and the image tags.                                                                      | The tag is malformed, or any of the three versions differs from the tag.                  |
 | `performance` | Every performance gate declared for the version in [`performance-gates.json`](../scripts/release/performance-gates.json) has a valid reviewer PASS on the `release-evidence` branch for this exact commit, all gates name the same candidate, and every review predates the (annotated) tag. | A record is missing, failed, incomplete, stale (another commit) or split across commits; it was reviewed after tagging; the tag is lightweight; the version declares no gates. |
-| `compat`    | The version's `COMPAT-GATE-<version>` in [`compat-gates.json`](../scripts/release/compat-gates.json) has a valid reviewer PASS on the `release-evidence` branch for this exact commit, naming the layout identity the commit writes, reviewed before the tag and before every performance measurement of the same commit. Runs for prereleases too. | The version declares no gate; the record is missing, failed, incomplete, stale, for another layout, reviewed after a performance measurement or after tagging; the tag is lightweight. |
 | `ci`        | The whole [CI workflow](../.github/workflows/ci.yml) against the tagged commit: fmt, clippy, Rust tests, the restore drill, frontend lint/types/tests, Playwright E2E, the Docker [image checks](#container-image-checks) on `linux/amd64`, dependency checks, .NET build and the release gate tests.                                                                                                | Any CI job fails.                                                                         |
 | `binaries`  | Builds each target with the UI that passed CI and `VYRTEL_REQUIRE_WEB_UI=1`, so a missing UI is a build error. On its own runner, each binary must print `vyrtel <version>` and, started on an empty data directory, report that version from `/api/v1/system/info` and serve the built UI and its `/assets/*.js` entry script. | Build fails; wrong version; placeholder UI; missing UI assets; the server does not start. |
-| `verify`    | Combines the per-target checksums into `SHA256SUMS`, then checks the artifact set is exactly the four binaries, none is empty, and every checksum matches. Re-runs the binary check on the Linux x86_64 binary as downloaded. Checks the built artifacts have the hashes the performance and compatibility gates approved, or that each record documents reproducible equivalence. | A binary is missing, empty, unexpected or does not match its checksum; an approved artifact's hash differs with no documented equivalence. |
+| `verify`    | Combines the per-target checksums into `SHA256SUMS`, then checks the artifact set is exactly the four binaries, none is empty, and every checksum matches. Re-runs the binary check on the Linux x86_64 binary as downloaded. Checks the built artifacts have the hashes the performance gates approved, or that each record documents reproducible equivalence. | A binary is missing, empty, unexpected or does not match its checksum; an approved artifact's hash differs with no documented equivalence. |
 | `image-smoke` | On native `linux/amd64` and `linux/arm64` runners, builds the image with the release version and runs every [image check](#container-image-checks): non-root user and version label, `--version`, readiness and the embedded UI on a named volume, events surviving a recreated container, and the uid hint on an unwritable bind mount. Only then pushes that platform's image **by digest, untagged**, and checks the pushed digest has exactly the tested image's layers. | Any image check fails on either architecture, or the pushed digest is not the tested image. |
 | `image`     | Only after both platforms pass, tags their two tested digests with the preflight image tags as one multi-platform image (`docker buildx imagetools create`; nothing is rebuilt), then inspects it in the registry: both platforms present, each running as `nonroot` with the release version label and the tested layers.      | A tested digest is missing, or the published image lacks a platform, the user, the label or the tested layers. |
 | `release`   | Re-checks `SHA256SUMS` and creates the GitHub release from the verified artifacts, as a prerelease (not Latest) for prerelease tags.                                                                                                                                                                                            | Checksums no longer match.                                                                |
 
 The checks are in [`scripts/release/release.mjs`](../scripts/release/release.mjs) (Node 22, no
 dependencies) so they can be run locally exactly as the workflow runs them. The performance
-checks are in [`scripts/release/performance.mjs`](../scripts/release/performance.mjs), the
-compatibility checks in [`scripts/release/compat.mjs`](../scripts/release/compat.mjs), the image
+checks are in [`scripts/release/performance.mjs`](../scripts/release/performance.mjs), the image
 checks in [`scripts/release/image.mjs`](../scripts/release/image.mjs).
 
 ## Container image checks
@@ -94,81 +92,49 @@ The registry view of an image config is the OCI one, which has no field for Dock
 HEALTHCHECK, so the registry check skips only the healthcheck; `verify-image` checks it on the
 tested image.
 
-## Pre-tag compatibility sign-off
+## Pre-tag compatibility review
 
 Before 1.0, Vyrtel keeps no compatibility code merely because an earlier 0.x release had it
-([policy](../CONTRIBUTING.md#compatibility-policy-before-10)). Every tagged release, stable,
-patch or prerelease, therefore passes a compatibility-cleanup gate on its final candidate: the
-obsolete compatibility paths are inventoried and removed, every persisted format is reset to
-version 1 under the release's [layout identity](storage-format.md#versioning) if any changed, and
-the supported contract is published. [#229](https://github.com/rowan-smith/Vyrtel/issues/229)
-(COMPAT-GATE-0.1.2) established it; [docs/compatibility/0.1.2.md](compatibility/0.1.2.md) is
-its audit and the worked example for later releases.
+([policy](../CONTRIBUTING.md#compatibility-policy-before-10)). Before tagging a release, the
+maintainer checks that the candidate followed it. This is a manual step: neither `pretag` nor
+the release workflow checks it, so it is the maintainer's responsibility to do it.
 
-**Who:** the maintainer cutting the release owns the procedure. The version's
-`COMPAT-GATE-<version>` issue, opened from the **Release compatibility gate** issue template
-([`compat-gate.yml`](../.github/ISSUE_TEMPLATE/compat-gate.yml)), owns the audit, and a reviewer
-records the verdict. Temporary compatibility exceptions need approval by the
-`exceptionApprover` in the manifest (Rowan), an owner, a removal release and a linked issue;
-there are no blanket exemptions.
+For each release version, open a `COMPAT-GATE-<version>` issue from the **Release compatibility
+gate** issue template ([`compat-gate.yml`](../.github/ISSUE_TEMPLATE/compat-gate.yml)) and work
+through it on the candidate:
 
-**Which gate:** [`scripts/release/compat-gates.json`](../scripts/release/compat-gates.json) maps
-each version to its one gate. All milestones of a version and all its prereleases share it. A
-version with no entry cannot be tagged at all, so when a delivery milestone is assigned a new
-release version, open its gate issue and add the entry in a reviewed pull request. Discovery
-scope gets a gate once it is assigned a tagged release.
+- **Inventory and remove** obsolete compatibility paths, and change the contracts (formats,
+  routes, settings) with tests and docs.
+  [docs/compatibility/0.1.2.md](compatibility/0.1.2.md) is the worked example
+  ([#229](https://github.com/rowan-smith/Vyrtel/issues/229)).
+- **Formats and layout**: if any persisted format changed since the last release, every format
+  version is reset to 1 and `telemetry::LAYOUT` names this release
+  ([storage format](storage-format.md#layout-changes)); otherwise it keeps the last layout.
+  The release table in [configuration.md](configuration.md#upgrading-between-pre-10-releases)
+  is up to date.
+- **Exceptions**: a temporary compatibility exception needs Rowan's approval, an owner, a
+  removal release and a linked issue.
 
-**Where the evidence lives:** one record per tagged version on the `release-evidence` branch, at
-`compat/<version>/COMPAT-GATE-<base version>.json` (`compat/0.1.2/COMPAT-GATE-0.1.2.json`,
-`compat/0.1.2-rc.1/COMPAT-GATE-0.1.2.json`). The template, with illustrative values, is
-[`testdata/compat/0.1.2/COMPAT-GATE-0.1.2.json`](../scripts/release/testdata/compat/0.1.2/COMPAT-GATE-0.1.2.json).
-
-| Field                      | Rule                                                                                                                                                     |
-|----------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `gate`, `issue`, `version` | Match the manifest entry and the file path.                                                                                                              |
-| `candidate.sha`            | The full commit SHA that was reviewed and will be tagged.                                                                                                |
-| `candidate.artifacts`      | Name and SHA-256 of every published binary, each exactly once (`vyrtel-linux-x86_64`, `vyrtel-linux-arm64`, `vyrtel-macos-arm64`, `vyrtel-windows-x86_64.exe`); `verify` checks the release built the same ones, or `equivalence` explains why not. |
-| `layout.identity`          | `telemetry::LAYOUT` of the candidate (`crates/telemetry/src/layout.rs`); `layout.evidence` links the before/after format versions and the identity tests. |
-| `inventory`                | Link to the audit: every path found, its old contract, callers, removal or replacement, data/security impact and PR, and N/A areas with evidence.        |
-| `removals`                 | The removal pull requests.                                                                                                                               |
-| `checklist`                | One entry per item: `inventory`, `removals`, `contract`, `roadmap`, `tests`, `format-reset`, `layout-identity`, `docs`, each `pass` or `na` with `evidence`. Any `fail` fails the gate. |
-| `exceptions`               | Empty, or each with `what`, `approvedBy` (the manifest's `exceptionApprover`), `owner`, `removalRelease` and `issue`.                                  |
-| `review`                   | `verdict: "PASS"`, the reviewer's GitHub login and the time.                                                                                            |
-
-Green CI alone is not a PASS, and "nothing to remove" is a valid result only with the audit
-that shows it.
-
-Check a candidate's sign-off at any time; `pretag` runs it with the performance check:
-
-```bash
-node scripts/release/release.mjs check-compat --tag v0.1.2 --sha <candidate sha> --evidence <dir>
-```
-
-```text
-Compat-Gate: COMPAT-GATE-0.1.2 PASS 1111111111111111111111111111111111111111 layout 0.1.2 by example-reviewer at 2026-10-01T12:00:00Z
-```
+Record the outcome on the issue. Green CI alone does not show the cleanup was done, and "nothing
+to remove" needs the audit that shows it. All prereleases of a version share its issue.
 
 ### Release order
 
-1. **Inventory** the compatibility paths early in the milestone.
-2. **Remove** them and change the contracts (formats, routes, settings), with tests and docs.
-3. **Verify** correctness and recovery on the integrated candidate (CI, crash and fault tests,
-   the restore drill), and record the compatibility PASS for that commit.
-4. **Profile** the same commit for every performance gate and record their PASS. The
-   compatibility review must predate every `measuredAt`: `pretag` and the workflow refuse
-   otherwise. Preliminary harness and budget work may happen earlier, but measurements taken
-   before the review do not count.
-5. **Tag** through `pretag --create`.
+1. **Clean up**, as above, early in the milestone.
+2. **Verify** correctness and recovery on the integrated candidate (CI, crash and fault tests,
+   the restore drill), and confirm the compatibility review on its issue.
+3. **Profile** the same commit for every performance gate and record their PASS. Do the
+   compatibility review first, so that the profiled commit is the cleaned-up one.
+4. **Tag** through `pretag --create`.
 
-Any artifact-affecting change after step 3 makes a new commit, which invalidates both sign-offs:
-review the change, record a new compatibility PASS, then re-measure.
+Any artifact-affecting change after step 2 makes a new commit, which invalidates the performance
+sign-off: review the change, then re-measure.
 
 ## Pre-tag performance sign-off
 
 Performance is validated on the final candidate, after all of a milestone's work and fixes are
-merged, after the [compatibility review](#pre-tag-compatibility-sign-off) of that same candidate,
-and **before** the tag is created. A green post-tag workflow does not replace it. Measurements
-taken before the cleanup was reviewed do not count.
+merged, after the [compatibility review](#pre-tag-compatibility-review) of that same candidate,
+and **before** the tag is created. A green post-tag workflow does not replace it.
 
 **Who:** the maintainer cutting the release owns the procedure. Each gate's issue (the
 `PERF-GATE-*` tickets, e.g. [#170](https://github.com/rowan-smith/Vyrtel/issues/170) for 0.1.2)
@@ -277,8 +243,8 @@ release gate: performance sign-off for v0.1.2 is incomplete:
    since the last release, it must name this release and every format version must be 1
    ([storage format](storage-format.md#layout-changes)); if none changed, it keeps the last
    layout. Update the release table in
-   [configuration.md](configuration.md#upgrading-between-pre-10-releases) either way. The
-   compatibility review checks both.
+   [configuration.md](configuration.md#upgrading-between-pre-10-releases) either way, as part of
+   the [compatibility review](#pre-tag-compatibility-review).
 
 2. Check the tag before pushing it. This is the same check `preflight` runs:
 
@@ -309,9 +275,9 @@ release gate: performance sign-off for v0.1.2 is incomplete:
    release gate: tag v0.1.2 is version 0.1.2 but Cargo.toml [workspace.package] = 0.1.1, Cargo.lock (server) = 0.1.1, web/package.json = 0.1.1; bump the workspace version (and run cargo update -w) before tagging
    ```
 
-3. Merge the version bump to `main`. That commit is the candidate. First record the
-   compatibility review's PASS for it, then run each performance gate's profiling on it, and
-   commit the records to `release-evidence`
+3. Merge the version bump to `main`. That commit is the candidate. Confirm its
+   [compatibility review](#pre-tag-compatibility-review), then run each performance gate's
+   profiling on it and commit the records to `release-evidence`
    ([Release order](#release-order)).
 
 4. Create the tag through the pre-tag check, on a clean checkout of the candidate, then push it:
@@ -322,17 +288,19 @@ release gate: performance sign-off for v0.1.2 is incomplete:
    git push origin v0.1.2
    ```
 
-   `pretag` fetches `release-evidence`. It refuses uncommitted changes, an existing tag, a
-   version mismatch and any missing, failed or stale sign-off, performance or compatibility.
-   Only then does it create an annotated tag whose message lists each gate's PASS. Do not
+   `pretag` refuses uncommitted changes, an existing tag, a version mismatch and any missing,
+   failed or stale performance sign-off; it fetches `release-evidence` only when the version
+   has performance gates. Only then does it create an annotated tag whose message lists each
+   gate's PASS. Do not
    create release tags with plain `git tag`: the workflow rejects a lightweight tag.
    `--evidence <dir>` reads records from a local directory laid out like the branch instead.
 
 5. Watch the **Release** workflow. When it is green, the GitHub release and image are live.
 
 For a prerelease, use a version with a suffix in all three files and the tag, for example
-`0.1.2-rc.1` / `v0.1.2-rc.1`. It needs no performance sign-off, but its own compatibility PASS
-at `compat/0.1.2-rc.1/COMPAT-GATE-0.1.2.json`.
+`0.1.2-rc.1` / `v0.1.2-rc.1`. It needs no performance sign-off and no `release-evidence`
+branch, so step 3 is only the compatibility review: tag it with `pretag --create` straight
+after the version bump is merged.
 
 ## After a release
 
@@ -398,9 +366,6 @@ Nothing is published by a failed run, so there is nothing to roll back.
 | `pretag`/`performance`: no approval record, or not PASS                     | Complete the gate's profiling and review, commit the record to `release-evidence`, run `pretag` again.                    |
 | `pretag`/`performance`: `stale: approved candidate …`                       | The candidate changed after sign-off. Re-run the affected workloads on the new commit and record a new PASS.              |
 | `pretag`/`performance`: `signed off different candidates`                   | Gates sharing a version approved different commits; re-run so all approve the same one.                                   |
-| `pretag`/`compat`: `declares no compatibility gate`                         | Open the version's gate issue from the template and declare it in `compat-gates.json` in a reviewed pull request.        |
-| `pretag`/`compat`: `stale`, `layout.identity is …` or a failed checklist item | The candidate changed, or its layout identity differs from the reviewed one, or an item failed. Fix it, review the new commit and record a new PASS. |
-| `pretag`/`compat`: `reviewed after PERF-GATE-… measured the candidate`      | The cleanup was signed off after profiling. Re-measure the performance gates after the compatibility review.             |
 | `performance`: not an annotated tag, or reviewed after the tag              | The tag bypassed `pretag`. Delete it and create it with `pretag --create` once the sign-off is recorded.                  |
 | `verify`: built artifact differs from the approved hash                     | Confirm the rebuild is equivalent and add `equivalence` to the record, or re-profile the rebuilt artifact.                |
 | `ci`: a required check                                                      | Fix it on `main` through a pull request. The fix is a new commit, so it needs a new performance sign-off before tagging.  |
@@ -440,9 +405,8 @@ version that was already published is not: publish a new patch version instead.
 - The performance check verifies the approval record, not the measurements: the profiling and
   its reports come from each gate's issue, and the reviewer is accountable for them. Anyone who
   can push to `release-evidence` can write a record, so protect that branch.
-- Likewise the compatibility check verifies the record (candidate, artifact hashes, layout
-  identity, checklist, exceptions, review order), not the audit itself; the reviewer is
-  accountable for the inventory it links.
+- The compatibility review is not checked by any tool; the maintainer is accountable for doing
+  it before tagging.
 - `pretag` cannot stop someone running plain `git tag`. The workflow still refuses a
   lightweight or early tag; a tag ruleset restricting who may create `v*` tags adds a
   server-side guard.

@@ -1,5 +1,5 @@
 name: Release compatibility gate
-description: The COMPAT-GATE every tagged release needs (stable, patch or prerelease) before it can be tagged.
+description: The manual compatibility review every tagged release (stable, patch or prerelease) gets before it is tagged.
 title: '[COMPAT-GATE-<version>] Remove obsolete compatibility debt before tagging'
 labels:
 - type:story
@@ -9,14 +9,13 @@ body:
 - type: markdown
   attributes:
     value: |
-      One gate per release version, shared by all of its milestones and prereleases. The procedure, owner and evidence
-      location are in docs/releasing.md#pre-tag-compatibility-sign-off; 0.1.2's audit (docs/compatibility/0.1.2.md) is
-      the worked example. Declare this issue in `scripts/release/compat-gates.json` (`COMPAT-GATE-<version>` and its
-      issue number) in a reviewed pull request; until then no build of the version can be tagged.
+      One review per release version, shared by all of its milestones and prereleases. The procedure is in
+      docs/releasing.md#pre-tag-compatibility-review; 0.1.2's audit (docs/compatibility/0.1.2.md) is the worked
+      example. This is a manual step: no tool checks it, so the maintainer confirms it here before tagging.
 
       **Order:** inventory → removals and contract changes → correctness/recovery tests → reviewer PASS on the final
       candidate → final performance profiling (PERF-GATE) on the same commit → tag. Any later artifact-affecting change
-      invalidates both sign-offs.
+      invalidates the review and the performance sign-off.
 - type: input
   id: version
   attributes:
@@ -45,6 +44,6 @@ body:
   id: evidence
   attributes:
     label: Evidence
-    description: Candidate SHA, artifact hashes, inventory link, removal PRs, test runs, binary-size delta. Recorded at `compat/<version>/COMPAT-GATE-<version>.json` on the release-evidence branch.
+    description: Candidate SHA, artifact hashes, inventory link, removal PRs, test runs, binary-size delta. Recorded on this issue.
   validations:
     required: false
