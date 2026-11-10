@@ -52,6 +52,9 @@ const wordWidth = Number(word.match(/width: ([\d.]+)/)[1]);
 
 // ---------- shared chrome ----------
 
+/** The benchmark pages, which the main nav's Benchmarks link covers instead of Docs. */
+const isBenchmarkPage = (slug) => slug === 'benchmarks' || slug === 'benchmark-method';
+
 /** The integrated [V]yrtel wordmark, same geometry as the web UI (web/src/App.tsx). */
 const brand = (base) => `
 <a class="brand is-expanded" href="${base}index.html" title="Vyrtel home">
@@ -82,8 +85,8 @@ const header = (base, current, currentSlug) => `
     <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu"><span></span><span></span></button>
     <nav id="site-nav" class="site-nav" aria-label="Main">
       <a href="${base}index.html#features"${current === 'features' ? ' aria-current="page"' : ''}>Features</a>
-      <a href="${base}docs/index.html"${current === 'docs' && currentSlug !== 'benchmarks' ? ' aria-current="page"' : ''}>Docs</a>
-      <a href="${base}docs/benchmarks.html"${currentSlug === 'benchmarks' ? ' aria-current="page"' : ''}>Benchmarks</a>
+      <a href="${base}docs/index.html"${current === 'docs' && !isBenchmarkPage(currentSlug) ? ' aria-current="page"' : ''}>Docs</a>
+      <a href="${base}docs/benchmarks.html"${isBenchmarkPage(currentSlug) ? ' aria-current="page"' : ''}>Benchmarks</a>
       <a href="${repoUrl}/releases">Releases</a>
       <a class="nav-source" href="${repoUrl}">${githubIcon}<span>Source</span></a>
       ${themeToggle('theme-toggle-desktop')}
@@ -186,6 +189,7 @@ const DOCS = [
   { slug: 'architecture', file: 'docs/architecture.md', group: 'How it works' },
   { slug: 'storage-format', file: 'docs/storage-format.md', group: 'How it works' },
   { slug: 'benchmarks', file: 'docs/benchmarks.md', title: 'Benchmarks', group: 'Project' },
+  { slug: 'benchmark-method', file: 'docs/benchmark-method.md', title: 'Benchmark method', group: 'Project' },
   { slug: 'roadmap', file: 'docs/roadmap.md', group: 'Project' },
   { slug: 'contributing', file: 'CONTRIBUTING.md', title: 'Contributing', group: 'Project' },
   { slug: 'development', file: 'docs/development.md', group: 'Project' },
