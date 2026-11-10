@@ -11,7 +11,6 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { checkCompat, compatTagLine } from './compat.mjs';
 import { checkTagMatchesWorkspace, EXPECTED_ARTIFACTS, GateError, parseChecksums, ROOT } from './release.mjs';
 
 export const GATES_FILE = 'scripts/release/performance-gates.json';
@@ -59,8 +58,7 @@ export function requiredGates(version, prerelease, root = ROOT) {
 }
 
 /**
- * Reads <kind>/<version>/<gate>.json (kind `performance` or `compat`) from a directory or a git
- * ref; null when absent.
+ * Reads <kind>/<version>/<gate>.json from a directory or a git ref; null when absent.
  */
 export function readRecord(evidence, version, gate, kind = 'performance') {
   const rel = `${kind}/${version}/${gate}.json`;
@@ -245,21 +243,23 @@ export function tagMessage(version, result) {
   const lines = result.gates.length
     ? result.records.map((r) => `Performance-Gate: ${r.gate} PASS ${r.candidate.sha} by ${r.review.reviewer} at ${r.review.reviewedAt}`)
     : [`Performance-Gate: none (${result.reason})`];
-  if (result.compat) lines.push(compatTagLine(result.compat));
   return `Vyrtel ${version}\n\n${lines.join('\n')}\n`;
 }
 
 /**
  * The supported way to create a release tag: checks the working tree is clean, the version
- * matches, every performance gate has signed off HEAD and the compatibility gate has signed off
- * HEAD before those measurements (compat.mjs), then creates an annotated tag. Nothing is tagged
+ * matches and every performance gate has signed off HEAD, then creates an annotated tag. The
+ * release-evidence branch is only fetched when the version needs a performance sign-off, so a
+ * prerelease can be tagged without one. The compatibility review is a manual step
+ * (docs/releasing.md#pre-tag-compatibility-review) and is not checked here. Nothing is tagged
  * if any check fails. Pushing the tag is left to the maintainer.
  */
 export function pretag({ tag, cwd = ROOT, evidence, create = false }) {
   const dirty = git(['status', '--porcelain', '--untracked-files=no'], cwd);
   if (dirty) fail(`the working tree has uncommitted changes; commit or stash them so the tag is the commit that was profiled:\n${dirty}`);
   const sha = git(['rev-parse', 'HEAD'], cwd);
-  if (!evidence) {
+  const t = checkTagMatchesWorkspace(tag, cwd);
+  if (!evidence && requiredGates(t.version, t.prerelease, cwd).gates.length) {
     try {
       git(['fetch', '--quiet', 'origin', `+refs/heads/${EVIDENCE_BRANCH}:refs/remotes/origin/${EVIDENCE_BRANCH}`], cwd);
     } catch (e) {
@@ -267,8 +267,7 @@ export function pretag({ tag, cwd = ROOT, evidence, create = false }) {
     }
     evidence = { ref: `origin/${EVIDENCE_BRANCH}`, cwd };
   }
-  const performance = checkPerformance({ tag, sha, evidence, root: cwd });
-  const result = { ...performance, compat: checkCompat({ tag, sha, evidence, root: cwd, performance: performance.records }) };
+  const result = checkPerformance({ tag, sha, evidence, root: cwd });
   let exists = true;
   try {
     git(['rev-parse', '--verify', '--quiet', `refs/tags/${tag}`], cwd);

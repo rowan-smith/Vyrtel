@@ -3,10 +3,8 @@
 //   node --test scripts/release/*.test.mjs
 //
 // Each test builds a throwaway git repository holding a workspace at the release version,
-// the release scripts, performance-gates.json and compat-gates.json, plus an evidence
-// directory laid out like the release-evidence branch. Tagging also needs the compatibility
-// gate (compat.test.mjs covers it); these tests give it a passing record for the same
-// candidate.
+// the release scripts and performance-gates.json, plus an evidence directory laid out like the
+// release-evidence branch.
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -28,7 +26,6 @@ import { GateError, ROOT } from './release.mjs';
 
 const HERE = import.meta.dirname;
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(HERE, 'testdata/performance/0.1.2/PERF-GATE-1.json'), 'utf8'));
-const COMPAT = JSON.parse(fs.readFileSync(path.join(HERE, 'testdata/compat/0.1.2/COMPAT-GATE-0.1.2.json'), 'utf8'));
 const temps = [];
 const tmp = () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'vyrtel-perf-test-'));
@@ -62,7 +59,7 @@ function repo(version = '0.1.2') {
   fs.mkdirSync(path.join(root, 'web'));
   fs.writeFileSync(path.join(root, 'web/package.json'), JSON.stringify({ version }));
   fs.mkdirSync(path.join(root, 'scripts/release'), { recursive: true });
-  for (const f of ['release.mjs', 'performance.mjs', 'performance-gates.json', 'compat.mjs', 'compat-gates.json']) {
+  for (const f of ['release.mjs', 'performance.mjs', 'performance-gates.json']) {
     fs.copyFileSync(path.join(HERE, f), path.join(root, 'scripts/release', f));
   }
   fs.mkdirSync(path.join(root, 'crates/telemetry/src'), { recursive: true });
@@ -83,8 +80,7 @@ function record(sha, edit = (r) => r, base = FIXTURE) {
 }
 
 /**
- * An evidence directory laid out like the release-evidence branch: the performance records,
- * and a passing compatibility record for the candidate of each 0.1.2 record.
+ * An evidence directory laid out like the release-evidence branch, holding `records`.
  */
 function evidence(records) {
   const dir = tmp();
@@ -93,10 +89,7 @@ function evidence(records) {
     fs.mkdirSync(d, { recursive: true });
     fs.writeFileSync(path.join(d, `${r.gate}.json`), JSON.stringify(r, null, 2));
   };
-  for (const r of records) {
-    write('performance', r);
-    if (r.version === COMPAT.version) write('compat', { ...structuredClone(COMPAT), candidate: { ...COMPAT.candidate, sha: r.candidate.sha } });
-  }
+  for (const r of records) write('performance', r);
   return { dir };
 }
 
@@ -270,6 +263,22 @@ describe('TC-PERF-03: a complete passing matrix for the exact candidate satisfie
     const r = checkPerformance({ tag: 'v0.1.2-rc.1', sha, evidence: evidence([]), root, tagDate: '' });
     assert.deepEqual(r.gates, []);
     assert.match(r.reason, /prereleases do not need performance sign-off/);
+  });
+
+  test('a prerelease is tagged without a release-evidence branch', () => {
+    // The throwaway repository has no remote, so fetching release-evidence would fail.
+    const { root, sha } = repo('0.1.2-rc.1');
+    const r = pretag({ tag: 'v0.1.2-rc.1', cwd: root, create: true });
+    assert.equal(r.sha, sha);
+    assert.equal(tags(root), 'v0.1.2-rc.1');
+    const message = git(root, 'for-each-ref', 'refs/tags/v0.1.2-rc.1', '--format=%(contents)');
+    assert.match(message, /Performance-Gate: none \(prereleases do not need performance sign-off/);
+  });
+
+  test('a stable release still needs release-evidence for its performance gate', () => {
+    const { root } = repo('0.1.2');
+    assert.throws(() => pretag({ tag: 'v0.1.2', cwd: root, create: true }), gateError(/could not fetch the release-evidence branch/));
+    assert.equal(tags(root), '');
   });
 
   test('the repository manifest declares a gate with an issue for every delivery version', () => {

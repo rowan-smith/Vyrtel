@@ -74,8 +74,9 @@ an earlier 0.x release had it. Prefer one current, supported path:
 - **Not compatibility debt:** current external standards and protocols (OTLP, CLEF field
   names), supported platforms, crash recovery and durability, and correctness or scan
   fallbacks. Judge each path by its purpose and callers, not by keyword.
-- Every tagged release passes the [compatibility gate](docs/releasing.md#pre-tag-compatibility-sign-off)
-  before its performance sign-off. A temporary exception needs Rowan's explicit approval, an
+- Before every tagged release the maintainer does the
+  [compatibility review](docs/releasing.md#pre-tag-compatibility-review), by hand, before its
+  performance sign-off. A temporary exception needs Rowan's explicit approval, an
   owner, a removal release and an issue.
 
 The policy is reassessed before 1.0: a stable release may promise compatibility that this one

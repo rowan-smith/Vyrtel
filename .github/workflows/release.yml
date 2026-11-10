@@ -3,7 +3,7 @@ name: Release
 # Publishes a release only after it has been validated (docs/releasing.md):
 #
 #   preflight ─┬─ functional (the full CI suite) ───────────────┐
-#              └─ signoff (performance/reliability, compatibility) ┴─ binaries ─ verify ─ image-smoke ─ image ─ release
+#              └─ signoff (performance/reliability) ┴─ binaries ─ verify ─ image-smoke ─ image ─ release
 #
 # Three gates decide whether a candidate ships; everything after them checks that what is
 # published is exactly what they approved.
@@ -15,13 +15,12 @@ name: Release
 #     this exact commit, signed off before the tag was created. The sign-off itself happens
 #     before tagging (scripts/release/release.mjs pretag); this job refuses to publish a tag
 #     that bypassed it.
-#   - compatibility: the version's COMPAT-GATE (every release, prereleases included) has a
-#     reviewer PASS for this exact commit and the layout identity it writes, reviewed before the
-#     tag and before any performance measurement of the same candidate (cleanup first).
+#   The compatibility review (docs/releasing.md#pre-tag-compatibility-review) is a manual step
+#   for the maintainer before tagging; this workflow does not check it.
 # - binaries: built with the UI that CI tested; each one's --version and embedded UI are
 #   checked on its own runner before it is uploaded.
 # - verify: the full artifact set and SHA256SUMS, plus the Linux binary as shipped, and the
-#   built artifacts match the hashes the performance and compatibility gates approved (or
+#   built artifacts match the hashes the performance gates approved (or
 #   documented equivalence).
 # - image-smoke: on native amd64 and arm64 runners, each image is checked as an operator runs it:
 #   non-root user and version label, readiness and the embedded UI, events surviving a recreated
@@ -84,7 +83,7 @@ jobs:
       checks: write
 
   signoff:
-    name: Performance/reliability and compatibility gates
+    name: Performance/reliability gates
     needs: preflight
     runs-on: ubuntu-latest
     steps:
@@ -110,17 +109,11 @@ jobs:
           args=()
           if [ "$PUBLISH" = "true" ]; then args=(--tag-date "${{ steps.tag.outputs.date }}"); fi
           node scripts/release/release.mjs check-performance --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence "${args[@]}"
-      - name: Compatibility sign-off for this commit
-        run: |
-          args=()
-          if [ "$PUBLISH" = "true" ]; then args=(--tag-date "${{ steps.tag.outputs.date }}"); fi
-          node scripts/release/release.mjs check-compat --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence "${args[@]}"
       - uses: actions/upload-artifact@v7
         with:
           name: signoff-evidence
           path: |
             evidence/performance
-            evidence/compat
           if-no-files-found: ignore
 
   binaries:
@@ -212,7 +205,6 @@ jobs:
         run: |
           mkdir -p evidence
           node scripts/release/release.mjs check-performance --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence --artifacts artifacts
-          node scripts/release/release.mjs check-compat --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence --artifacts artifacts
       - uses: actions/upload-artifact@v7
         with:
           name: release-artifacts

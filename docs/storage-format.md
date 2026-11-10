@@ -680,8 +680,8 @@ startup check passed and the lock is held (`App::build`):
    accepts as an interrupted first start.
 4. Storage recovery and normal operation.
 
-Rules for a change to any persisted format before 1.0 (the release gate
-checks them, see [releasing](releasing.md#pre-tag-compatibility-sign-off)):
+Rules for a change to any persisted format before 1.0 (the pre-tag compatibility review
+checks them, see [releasing](releasing.md#pre-tag-compatibility-review)):
 
 * Change the layout's code and this document, set `telemetry::LAYOUT` to
   the version of the release that ships the change, and keep every format
