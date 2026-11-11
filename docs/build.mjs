@@ -53,7 +53,7 @@ const wordWidth = Number(word.match(/width: ([\d.]+)/)[1]);
 // ---------- shared chrome ----------
 
 /** The benchmark pages, which the main nav's Benchmarks link covers instead of Docs. */
-const isBenchmarkPage = (slug) => slug === 'benchmarks' || slug === 'benchmark-method';
+const isBenchmarkPage = (slug) => slug === 'benchmarks' || slug === 'benchmark-method' || !!slug?.startsWith('benchmarks-');
 
 /** The integrated [V]yrtel wordmark, same geometry as the web UI (web/src/App.tsx). */
 const brand = (base) => `
@@ -189,6 +189,9 @@ const DOCS = [
   { slug: 'architecture', file: 'docs/architecture.md', group: 'How it works' },
   { slug: 'storage-format', file: 'docs/storage-format.md', group: 'How it works' },
   { slug: 'benchmarks', file: 'docs/benchmarks.md', title: 'Benchmarks', group: 'Project' },
+  // One page per measured version, newest first, listed under Benchmarks.
+  { slug: 'benchmarks-0.1.2-rc.1', file: 'docs/benchmarks/0.1.2-rc.1.md', title: 'Benchmarks: 0.1.2-rc.1', label: '0.1.2-rc.1', group: 'Project', parent: 'benchmarks' },
+  { slug: 'benchmarks-0.1.1', file: 'docs/benchmarks/0.1.1.md', title: 'Benchmarks: 0.1.1', label: '0.1.1', group: 'Project', parent: 'benchmarks' },
   { slug: 'benchmark-method', file: 'docs/benchmark-method.md', title: 'Benchmark method', group: 'Project' },
   { slug: 'roadmap', file: 'docs/roadmap.md', group: 'Project' },
   { slug: 'contributing', file: 'CONTRIBUTING.md', title: 'Contributing', group: 'Project' },
@@ -367,8 +370,14 @@ const navGroups = (docs) => {
   return [...new Set(listed.map((d) => d.group))].map((group) => ({ group, pages: listed.filter((d) => d.group === group) }));
 };
 
+/** A page with a `parent` is listed indented under it, by its short `label` when it has one. */
 const pageLinks = (pages, currentSlug) =>
-  pages.map((d) => `<a href="${d.slug}.html"${d.slug === currentSlug ? ' aria-current="page"' : ''}>${d.title}</a>`).join('');
+  pages
+    .map(
+      (d) =>
+        `<a href="${d.slug}.html"${d.parent ? ' class="nav-sub"' : ''}${d.slug === currentSlug ? ' aria-current="page"' : ''}>${d.label ?? d.title}</a>`,
+    )
+    .join('');
 
 const sidebar = (groups, currentSlug) =>
   groups.map((g) => `<div class="side-group"><h2>${g.group}</h2>${pageLinks(g.pages, currentSlug)}</div>`).join('');
