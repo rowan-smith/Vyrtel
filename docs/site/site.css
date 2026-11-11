@@ -1518,6 +1518,11 @@ h3 {
   text-decoration: none;
 }
 
+.side-group a.nav-sub {
+  padding-left: 24px;
+  font-size: 14px;
+}
+
 .side-group a[aria-current='page'] {
   border-left-color: var(--mint);
   background: var(--bg-tint);
@@ -1892,6 +1897,11 @@ h3 {
   color: var(--text-dim);
   font-size: 14.5px;
   font-weight: 500;
+}
+
+.dd-group a.nav-sub {
+  padding-left: 22px;
+  font-size: 14px;
 }
 
 .dd-group a:hover {
