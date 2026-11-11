@@ -64,8 +64,16 @@ query concurrency at each version's default.
 
 | Version | Date | Verdict | Local ingest | Remote ingest | Local query p95 | Notes |
 |---|---|---|---|---|---|---|
+| 0.1.2-rc.2 candidate (`1332e29`) | 2026-11-11 | FAIL (transport); baseline PASS with one accepted regression | 17,073 events/s | not run | 72.0 ms | Pre-tag, built as the release workflow builds it (glibc 2.34, starts on a baseline x86-64 CPU). Baseline only, 5 runs against v0.1.1: peak memory +30.2% (budget 40%) after password checks were limited to one at a time; restart to healthy 52.3 → 103.1 ms (+97.2%, budget 15%), **accepted**: the Argon2id check of the configured admin password at startup, the cost of always-on sign-in. Transport was not re-run after the fix; at `bd25064` it still missed the file-descriptor budgets |
 | v0.1.2-rc.1 | 2026-11-10 | FAIL | 17,054 events/s | not run | 71.1 ms | Peak memory +52% and restart to healthy +97% against v0.1.1; release asset needs AVX2 and glibc 2.38; transport file-descriptor budgets missed |
 | v0.1.1 | 2026-11-10 | not judged | 16,847 events/s | not run | 73.6 ms | Measured on this host as the previous release for v0.1.2-rc.1; no earlier release to compare with |
+
+**Accepted regressions** are measured, reviewed and kept on purpose; they are not budget passes. The
+next release compares against the version that accepted them.
+
+| Accepted in | Metric | Change | Reason |
+|---|---|---|---|
+| 0.1.2-rc.2 | Restart to healthy | 52.3 → 103.1 ms (+97.2%) | Each start checks the configured `auth.admin_password` with Argon2id before it reports ready, so a changed password signs out the admin's sessions before any request is served |
 
 Numbers depend on hardware and data shape. Compare them between versions, not with your own
 machine.
