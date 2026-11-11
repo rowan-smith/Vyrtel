@@ -352,5 +352,8 @@ describe('Linux binaries run on baseline x86-64 CPUs and older glibc', () => {
     assert.match(workflow, /check: --cpu qemu64 --max-glibc 2\.34 \}/);
     assert.match(workflow, /verify-binary "dist\/\$\{\{ matrix\.name \}\}\$\{ext\}" --version "\$\{\{ needs\.preflight\.outputs\.version \}\}" \$\{\{ matrix\.check \}\}/);
     assert.match(workflow, /verify-binary artifacts\/vyrtel-linux-x86_64 --version "\$\{\{ needs\.preflight\.outputs\.version \}\}" --cpu qemu64 --max-glibc 2\.34/);
+    // qemu-user runs the binary on the host's libc; on an amd64v3 runner that libc needs AVX2
+    // itself, so the shipped binary is checked in the baseline bookworm image instead.
+    assert.match(workflow, /\n {2}verify:\n(?: {4}.*\n|\s*\n)*? {4}container: rust:1-bookworm\n/);
   });
 });

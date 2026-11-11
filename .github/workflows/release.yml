@@ -124,9 +124,9 @@ jobs:
       matrix:
         # Linux binaries are built in the Debian bookworm image the Docker image is built in, on
         # pinned runners: the build environment decides the glibc a binary needs and, through C
-        # dependencies, the CPU it runs on. Built directly on ubuntu-latest once it moved to
-        # 26.04, v0.1.2-rc.1 for x86-64 was AVX2-only, and on any Ubuntu 24.04+ host the C
-        # dependencies link glibc 2.38 symbols (`__isoc23_*`).
+        # dependencies, the CPU it runs on. ubuntu-latest (26.04) runners are Ubuntu's amd64v3
+        # variant, whose compiler targets AVX2: v0.1.2-rc.1 built there was AVX2-only. On any
+        # Ubuntu 24.04+ host the C dependencies also link glibc 2.38 symbols (`__isoc23_*`).
         # `check` adds to verify-binary: start on a baseline x86-64 CPU (qemu64, no SSE4/AVX)
         # and need no glibc newer than 2.34, which earlier releases ran on.
         include:
@@ -191,7 +191,11 @@ jobs:
   verify:
     name: Verify release artifacts
     needs: [preflight, signoff, binaries]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # Under qemu-user a binary runs on the host's libc, so the baseline-CPU check needs a libc
+    # built for baseline x86-64. ubuntu-latest (26.04) runners are Ubuntu's amd64v3 variant,
+    # whose libc itself needs AVX2; bookworm's runs anywhere and is the glibc floor we test.
+    container: rust:1-bookworm
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -217,7 +221,7 @@ jobs:
         run: node scripts/release/release.mjs verify-artifacts artifacts
       - name: Check the Linux binary as shipped
         run: |
-          sudo apt-get update && sudo apt-get install -y qemu-user
+          apt-get update && apt-get install -y qemu-user
           chmod +x artifacts/vyrtel-linux-x86_64
           node scripts/release/release.mjs verify-binary artifacts/vyrtel-linux-x86_64 --version "${{ needs.preflight.outputs.version }}" --cpu qemu64 --max-glibc 2.34
       - name: Check artifacts match the approved candidate
