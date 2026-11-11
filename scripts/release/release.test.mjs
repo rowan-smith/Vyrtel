@@ -15,6 +15,8 @@ import {
     checkTagMatchesWorkspace,
     EXPECTED_ARTIFACTS,
     GateError,
+    glibcSymbolsAbove,
+    maxGlibcVersion,
     parseChecksums,
     parseTag,
     releasePlan,
@@ -165,7 +167,7 @@ describe('AC3: published artifacts and checksums are verified', () => {
 
   test('the expected artifact list matches the binaries matrix in release.yml', () => {
     const workflow = repoFile('.github/workflows/release.yml');
-    const matrix = [...workflow.matchAll(/target: (\S+), name: (vyrtel-[\w-]+) \}/g)].map(([, target, name]) =>
+    const matrix = [...workflow.matchAll(/target: (\S+), name: (vyrtel-[\w-]+)(?:,| \})/g)].map(([, target, name]) =>
       target.includes('windows') ? `${name}.exe` : name,
     );
     assert.deepEqual(matrix.sort(), [...EXPECTED_ARTIFACTS].sort());
@@ -226,6 +228,20 @@ describe('AC3: embedded UI and version output are verified', () => {
 
   test('binary that exits on startup fails fast', async () => {
     await assert.rejects(fake('crash').run(), gateError(/exited before it became healthy: exit 2; stderr: vyrtel: configuration error: simulated/));
+  });
+
+  test('a launcher runs the binary through another program', async () => {
+    // As with `--cpu qemu64`: the launcher is the command and the binary its first argument.
+    const env = { FAKE_VYRTEL_MODE: 'ok', FAKE_VYRTEL_VERSION: '0.1.2' };
+    Object.assign(process.env, env);
+    try {
+      const r = await verifyBinary(FAKE, '0.1.2', { launcher: [process.execPath], timeoutMs: 10_000 });
+      assert.equal(r.version, '0.1.2');
+      process.env.FAKE_VYRTEL_MODE = 'crash';
+      await assert.rejects(verifyBinary(FAKE, '0.1.2', { launcher: [process.execPath], timeoutMs: 10_000 }), gateError(/exited before it became healthy/));
+    } finally {
+      for (const k of Object.keys(env)) delete process.env[k];
+    }
   });
 
   test('real binary (set VYRTEL_BIN)', { skip: !process.env.VYRTEL_BIN && 'VYRTEL_BIN not set' }, async () => {
@@ -294,5 +310,47 @@ describe('AC2: nothing is published unless every gate passed', () => {
   test('release builds refuse to embed the placeholder UI', () => {
     assert.match(workflow, /VYRTEL_REQUIRE_WEB_UI: '1'/);
     assert.match(repoFile('Dockerfile'), /VYRTEL_REQUIRE_WEB_UI=1 cargo build --release/);
+  });
+});
+
+describe('Linux binaries run on baseline x86-64 CPUs and older glibc', () => {
+  const workflow = repoFile('.github/workflows/release.yml');
+  // `readelf --dyn-syms --wide` lines, as printed for the v0.1.2-rc.1 asset.
+  const syms = [
+    '    12: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND memcpy@GLIBC_2.14 (3)',
+    '    40: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND __isoc23_sscanf@GLIBC_2.38 (9)',
+    '    41: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND __isoc23_strtol@GLIBC_2.38 (9)',
+    '    77: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND pthread_create@GLIBC_2.34 (4)',
+    '    78: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND __cxa_finalize@GLIBC_2.2.5 (2)',
+  ].join('\n');
+
+  test('the glibc floor is the highest symbol version', () => {
+    assert.equal(maxGlibcVersion(syms), '2.38');
+    assert.equal(maxGlibcVersion('no versions here'), null);
+  });
+
+  test('symbols newer than the limit are named; older and equal ones pass', () => {
+    assert.deepEqual(glibcSymbolsAbove(syms, '2.34'), ['__isoc23_sscanf@GLIBC_2.38', '__isoc23_strtol@GLIBC_2.38']);
+    assert.deepEqual(glibcSymbolsAbove(syms, '2.38'), []);
+    assert.deepEqual(glibcSymbolsAbove('    1: 0 0 FUNC GLOBAL DEFAULT UND stat@@GLIBC_2.40', '2.39'), ['stat@GLIBC_2.40']);
+  });
+
+  test('Linux binaries are built in a pinned, older-glibc environment, not a moving ubuntu-latest', () => {
+    // ubuntu-latest moving to 26.04 shipped an AVX2-only, glibc 2.38 binary in v0.1.2-rc.1, and any
+    // Ubuntu 24.04+ host links glibc 2.38 symbols; the bookworm image the Docker build uses does not.
+    const linux = "container: 'rust:1-bookworm', target:";
+    assert.ok(workflow.includes(`{ os: ubuntu-24.04, ${linux} x86_64-unknown-linux-gnu, name: vyrtel-linux-x86_64,`));
+    assert.ok(workflow.includes(`{ os: ubuntu-24.04-arm, ${linux} aarch64-unknown-linux-gnu, name: vyrtel-linux-arm64,`));
+    assert.match(workflow, /\n {4}container: \$\{\{ matrix\.container \}\}\n/);
+    assert.match(repoFile('Dockerfile'), /FROM rust:\$\{RUST_VERSION\}-bookworm AS build/);
+    assert.match(workflow, /CFLAGS_x86_64_unknown_linux_gnu: -march=x86-64 -mtune=generic/);
+    // A cache from another runner image would bring back objects built there.
+    assert.match(workflow, /key: \$\{\{ matrix\.target \}\}-\$\{\{ matrix\.os \}\}/);
+  });
+
+  test('both the built and the shipped Linux x86-64 binary must start on a baseline CPU', () => {
+    assert.match(workflow, /check: --cpu qemu64 --max-glibc 2\.34 \}/);
+    assert.match(workflow, /verify-binary "dist\/\$\{\{ matrix\.name \}\}\$\{ext\}" --version "\$\{\{ needs\.preflight\.outputs\.version \}\}" \$\{\{ matrix\.check \}\}/);
+    assert.match(workflow, /verify-binary artifacts\/vyrtel-linux-x86_64 --version "\$\{\{ needs\.preflight\.outputs\.version \}\}" --cpu qemu64 --max-glibc 2\.34/);
   });
 });

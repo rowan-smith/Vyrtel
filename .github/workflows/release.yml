@@ -122,12 +122,21 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
+        # Linux binaries are built in the Debian bookworm image the Docker image is built in, on
+        # pinned runners: the build environment decides the glibc a binary needs and, through C
+        # dependencies, the CPU it runs on. Built directly on ubuntu-latest once it moved to
+        # 26.04, v0.1.2-rc.1 for x86-64 was AVX2-only, and on any Ubuntu 24.04+ host the C
+        # dependencies link glibc 2.38 symbols (`__isoc23_*`).
+        # `check` adds to verify-binary: start on a baseline x86-64 CPU (qemu64, no SSE4/AVX)
+        # and need no glibc newer than 2.34, which earlier releases ran on.
         include:
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, name: vyrtel-linux-x86_64 }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, name: vyrtel-linux-arm64 }
-          - { os: macos-26, target: aarch64-apple-darwin, name: vyrtel-macos-arm64 }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc, name: vyrtel-windows-x86_64 }
+          - { os: ubuntu-24.04, container: 'rust:1-bookworm', target: x86_64-unknown-linux-gnu, name: vyrtel-linux-x86_64, check: --cpu qemu64 --max-glibc 2.34 }
+          - { os: ubuntu-24.04-arm, container: 'rust:1-bookworm', target: aarch64-unknown-linux-gnu, name: vyrtel-linux-arm64, check: --max-glibc 2.34 }
+          - { os: macos-26, container: '', target: aarch64-apple-darwin, name: vyrtel-macos-arm64, check: '' }
+          - { os: windows-latest, container: '', target: x86_64-pc-windows-msvc, name: vyrtel-windows-x86_64, check: '' }
     runs-on: ${{ matrix.os }}
+    # An empty image (macOS, Windows) runs the job on the runner itself.
+    container: ${{ matrix.container }}
     steps:
       - uses: actions/checkout@v7
       # The UI that passed lint, unit and E2E tests in the functional gate.
@@ -140,12 +149,21 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          # Per runner image, so objects compiled on another image are never restored.
+          key: ${{ matrix.target }}-${{ matrix.os }}
       - name: Build
         # Fails the build instead of embedding the "UI not built" placeholder.
         env:
           VYRTEL_REQUIRE_WEB_UI: '1'
+          # C dependencies (SQLite, zstd, aws-lc) target the x86-64 baseline whatever the runner
+          # image's defaults; runtime-dispatched SIMD paths are unaffected.
+          CFLAGS_x86_64_unknown_linux_gnu: -march=x86-64 -mtune=generic
+          CXXFLAGS_x86_64_unknown_linux_gnu: -march=x86-64 -mtune=generic
         run: cargo build --release --locked -p server --target ${{ matrix.target }}
+      - name: Install CPU emulator for the baseline-CPU check
+        if: contains(matrix.check, '--cpu')
+        # Inside the job container, as root.
+        run: apt-get update && apt-get install -y qemu-user
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -164,7 +182,7 @@ jobs:
         run: |
           ext=""
           if [[ "${{ matrix.target }}" == *windows* ]]; then ext=".exe"; fi
-          node scripts/release/release.mjs verify-binary "dist/${{ matrix.name }}${ext}" --version "${{ needs.preflight.outputs.version }}"
+          node scripts/release/release.mjs verify-binary "dist/${{ matrix.name }}${ext}" --version "${{ needs.preflight.outputs.version }}" ${{ matrix.check }}
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
@@ -199,8 +217,9 @@ jobs:
         run: node scripts/release/release.mjs verify-artifacts artifacts
       - name: Check the Linux binary as shipped
         run: |
+          sudo apt-get update && sudo apt-get install -y qemu-user
           chmod +x artifacts/vyrtel-linux-x86_64
-          node scripts/release/release.mjs verify-binary artifacts/vyrtel-linux-x86_64 --version "${{ needs.preflight.outputs.version }}"
+          node scripts/release/release.mjs verify-binary artifacts/vyrtel-linux-x86_64 --version "${{ needs.preflight.outputs.version }}" --cpu qemu64 --max-glibc 2.34
       - name: Check artifacts match the approved candidate
         run: |
           mkdir -p evidence
