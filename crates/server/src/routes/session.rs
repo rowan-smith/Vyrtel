@@ -31,11 +31,7 @@ pub async fn login(State(state): State<SharedState>, ApiJson(b): ApiJson<LoginBo
         state.db(move |m| m.find_user(&u)).await?
     };
     let ok = match &user {
-        Some(u) => {
-            let hash = u.password_hash.clone();
-            let pw = b.password.clone();
-            state.blocking(move || Ok(auth::verify_password(&pw, &hash))).await?
-        }
+        Some(u) => auth::check_password(&state, b.password.clone(), u.password_hash.clone()).await?,
         None => false,
     };
     let Some(user) = user.filter(|_| ok) else {
