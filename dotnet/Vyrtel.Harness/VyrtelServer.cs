@@ -16,8 +16,6 @@ public sealed class VyrtelServer : IAsyncDisposable
     public Uri BaseUrl { get; }
     public bool Launched => _process is not null;
     public string? ExecutablePath { get; }
-    /// <summary>Size of the server executable on disk, in bytes (0 when connected to an external server).</summary>
-    public long ExecutableSizeBytes { get; }
     /// <summary>The launched server process, or null when connected to an external server.</summary>
     public Process? Process => _process;
     /// <summary>Data directory of a launched server (null when connected to an external server).</summary>
@@ -34,9 +32,6 @@ public sealed class VyrtelServer : IAsyncDisposable
         _dataDir = dataDir;
         ExecutablePath = executable;
         _keepData = keepData;
-        ExecutableSizeBytes = executable is not null && File.Exists(executable)
-            ? new FileInfo(executable).Length
-            : 0;
     }
 
     /// <summary>
@@ -61,13 +56,12 @@ public sealed class VyrtelServer : IAsyncDisposable
     public string BuildProfile => ProfileOf(ExecutablePath);
 
     /// <summary>
-    /// Executable size plus the data directory footprint, sampled together so the report
-    /// describes the same moment (the dataset right after seeding).
+    /// The build profile and the data directory footprint, measured when called (the dataset
+    /// right after seeding).
     /// </summary>
     public BuildInfo MeasureBuild() => new(
         Profile: BuildProfile,
         Executable: ExecutablePath,
-        ExecutableBytes: ExecutableSizeBytes,
         DataDirBytes: MeasureDataDirBytes());
 
     internal static string ProfileOf(string? executable)

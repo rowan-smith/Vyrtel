@@ -67,6 +67,26 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
     Argon2::default().verify_password(password.as_bytes(), hash).is_ok()
 }
 
+/// Password checks that may run at once. Each Argon2id check allocates its
+/// whole working memory (19 MiB with the default parameters) and the login
+/// route needs no session, so without a bound N concurrent attempts, right
+/// or wrong, cost N × 19 MiB outside `storage.max_memory`. One at a time
+/// still checks about 20 passwords a second on modest hardware.
+static PASSWORD_CHECKS: Semaphore = Semaphore::const_new(1);
+
+/// [`verify_password`] on the blocking pool, one check at a time. The permit
+/// moves into the blocking task, so a request cancelled mid-check still
+/// holds it until the hashing (and its memory) is done.
+pub async fn check_password(state: &AppState, password: String, hash: String) -> ApiResult<bool> {
+    let permit = PASSWORD_CHECKS.acquire().await.expect("the password semaphore is never closed");
+    state
+        .blocking(move || {
+            let _permit = permit;
+            Ok(verify_password(&password, &hash))
+        })
+        .await
+}
+
 /// `Authorization: Bearer <key>` or `X-Api-Key: <key>`.
 pub fn api_key_from(headers: &HeaderMap) -> Option<String> {
     if let Some(v) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
@@ -1067,6 +1087,19 @@ mod tests {
         assert!(verify_password("hunter2", &h));
         assert!(!verify_password("hunter3", &h));
         assert!(!verify_password("x", "not a hash"));
+    }
+
+    #[tokio::test]
+    async fn password_checks_run_one_at_a_time() {
+        // A check waits while another holds the permit, and runs once it is released.
+        let held = PASSWORD_CHECKS.acquire().await.unwrap();
+        assert_eq!(PASSWORD_CHECKS.available_permits(), 0);
+        let waiting = tokio::spawn(async { PASSWORD_CHECKS.acquire().await.map(drop) });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiting.is_finished(), "a second check must wait for the first");
+        drop(held);
+        waiting.await.unwrap().unwrap();
+        assert_eq!(PASSWORD_CHECKS.available_permits(), 1);
     }
 
     #[test]

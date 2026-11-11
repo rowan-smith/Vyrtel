@@ -81,7 +81,7 @@ public static class BaselineReportWriter
         Line($"| Disk | {(r.Host.Disk is { } d ? $"{d.Mount} {d.Format} ({d.Type}), {ByteFormat.Format(d.FreeBytes)} free of {ByteFormat.Format(d.TotalBytes)}" : "unknown")} |");
         Line($"| Harness runtime | {r.Host.Runtime} |");
         if (r.Host.Notes.Length > 0) Line($"| Notes | {r.Host.Notes} |");
-        Line($"| Binary | {ByteFormat.Format(r.Build.ExecutableBytes)} ({r.Build.Profile}){(r.Build.ExecutableSha256 is { } sha ? $", SHA-256 `{sha[..16]}…`" : "")} |");
+        Line($"| Binary | {r.Build.Profile}{(r.Build.ExecutableSha256 is { } sha ? $", SHA-256 `{sha[..16]}…`" : "")} |");
         if (r.Build.Rustc is not null) Line($"| Compiler | {r.Build.Rustc} |");
         Line($"| Configuration | `{r.Config.File}`, SHA-256 `{r.Config.Sha256[..16]}…` |");
         if (r.Config.Ingest is { } ingest)

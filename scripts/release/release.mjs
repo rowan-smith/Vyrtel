@@ -3,7 +3,7 @@
 //
 //   node scripts/release/release.mjs plan --tag v0.1.2 [--image ghcr.io/owner/repo]
 //   node scripts/release/release.mjs verify-artifacts <dir> [--version 0.1.2]
-//   node scripts/release/release.mjs verify-binary <path> [--version 0.1.2]
+//   node scripts/release/release.mjs verify-binary <path> [--version 0.1.2] [--cpu qemu64] [--max-glibc 2.34]
 //   node scripts/release/release.mjs verify-server <url> [--version 0.1.2] [--password <admin password>]
 //   node scripts/release/release.mjs verify-image <image> [--version 0.1.2] [--platform linux/arm64]
 //                                    [--bind-mount auto|on|off] [--record <dir>]
@@ -251,7 +251,7 @@ export function run(command, args, opts) {
     child.stdout.on('data', (d) => (stdout += d));
     child.stderr.on('data', (d) => (stderr += d));
     child.once('error', reject);
-    child.once('close', (code) => resolve({ code, stdout, stderr }));
+    child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
   });
 }
 
@@ -260,23 +260,62 @@ function cleanEnv() {
   return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.toUpperCase().startsWith('VYRTEL_')));
 }
 
+/** The highest `GLIBC_x.y` symbol version in `readelf --dyn-syms` output, or null when there is none. */
+export function maxGlibcVersion(dynSyms) {
+  let max = null;
+  for (const [, major, minor] of dynSyms.matchAll(/GLIBC_(\d+)\.(\d+)/g)) {
+    const v = [Number(major), Number(minor)];
+    if (!max || v[0] > max[0] || (v[0] === max[0] && v[1] > max[1])) max = v;
+  }
+  return max && `${max[0]}.${max[1]}`;
+}
+
+/** Symbols of `readelf --dyn-syms` output that need a glibc newer than `limit` ("2.34"). */
+export function glibcSymbolsAbove(dynSyms, limit) {
+  const [lMajor, lMinor] = limit.split('.').map(Number);
+  const found = new Set();
+  for (const m of dynSyms.matchAll(/([^\s@]+)@@?GLIBC_(\d+)\.(\d+)/g)) {
+    const [major, minor] = [Number(m[2]), Number(m[3])];
+    if (major > lMajor || (major === lMajor && minor > lMinor)) found.add(`${m[1]}@GLIBC_${major}.${minor}`);
+  }
+  return [...found].sort();
+}
+
+/**
+ * A Linux binary must not need a glibc newer than `limit`, or it will not start on the older
+ * distributions earlier releases ran on. Building on a newer runner image (newer glibc headers,
+ * a compiler defaulting to C23) raises the floor silently.
+ */
+export async function verifyGlibcFloor(binary, limit) {
+  const out = await run('readelf', ['--dyn-syms', '--wide', binary], {});
+  if (out.code !== 0) fail(`readelf --dyn-syms ${binary} exited ${out.code}: ${out.stderr.trim()}`);
+  const above = glibcSymbolsAbove(out.stdout, limit);
+  if (above.length) {
+    fail(`${binary} needs glibc ${maxGlibcVersion(out.stdout)}, newer than the supported ${limit}: ${above.join(', ')}`);
+  }
+  return maxGlibcVersion(out.stdout);
+}
+
 /**
  * Checks a built binary: `--version` prints `vyrtel <version>`, and a fresh server on a free
  * loopback port with an empty data directory reports that version and serves the embedded UI.
- * `prefixArgs` lets tests run a script through node.
+ * `launcher` runs the binary through another program, e.g. `['qemu-x86_64', '-cpu', 'qemu64']`
+ * to prove it starts on a baseline x86-64 CPU; `prefixArgs` lets tests run a script through node.
  */
-export async function verifyBinary(binary, version, { prefixArgs = [], timeoutMs = 30_000 } = {}) {
+export async function verifyBinary(binary, version, { launcher = [], prefixArgs = [], timeoutMs = 30_000 } = {}) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'vyrtel-release-check-'));
   const opts = { cwd: work, env: { ...cleanEnv(), ...CHECK_ENV } };
+  const [command, ...launcherArgs] = launcher.length ? launcher : [binary];
+  const argv = (args) => [...launcherArgs, ...(launcher.length ? [binary] : []), ...prefixArgs, ...args];
   try {
-    const out = await run(binary, [...prefixArgs, '--version'], opts);
+    const out = await run(command, argv(['--version']), opts);
     const printed = out.stdout.trim();
-    if (out.code !== 0) fail(`${binary} --version exited ${out.code}: ${out.stderr.trim()}`);
+    if (out.code !== 0) fail(`${binary} --version exited ${out.code ?? out.signal}: ${out.stderr.trim()}`);
     if (printed !== `vyrtel ${version}`) fail(`${binary} --version printed "${printed}", expected "vyrtel ${version}"`);
 
     const port = await freePort();
-    const args = [...prefixArgs, 'serve', '--data-dir', path.join(work, 'data'), '--bind', `127.0.0.1:${port}`];
-    const child = spawn(binary, args, { ...opts, stdio: ['ignore', 'ignore', 'pipe'] });
+    const args = argv(['serve', '--data-dir', path.join(work, 'data'), '--bind', `127.0.0.1:${port}`]);
+    const child = spawn(command, args, { ...opts, stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     let exit = null;
     child.stderr.on('data', (d) => (stderr = (stderr + d).slice(-4000)));
@@ -343,8 +382,14 @@ export async function main(argv) {
     }
     case 'verify-binary': {
       const bin = positional[0] ?? fail('verify-binary needs a binary path');
-      const r = await verifyBinary(path.resolve(bin), version);
-      console.log(`${bin}: version ${r.version}, embedded UI ok (${r.entry})`);
+      if (flags['max-glibc']) {
+        const needs = await verifyGlibcFloor(path.resolve(bin), flags['max-glibc']);
+        console.log(`${bin}: needs glibc ${needs ?? '(none)'}, within ${flags['max-glibc']}`);
+      }
+      // Under emulation startup is slower; allow for it.
+      const emulated = flags.cpu ? { launcher: ['qemu-x86_64', '-cpu', flags.cpu], timeoutMs: 120_000 } : {};
+      const r = await verifyBinary(path.resolve(bin), version, emulated);
+      console.log(`${bin}: version ${r.version}, embedded UI ok (${r.entry})${flags.cpu ? `, starts on CPU model ${flags.cpu}` : ''}`);
       return;
     }
     case 'verify-server': {

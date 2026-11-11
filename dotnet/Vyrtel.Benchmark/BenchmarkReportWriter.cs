@@ -150,9 +150,9 @@ public static class BenchmarkReportWriter
         sb.AppendLine($"- Machine: {report.Hardware.Os} ({report.Hardware.Architecture}), {report.Hardware.LogicalCores} logical cores");
         sb.AppendLine($"- Runtime: {report.Hardware.Runtime}");
         var build = report.Build;
-        if (build is not null && build.ExecutableBytes > 0)
+        if (build is not null)
         {
-            sb.AppendLine($"- Executable: {build.ExecutableSize} ({build.Profile})");
+            sb.AppendLine($"- Build: {build.Profile}");
         }
         if (build is not null && build.DataDirBytes > 0)
         {

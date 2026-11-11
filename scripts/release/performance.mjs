@@ -27,7 +27,7 @@ export const METRIC_CATEGORIES = [
   'storage', // disk/WAL/index size, bytes per event, fsync latency, compaction
   'networking', // bytes in/out, connections, transport errors
   'ui', // time-to-usable, interaction latency, browser heap
-  'lifecycle', // startup/readiness, recovery, shutdown, binary/image size
+  'lifecycle', // startup/readiness, recovery, shutdown
 ];
 
 const SHA1 = /^[0-9a-f]{40}$/;

@@ -75,7 +75,7 @@ public class BaselineStatisticsTests
     {
         var run = Fixtures.Run(1, mixed: Fixtures.Mixed(accepted: 160, backpressure: 1640));
 
-        var s = BaselineStatistics.Flatten(run, 1).ToDictionary(x => x.Key);
+        var s = BaselineStatistics.Flatten(run).ToDictionary(x => x.Key);
 
         Assert.Equal(450, s["mixed.requestsPerSecond"].Value);  // every response
         Assert.Equal(40, s["mixed.acceptedPerSecond"].Value);   // only 2xx
@@ -88,7 +88,7 @@ public class BaselineStatisticsTests
     [Fact]
     public void Attempted_throughput_is_informational_and_never_gated()
     {
-        var summary = BaselineStatistics.Summarize([Fixtures.Run(1), Fixtures.Run(2), Fixtures.Run(3)], 1);
+        var summary = BaselineStatistics.Summarize([Fixtures.Run(1), Fixtures.Run(2), Fixtures.Run(3)]);
 
         var attempted = summary.Single(m => m.Key == "mixed.requestsPerSecond");
         Assert.Null(attempted.BudgetPercent);
@@ -201,7 +201,7 @@ public class BaselineStatisticsTests
     [Fact]
     public void Every_run_contributes_cold_warm_mixed_memory_and_size_metrics()
     {
-        var keys = BaselineStatistics.Flatten(Fixtures.Run(1), 12_000_000).Select(s => s.Key).ToHashSet();
+        var keys = BaselineStatistics.Flatten(Fixtures.Run(1)).Select(s => s.Key).ToHashSet();
 
         Assert.Contains("seed.itemsPerSecond", keys);
         Assert.Contains("query.logs.traceId.coldMs", keys);
@@ -216,18 +216,18 @@ public class BaselineStatisticsTests
         Assert.Contains("mixed.ingest.ndjson.p99Ms", keys);
         Assert.Contains("memory.peakRssBytes", keys);
         Assert.Contains("storage.bytesPerEvent", keys);
-        Assert.Contains("build.executableBytes", keys);
+        Assert.DoesNotContain("build.executableBytes", keys);
     }
 
     [Fact]
     public void Throughput_is_higher_is_better_and_latency_lower()
     {
-        var samples = BaselineStatistics.Flatten(Fixtures.Run(1), 1).ToDictionary(s => s.Key);
+        var samples = BaselineStatistics.Flatten(Fixtures.Run(1)).ToDictionary(s => s.Key);
 
         Assert.Equal(Better.Higher, samples["seed.itemsPerSecond"].Better);
         Assert.Equal(Better.Higher, samples["mixed.requestsPerSecond"].Better);
         Assert.Equal(Better.Lower, samples["query.logs.traceId.coldMs"].Better);
-        Assert.Equal(MetricKind.Size, samples["build.executableBytes"].Kind);
+        Assert.Equal(MetricKind.Size, samples["storage.bytesPerEvent"].Kind);
         Assert.Equal((0.99, 3), (samples["mixed.ingest.ndjson.p99Ms"].Quantile, samples["mixed.ingest.ndjson.p99Ms"].Samples));
         Assert.Equal((0.50, 3), (samples["query.logs.traceId.warmP50Ms"].Quantile, samples["query.logs.traceId.warmP50Ms"].Samples));
         Assert.Null(samples["query.logs.traceId.coldMs"].Quantile);
@@ -238,7 +238,7 @@ public class BaselineStatisticsTests
     {
         var runs = new[] { Fixtures.Run(1, 1.0), Fixtures.Run(2, 1.02), Fixtures.Run(3, 0.98) };
 
-        var summary = BaselineStatistics.Summarize(runs, 12_000_000);
+        var summary = BaselineStatistics.Summarize(runs);
 
         Assert.Equal(summary.Count, summary.Select(m => m.Key).Distinct().Count());
         Assert.All(summary, m => Assert.Equal(3, m.Runs));

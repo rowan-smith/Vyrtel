@@ -44,6 +44,6 @@ body:
   id: evidence
   attributes:
     label: Evidence
-    description: Candidate SHA, artifact hashes, inventory link, removal PRs, test runs, binary-size delta. Recorded on this issue.
+    description: Candidate SHA, artifact hashes, inventory link, removal PRs, test runs. Recorded on this issue.
   validations:
     required: false

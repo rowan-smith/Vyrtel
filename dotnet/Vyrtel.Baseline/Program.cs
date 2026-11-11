@@ -84,7 +84,7 @@ var report = new BaselineReport(
     Compression(facts.EffectiveConfig, firstStorage, runs[0].DataDirBytes),
     clock.Elapsed.TotalSeconds,
     runs,
-    BaselineStatistics.Summarize(runs, build.ExecutableBytes));
+    BaselineStatistics.Summarize(runs));
 
 if (previous is not null)
 {
@@ -132,7 +132,7 @@ static void PrintSummary(BaselineReport report)
 {
     Console.WriteLine();
     Console.WriteLine($"baseline: {report.Runs.Count} run(s) in {report.TotalDurationSeconds:0}s on {report.Host.CpuModel} ({report.Host.LogicalCores} cores)");
-    Console.WriteLine($"  binary {ByteFormat.Format(report.Build.ExecutableBytes)}, peak RSS {ByteFormat.Format(report.Runs.Max(r => r.Memory.PeakRssBytes))}, {report.Compression?.Method}");
+    Console.WriteLine($"  {report.Build.Profile} binary, peak RSS {ByteFormat.Format(report.Runs.Max(r => r.Memory.PeakRssBytes))}, {report.Compression?.Method}");
     var gated = report.Summary.Count(m => m.BudgetPercent is not null);
     Console.WriteLine($"  {report.Summary.Count} metrics, {gated} with a proposed budget");
     if (report.Runs.Count < BaselineStatistics.MinRunsForBudget)

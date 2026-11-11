@@ -102,7 +102,7 @@ file starts a new baseline: re-record it before comparing.
 | Section | What it states |
 |---|---|
 | Header | Generation time, label, Vyrtel version and commit (flagged if the tree had uncommitted changes), total and per-run **duration**, the workload |
-| Host and build | **CPU** model and logical cores, memory available, OS and architecture, the volume holding the data directories (file system, free space), harness runtime, your `--notes`, **binary size**, profile and SHA-256, `rustc` version, configuration SHA-256, ingest admission, and the **compression method** (zstd level, ratio, index overhead, bytes per event, segment count) |
+| Host and build | **CPU** model and logical cores, memory available, OS and architecture, the volume holding the data directories (file system, free space), harness runtime, your `--notes`, the binary's build profile and SHA-256, `rustc` version, configuration SHA-256, ingest admission, and the **compression method** (zstd level, ratio, index overhead, bytes per event, segment count) |
 | Memory | **Peak RSS** per run and per phase (seeding, queries, mixed load), idle RSS after start, and whether the peak came from the OS or sampling |
 | Accepted and rejected requests | Per run and phase: requests, accepted, backpressure, too large, other rejections, transport errors, items accepted, throughput and latency percentiles. The JSON also holds the seeded dataset's expected, acknowledged and stored counts per signal |
 | Mixed load by operation | p50/p95/p99 per operation, averaged across runs with the run-to-run spread, and rejections |

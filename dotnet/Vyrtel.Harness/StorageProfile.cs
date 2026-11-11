@@ -26,12 +26,8 @@ public sealed record StorageProfile(
 public sealed record BuildInfo(
     string Profile,
     [property: System.Text.Json.Serialization.JsonIgnore] string? Executable,
-    long ExecutableBytes,
     long DataDirBytes)
 {
-    /// <summary>Executable size for reports, e.g. "11.4 MB".</summary>
-    public string ExecutableSize => ByteFormat.Format(ExecutableBytes);
-
     /// <summary>Data-directory size for reports, e.g. "8.9 MB".</summary>
     public string DataDirSize => ByteFormat.Format(DataDirBytes);
 }

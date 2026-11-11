@@ -85,7 +85,7 @@ public static class BaselineStatistics
     }
 
     /// <summary>The metrics each run contributes to the summary.</summary>
-    public static IEnumerable<MetricSample> Flatten(RunResult run, long executableBytes)
+    public static IEnumerable<MetricSample> Flatten(RunResult run)
     {
         var s = run.Seed;
         yield return new("seed.unsuccessfulPercent", "Seeding requests not accepted (retried)", "%", Better.Lower, MetricKind.Ratio, Share(s.Requests));
@@ -121,17 +121,13 @@ public static class BaselineStatistics
         {
             yield return new("storage.bytesPerEvent", "Stored bytes per event", "bytes", Better.Lower, MetricKind.Size, storage.BytesStoredPerEvent);
         }
-        if (executableBytes > 0)
-        {
-            yield return new("build.executableBytes", "Binary size", "bytes", Better.Lower, MetricKind.Size, executableBytes);
-        }
     }
 
     /// <summary>Backpressure, rejections and transport errors as a percentage of all requests.</summary>
     public static double Share(RequestCounts c) => c.Total > 0 ? (c.Total - c.Accepted) * 100.0 / c.Total : 0;
 
-    public static IReadOnlyList<MetricSummary> Summarize(IReadOnlyList<RunResult> runs, long executableBytes) =>
-        Summarize(runs.SelectMany(r => Flatten(r, executableBytes)));
+    public static IReadOnlyList<MetricSummary> Summarize(IReadOnlyList<RunResult> runs) =>
+        Summarize(runs.SelectMany(Flatten));
 
     public static IReadOnlyList<MetricSummary> Summarize(IEnumerable<MetricSample> samples) =>
         samples

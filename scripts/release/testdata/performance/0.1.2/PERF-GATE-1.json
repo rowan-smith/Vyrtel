@@ -28,6 +28,6 @@
     { "category": "storage", "name": "bytes per stored event", "unit": "B", "value": 41, "baseline": 40, "delta": 1, "limit": { "max": 44 }, "result": "pass" },
     { "category": "networking", "name": "transport errors", "unit": "count", "value": 0, "noBaseline": "hard limit", "limit": { "max": 0 }, "result": "pass" },
     { "category": "ui", "na": "0.1.2 ships no UI change; the UI is exercised by E2E only" },
-    { "category": "lifecycle", "name": "release binary size", "unit": "MiB", "value": 9.4, "baseline": 9.2, "delta": 0.2, "limit": { "max": 10.1 }, "result": "pass" }
+    { "category": "lifecycle", "name": "restart to healthy", "unit": "ms", "value": 52, "baseline": 52, "delta": 0, "limit": { "max": 60 }, "result": "pass" }
   ]
 }
