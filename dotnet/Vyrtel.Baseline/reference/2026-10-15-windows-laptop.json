@@ -91,7 +91,6 @@
   },
   "build": {
     "profile": "release",
-    "executableBytes": 12385280,
     "executableSha256": "cb7f5384782d8be7c2522aa35a918e213c0587846ae2f892a6458fc1abbd365e",
     "gitCommit": "b61cd28761aad5bdd50a6f516b8ecc2fe2dc43a4",
     "gitDirty": true,
@@ -7542,28 +7541,6 @@
         72.73943743937924,
         72.9198545101843,
         72.94997090203685
-      ]
-    },
-    {
-      "key": "build.executableBytes",
-      "label": "Binary size",
-      "unit": "bytes",
-      "better": "lower",
-      "kind": "size",
-      "runs": 5,
-      "mean": 12385280,
-      "stdDev": 0,
-      "cvPercent": 0,
-      "min": 12385280,
-      "max": 12385280,
-      "budgetPercent": 2,
-      "justification": "5 runs, CV 0.0% \u2192 90% upper bound 0.0% (\u00D71.94) \u2192 3\u00D7 = 0.0%, rounded up to 0%; floor 2% \u2192 2%",
-      "values": [
-        12385280,
-        12385280,
-        12385280,
-        12385280,
-        12385280
       ]
     }
   ]

@@ -12,7 +12,7 @@ public sealed class BaselineReportWriterTests : IDisposable
     }
 
     [Fact]
-    public void States_hardware_duration_peak_rss_binary_size_and_compression()
+    public void States_hardware_duration_peak_rss_and_compression()
     {
         var md = BaselineReportWriter.ToMarkdown(_report);
 
@@ -22,7 +22,7 @@ public sealed class BaselineReportWriterTests : IDisposable
         Assert.Contains("| Notes | NVMe SSD, AC power |", md);
         Assert.Contains("- Duration: 2.3 min for 3 run(s) (45 s, 45 s, 45 s)", md);
         Assert.Contains("| 1 | 50.0 MB | 12.0 MB | 36.0 MB | 20.0 MB | 50.0 MB | os-peak |", md);
-        Assert.Contains("| Binary | 11.8 MB (release)", md);
+        Assert.Contains("| Binary | release, SHA-256", md);
         Assert.Contains("| Compression | zstd level 3, independently compressed column chunks: 4.00× ratio, 7.6% index overhead", md);
         Assert.Contains("SHA-256 `3593a029c80e2d51…`", md);
         Assert.Contains("| Ingest admission | 3 concurrent (explicit)", md);
@@ -57,7 +57,7 @@ public sealed class BaselineReportWriterTests : IDisposable
 
         Assert.Contains("## Run-to-run variance and proposed regression budgets", md);
         Assert.Contains("3 runs, CV 1.0% → 90% upper bound 3.1% (×3.08) → 3× = 9.2%, rounded up to 10%; floor 15% → 15%", md);
-        Assert.Contains("| Binary size | lower | 3 | 11.81 MB | 0.0 B | 0.0% |", md);
+        Assert.DoesNotContain("Binary size", md);
     }
 
     [Fact]

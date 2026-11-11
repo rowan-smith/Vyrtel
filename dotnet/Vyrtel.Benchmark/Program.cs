@@ -71,7 +71,7 @@ else
 {
     Console.WriteLine($"storage: {storage.EventCount:N0} events, {storage.BytesStoredPerEvent:F2} bytes/event, {storage.SegmentCount} segments");
 }
-Console.WriteLine($"executable: {build.ExecutableSize} ({build.Profile}) · data dir: {build.DataDirSize}");
+Console.WriteLine($"build: {build.Profile} · data dir: {build.DataDirSize}");
 
 Environment.SetEnvironmentVariable("VYRTEL_URL", server.BaseUrl.ToString().TrimEnd('/'));
 Environment.SetEnvironmentVariable("VYRTEL_SAMPLE_TRACE_ID", factory.SampleTraceId);

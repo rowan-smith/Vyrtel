@@ -492,7 +492,7 @@ function build() {
 
   const index = fill(fs.readFileSync(path.join(here, 'site/index.html'), 'utf8'), {
     ...vars,
-    HEAD: head('', 'Vyrtel: View. Trace. Understand.', 'Developer-friendly observability: launch one ~11 MB binary and send logs, traces and metrics. Small, fast, light and full featured.'),
+    HEAD: head('', 'Vyrtel: View. Trace. Understand.', 'Developer-friendly observability: launch one small binary and send logs, traces and metrics. Small, fast, light and full featured.'),
     HEADER: header('', 'home'),
     FOOTER: footer(''),
   });

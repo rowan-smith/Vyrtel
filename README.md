@@ -6,7 +6,7 @@
 </p>
 
 Small, fast, self-hosted observability. Structured logs, traces and
-metrics in one ~11 MB binary with one data directory and no external
+metrics in one small binary with one data directory and no external
 services.
 
 > Observability should not require more resources than the software being

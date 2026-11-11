@@ -67,7 +67,6 @@ internal static class Fixtures
 
     public static BaselineReport Report(IReadOnlyList<RunResult> runs, string configSha = "3593a029c80e2d51aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", string cpu = "Test CPU 9000")
     {
-        const long binary = 12_385_280;
         return new BaselineReport(
             BaselineReport.CurrentSchemaVersion,
             new DateTimeOffset(2026, 10, 15, 11, 0, 0, TimeSpan.Zero),
@@ -76,10 +75,10 @@ internal static class Fixtures
             new WorkloadSpec(42, 20_000, 200, 50, 500, runs.Count, 5, 5, 1, 4),
             new PinnedConfig("dotnet/Vyrtel.Baseline/baseline.toml", configSha, null, new IngestLimits(3, "explicit", 1 << 20)),
             new HostInfo("Test OS 1.0", "X64", cpu, 22, 32L << 30, new DiskInfo("C:\\", "NTFS", "Fixed", 500L << 30, 23L << 30), ".NET 10.0.8", "NVMe SSD, AC power"),
-            new BuildFacts("release", binary, new string('c', 64), "b61cd28761aa0000", false, "rustc 1.96.1"),
+            new BuildFacts("release", new string('c', 64), "b61cd28761aa0000", false, "rustc 1.96.1"),
             new CompressionInfo("zstd level 3, independently compressed column chunks", 3, 4.0, 0.076, 97.8, 4, 2_000_000),
             135,
             runs,
-            BaselineStatistics.Summarize(runs, binary));
+            BaselineStatistics.Summarize(runs));
     }
 }

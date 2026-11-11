@@ -16,7 +16,7 @@
 | Disk | C:\ NTFS (Fixed), 22.2 GB free of 474.7 GB |
 | Harness runtime | .NET 10.0.8 |
 | Notes | Laptop, NVMe SSD, AC power, desktop apps open |
-| Binary | 11.8 MB (release), SHA-256 `cb7f5384782d8be7…` |
+| Binary | release, SHA-256 `cb7f5384782d8be7…` |
 | Compiler | rustc 1.96.1 (31fca3adb 2026-06-26) |
 | Configuration | `dotnet/Vyrtel.Baseline/baseline.toml`, SHA-256 `3593a029c80e2d51…` |
 | Ingest admission | 3 concurrent (explicit), 1.0 MB max request |
@@ -178,7 +178,6 @@ budget = max(floor, 3 × CV × k(n) rounded up), where k(n) turns the CV of n ru
 | Restart to healthy (mean) | lower | 3 | 518.52 ms | 0.945 ms | 0.2% | 517.87 ms | 519.60 ms | 15% | 3 runs, CV 0.2% → 90% upper bound 0.6% (×3.08) → 3× = 1.7%, rounded up to 5%; floor 15% → 15% |
 | Data directory after seeding | lower | 3 | 7.18 MB | 9.7 KB | 0.1% | 7.17 MB | 7.19 MB | 2% | 3 runs, CV 0.1% → 90% upper bound 0.4% (×3.08) → 3× = 1.2%, rounded up to 2%; floor 2% → 2% |
 | Stored bytes per event | lower | 3 | 73.0 B | 0.1 B | 0.1% | 72.9 B | 73.1 B | 2% | 3 runs, CV 0.1% → 90% upper bound 0.4% (×3.08) → 3× = 1.2%, rounded up to 2%; floor 2% → 2% |
-| Binary size | lower | 3 | 11.81 MB | 0.0 B | 0.0% | 11.81 MB | 11.81 MB | 2% | 3 runs, CV 0.0% → 90% upper bound 0.0% (×3.08) → 3× = 0.0%, rounded up to 0%; floor 2% → 2% |
 
 ## Comparison with 0.1.1 reference (0.1.1, 2026-10-15)
 
@@ -274,7 +273,6 @@ budget = max(floor, 3 × CV × k(n) rounded up), where k(n) turns the CV of n ru
 | Restart to healthy (mean) | 518.71 ms | 518.52 ms | 0.0% | 15% | within budget |
 | Data directory after seeding | 7.17 MB | 7.18 MB | +0.1% | 2% | within budget |
 | Stored bytes per event | 72.9 B | 73.0 B | +0.1% | 2% | within budget |
-| Binary size | 11.81 MB | 11.81 MB | 0.0% | 2% | within budget |
 
 ## Raw data
 

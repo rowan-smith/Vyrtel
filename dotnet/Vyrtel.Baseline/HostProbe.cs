@@ -24,9 +24,8 @@ public static class HostProbe
 
     public static BuildFacts Build(string profile, string? executable, string? repoRoot)
     {
-        var size = executable is not null && File.Exists(executable) ? new FileInfo(executable).Length : 0;
         string? sha = null;
-        if (size > 0)
+        if (executable is not null && File.Exists(executable))
         {
             using var stream = File.OpenRead(executable!);
             sha = Convert.ToHexStringLower(SHA256.HashData(stream));
@@ -36,7 +35,6 @@ public static class HostProbe
         var status = repoRoot is null ? null : Run("git", ["-C", repoRoot, "status", "--porcelain", "--untracked-files=no"]);
         return new BuildFacts(
             profile,
-            size,
             sha,
             commit,
             commit is null ? null : !string.IsNullOrWhiteSpace(status),

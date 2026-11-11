@@ -61,7 +61,6 @@ public sealed record DiskInfo(string Mount, string Format, string Type, long Tot
 
 public sealed record BuildFacts(
     string Profile,
-    long ExecutableBytes,
     string? ExecutableSha256,
     string? GitCommit,
     bool? GitDirty,
