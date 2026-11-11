@@ -7,23 +7,32 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use telemetry::*;
 
 use crate::codec::{self, Head};
 use crate::encoding::Reader;
 use crate::error::{DecodeError, IoContext, Result, StorageError, corrupt};
-use crate::fsutil::read_exact_at;
+use crate::fsutil::{self, read_exact_at};
 
+use super::files::OPEN_FILES;
 use super::format::*;
 
+/// A sealed segment. Its file is opened on demand through the bounded set of
+/// [open segment files](super::files), not held for the segment's lifetime.
+///
+/// Retention and compaction [`retire`](Segment::retire) a segment rather than
+/// delete its file: the file is removed when the last `Arc<Segment>` drops, so
+/// a query still holding the segment in its snapshot can reopen it.
 #[derive(Debug)]
 pub struct Segment {
     pub summary: SegmentSummary,
     pub path: PathBuf,
     pub file_len: u64,
-    file: File,
     index_ref: ChunkRef,
+    retired: AtomicBool,
 }
 
 impl Segment {
@@ -71,11 +80,28 @@ impl Segment {
             }
         }
         summary.index_bytes = file_len.saturating_sub(summary.data_bytes);
-        Ok(Segment { summary, path: path.to_path_buf(), file_len, file, index_ref: footer.index })
+        OPEN_FILES.keep(path, file);
+        Ok(Segment {
+            summary,
+            path: path.to_path_buf(),
+            file_len,
+            index_ref: footer.index,
+            retired: AtomicBool::new(false),
+        })
     }
 
     pub fn id(&self) -> u64 {
         self.summary.id
+    }
+
+    /// Delete this segment's file once nothing holds the segment any more.
+    /// It stays readable until then.
+    pub fn retire(&self) {
+        self.retired.store(true, Ordering::Release);
+    }
+
+    fn file(&self) -> Result<Arc<File>> {
+        OPEN_FILES.get(&self.path).ctx(&self.path)
     }
 
     pub fn index_compressed_len(&self) -> u64 {
@@ -84,7 +110,8 @@ impl Segment {
 
     /// Read and decode the index region. Callers cache the result.
     pub fn read_index(&self) -> Result<SegmentIndex> {
-        let raw = read_chunk(&self.file, &self.path, &self.index_ref, self.file_len)?;
+        let file = self.file()?;
+        let raw = read_chunk(&file, &self.path, &self.index_ref, self.file_len)?;
         let idx =
             SegmentIndex::decode(&mut Reader::new(&raw)).map_err(|e| corrupt(self.path.display().to_string(), e))?;
         if idx.blocks.len() != self.summary.blocks.len() {
@@ -98,6 +125,7 @@ impl Segment {
         let meta = &self.summary.blocks[block];
         let n = meta.count as usize;
         let what = || format!("{} block {block}", self.path.display());
+        let file = self.file()?;
         let mut data = BlockData {
             len: n,
             bytes_read: 0,
@@ -111,7 +139,7 @@ impl Segment {
         let mut load = |c: Column| -> Result<Vec<u8>> {
             let r = &meta.columns[c as usize];
             data.bytes_read += r.len as u64;
-            read_chunk(&self.file, &self.path, r, self.file_len)
+            read_chunk(&file, &self.path, r, self.file_len)
         };
 
         let ts_raw = load(Column::Ts)?;
@@ -162,6 +190,20 @@ impl Segment {
             }
         }
         Ok(out)
+    }
+}
+
+impl Drop for Segment {
+    fn drop(&mut self) {
+        OPEN_FILES.forget(&self.path);
+        if self.retired.load(Ordering::Acquire)
+            && let Err(e) = fsutil::remove_file_if_exists(&self.path)
+        {
+            // Retention or compaction already took it out of the catalog; a
+            // file left behind is removed by the next retention pass, or by
+            // recovery if a compacted output replaces it.
+            tracing::warn!(path = %self.path.display(), error = %e, "could not delete a retired segment");
+        }
     }
 }
 

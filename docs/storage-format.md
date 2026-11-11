@@ -486,10 +486,18 @@ already acknowledged stays safe in the WAL.
 Compaction merges small segments (raw size < ¼ of the segment target, at
 least 4 of them) into a new segment whose summary lists the inputs in
 `replaces`. After the merged segment is committed, the inputs are removed
-from the catalog and deleted.
+from the catalog and retired.
 
 Retention deletes whole segments whose `max_ts` is older than the signal's
-retention period: remove from the catalog first, then unlink.
+retention period: remove from the catalog first, then retire.
+
+A retired segment's file is deleted when the last query still holding the
+segment in its snapshot finishes, or straight away if none does. Segment
+files are not held open for reads: a read opens the file through a set of
+at most 64 open segment files, so a query can still read a retired segment
+whose handle was closed, and file descriptors do not grow with retained
+data. A crash before the deletion leaves the file: recovery removes it if a
+committed segment `replaces` it, and the next retention pass otherwise.
 
 ## Recovery procedure
 

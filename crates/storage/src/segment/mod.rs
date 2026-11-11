@@ -1,9 +1,11 @@
 //! Immutable, versioned, block-compressed segment files.
 
+mod files;
 pub mod format;
 mod reader;
 mod writer;
 
+pub use files::MAX_OPEN_SEGMENT_FILES;
 pub use format::*;
 pub use reader::{BlockData, MetaRow, Segment, check_segment_format};
 pub use writer::{SegmentWriteOptions, WrittenSegment, paths, write_segment};
@@ -158,5 +160,64 @@ mod tests {
         let events = sorted((0..3).map(|i| log(i, "a", Level::Information, &[])).collect());
         assert!(write_segment(&missing, &tmp, 1, Signal::Logs, &refs(&events), vec![], &Default::default()).is_err());
         assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0);
+    }
+
+    fn written(
+        seg: &std::path::Path,
+        tmp: &std::path::Path,
+        id: u64,
+        n: i64,
+    ) -> (Vec<TelemetryEvent>, std::path::PathBuf) {
+        let events = sorted((0..n).map(|i| log(i, "a", Level::Information, &[])).collect());
+        let w = write_segment(seg, tmp, id, Signal::Logs, &refs(&events), vec![], &Default::default()).unwrap();
+        (events, w.path)
+    }
+
+    #[test]
+    fn a_retired_segment_stays_readable_until_its_last_holder_drops() {
+        let (_d, seg, tmp) = dirs();
+        let (events, path) = written(&seg, &tmp, 1, 20);
+        let catalog = std::sync::Arc::new(Segment::open(&path).unwrap());
+        let snapshot = std::sync::Arc::clone(&catalog); // a query still holding it
+
+        catalog.retire();
+        drop(catalog); // retention or compaction drops it from the catalog
+        assert!(path.exists(), "deleted while a query still holds it");
+
+        // Even with its handle closed, the query reopens and reads it.
+        files::OPEN_FILES.forget(&path);
+        assert_eq!(snapshot.read_all().unwrap(), events);
+        assert!(snapshot.read_index().is_ok());
+
+        drop(snapshot);
+        assert!(!path.exists(), "the last holder deletes a retired segment");
+    }
+
+    #[test]
+    fn a_segment_dropped_without_retiring_keeps_its_file() {
+        let (_d, seg, tmp) = dirs();
+        let (_, path) = written(&seg, &tmp, 1, 5);
+        drop(Segment::open(&path).unwrap());
+        assert!(path.exists());
+        assert!(Segment::open(&path).is_ok());
+    }
+
+    #[test]
+    fn reading_more_segments_than_the_cap_holds_at_most_the_cap_open() {
+        let (_d, seg, tmp) = dirs();
+        let n = MAX_OPEN_SEGMENT_FILES + 16;
+        let segments: Vec<(Vec<TelemetryEvent>, Segment)> = (0..n as u64)
+            .map(|id| {
+                let (events, path) = written(&seg, &tmp, id + 1, 3);
+                (events, Segment::open(&path).unwrap())
+            })
+            .collect();
+        for _ in 0..2 {
+            for (events, s) in &segments {
+                assert_eq!(&s.read_all().unwrap(), events);
+                // Shared by every test in the process, so only the cap is certain.
+                assert!(files::OPEN_FILES.len() <= MAX_OPEN_SEGMENT_FILES);
+            }
+        }
     }
 }

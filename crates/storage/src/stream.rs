@@ -1044,9 +1044,8 @@ fn apply_retention(shared: &Shared, now: Timestamp) -> Result<()> {
     }
     for s in expired {
         shared.cache.evict(shared.signal, s.summary.id);
-        let path = s.path.clone();
-        drop(s);
-        fsutil::remove_file_if_exists(&path)?;
+        // Deleted now, or when the last query holding it finishes.
+        s.retire();
     }
     fsutil::sync_dir(&shared.dirs.segments)
 }
@@ -1118,9 +1117,9 @@ fn compact(shared: &Shared) -> Result<()> {
             crash::point("compact.mid_input_delete");
         }
         shared.cache.evict(shared.signal, s.summary.id);
-        let path = s.path.clone();
-        drop(s);
-        fsutil::remove_file_if_exists(&path)?;
+        // Deleted now, or when the last query holding it finishes; until
+        // then recovery would remove it as an input `replaces` names.
+        s.retire();
     }
     fsutil::sync_dir(&shared.dirs.segments)
 }
