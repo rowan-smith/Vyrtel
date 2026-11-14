@@ -50,6 +50,10 @@ tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# getrlimit/setrlimit for the open-file limit (src/limits.rs).
+libc = "0.2"
+
 # Embeds the app icon and version info into vyrtel.exe (Windows hosts only; see build.rs).
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

@@ -241,6 +241,8 @@ fn main() -> ExitCode {
         Some(Command::Serve) | None => {}
     }
     init_logging(&config);
+    // Before storage opens anything, so the WAL and segment files count against the raised limit.
+    server::limits::report(server::limits::raise(), config.server.max_connections);
     let data_dir = config.storage.path.clone();
     let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,
