@@ -6,6 +6,16 @@ transport runs (`scripts/bench/transport-soak.sh`). Baseline:
 limits are not changed after the candidate is measured; a miss is a FAIL and
 is fixed, not re-budgeted.
 
+**Amended 2026-11-15**, before any measurement of a candidate with the change
+it follows. The 0.1.2-rc.1 and rc.2 runs missed "FDs ≤ idle-before + 4"
+because every segment kept its file open, so descriptors grew with stored
+data until the open-file limit stopped ingestion: a real defect, fixed rather
+than re-budgeted. Segment files are now opened on demand and at most
+`storage::segment::MAX_OPEN_SEGMENT_FILES` (64) stay open, by design, so
+`transport-soak.sh` counts them separately (`peakSegmentFds`,
+`segmentFdsAfter`) and the idle rule applies to the other descriptors
+(`otherFdsBefore`, `otherFdsAfter`). The peak-FD limit is unchanged.
+
 Configurations:
 
 * **normal**: defaults (`max_memory = 512MB`, `max_connections = 256`,
@@ -23,7 +33,8 @@ Configurations:
 | Heap retained after every connection closed           | KiB     | ≤ 512                                                                                       |
 | Runtime tasks during a flood (`tests/overload`)       | count   | ≤ `max_connections` + 64 + 16                                                               |
 | Peak server FDs                                       | count   | ≤ `max_connections` + 64 + 128                                                              |
-| Server FDs and sockets after load (idle)              | count   | FDs ≤ idle-before + 4; sockets ≤ 8                                                          |
+| Server FDs and sockets after load (idle)              | count   | non-segment FDs ≤ idle-before + 4; sockets ≤ 8 (amended, see below)                          |
+| Segment-file FDs, at any time                         | count   | ≤ `MAX_OPEN_SEGMENT_FILES` (64) (added, see below)                                          |
 | Server OOM kills / exit status after `docker stop`    | —       | none / 0                                                                                    |
 | Peak RSS                                              | MiB     | normal ≤ 1024; constrained ≤ 384 (container limits)                                         |
 | Post-load RSS                                         | MiB     | ≤ `max_memory`                                                                              |
