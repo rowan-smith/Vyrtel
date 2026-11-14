@@ -1049,6 +1049,12 @@ pub(crate) fn apply_retention_at(
 }
 
 fn apply_retention(shared: &Shared, now: Timestamp) -> Result<()> {
+    if shared.retired.full() {
+        // Deletions are failing (already reported): retire nothing more
+        // until they catch up, so the backlog stays bounded.
+        tracing::warn!(signal = shared.signal.as_str(), "retention paused: too many segments wait for deletion");
+        return Ok(());
+    }
     let expired = {
         let mut st = shared.state.write().unwrap();
         apply_retention_at(shared.signal, shared.config.retention, now, &mut st.segments)
@@ -1073,9 +1079,23 @@ fn compact(shared: &Shared) -> Result<()> {
     if !c.enabled {
         return Ok(());
     }
+    if shared.retired.full() {
+        return Ok(());
+    }
     let small_limit = shared.config.segment_target_bytes / 4;
-    let mut candidates: Vec<Arc<Segment>> =
-        shared.state.read().unwrap().segments.iter().filter(|s| s.summary.raw_bytes < small_limit).cloned().collect();
+    // Not a segment whose own inputs may still be on disk: once it is merged
+    // and deleted, nothing would record that they were replaced, and after a
+    // crash recovery would show their events twice. It is merged once their
+    // deletion is durable.
+    let mut candidates: Vec<Arc<Segment>> = shared
+        .state
+        .read()
+        .unwrap()
+        .segments
+        .iter()
+        .filter(|s| s.summary.raw_bytes < small_limit && !shared.retired.any_outstanding(&s.summary.replaces))
+        .cloned()
+        .collect();
     if candidates.len() < c.min_inputs.max(2) {
         return Ok(());
     }
@@ -1143,18 +1163,18 @@ fn compact(shared: &Shared) -> Result<()> {
 /// sync that fails is kept and retried on the next pass; the error fails
 /// this pass, which records a maintenance fault until a pass succeeds.
 fn delete_retired(shared: &Shared) -> Result<()> {
-    let paths = shared.retired.take();
+    let queued = shared.retired.take();
     let mut failed = Vec::new();
     let mut first_error = None;
-    let mut deleted = false;
-    for path in paths {
+    let mut deleted = Vec::new();
+    for (id, path) in queued {
         let removed =
             fault::check("segment.delete", &path).ctx(&path).and_then(|()| fsutil::remove_file_if_exists(&path));
         match removed {
-            Ok(_) => deleted = true,
+            Ok(_) => deleted.push(id),
             Err(e) => {
                 first_error.get_or_insert(e);
-                failed.push(path);
+                failed.push((id, path));
             }
         }
     }
@@ -1166,11 +1186,12 @@ fn delete_retired(shared: &Shared) -> Result<()> {
         );
     }
     shared.retired.retry_later(failed);
-    if deleted || shared.retired.unsynced() {
+    if !deleted.is_empty() || shared.retired.unsynced() {
         let synced = fault::check("segment.delete_sync", &shared.dirs.segments)
             .ctx(&shared.dirs.segments)
             .and_then(|()| fsutil::sync_dir(&shared.dirs.segments));
-        shared.retired.set_unsynced(synced.is_err());
+        // Only a synced deletion ends a segment's outstanding state.
+        shared.retired.synced(deleted, synced.is_ok());
         if let Err(e) = synced {
             first_error.get_or_insert(e);
         }

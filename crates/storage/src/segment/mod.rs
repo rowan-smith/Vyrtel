@@ -9,6 +9,7 @@ mod writer;
 pub use files::MAX_OPEN_SEGMENT_FILES;
 pub use format::*;
 pub use reader::{BlockData, MetaRow, Segment, check_segment_format};
+pub use retired::MAX_OUTSTANDING as MAX_OUTSTANDING_RETIRED;
 pub(crate) use retired::RetiredFiles;
 pub use writer::{SegmentWriteOptions, WrittenSegment, paths, write_segment};
 
@@ -193,7 +194,7 @@ mod tests {
         assert!(snapshot.read_index().is_ok());
 
         drop(snapshot);
-        assert_eq!(retired.take(), std::slice::from_ref(&path), "the last holder hands the file to maintenance");
+        assert_eq!(retired.take(), [(1, path.clone())], "the last holder hands the file to maintenance");
         assert!(path.exists(), "maintenance deletes it, not the drop");
     }
 

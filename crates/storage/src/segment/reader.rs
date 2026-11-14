@@ -100,7 +100,9 @@ impl Segment {
     /// Hand this segment's file to `to` for deletion once nothing holds the
     /// segment any more. It stays readable until then.
     pub(crate) fn retire(&self, to: &Arc<RetiredFiles>) {
-        let _ = self.retired.set(Arc::clone(to));
+        if self.retired.set(Arc::clone(to)).is_ok() {
+            to.retire(self.summary.id);
+        }
     }
 
     fn file(&self) -> Result<Arc<SegmentFile>> {
@@ -202,7 +204,7 @@ impl Drop for Segment {
         // Deleting (and syncing, and retrying) is maintenance's job, where a
         // failure is reported rather than lost.
         if let Some(retired) = self.retired.get() {
-            retired.push(std::mem::take(&mut self.path));
+            retired.released(self.summary.id, std::mem::take(&mut self.path));
         }
     }
 }

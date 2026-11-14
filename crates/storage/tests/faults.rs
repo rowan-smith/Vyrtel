@@ -727,3 +727,109 @@ fn an_expired_segment_left_on_disk_is_deleted_before_the_store_serves() {
     assert!(s.snapshot(Signal::Logs).segments.is_empty(), "never visible to a query");
     assert_eq!(segment_files(d.path()), 0);
 }
+
+// Repeated compaction with an input still on disk. A compaction output
+// records only its direct inputs in `replaces`. If it were merged again and
+// deleted while one of its own inputs was still on disk (held by a query, or
+// its deletion failing), a crash would leave that input with nothing saying
+// it was replaced, and recovery would show its events twice. Each test takes
+// a crash image (a copy of the data directory) at that moment and requires
+// every event exactly once.
+
+fn compaction_config(dir: &Path) -> StorageConfig {
+    let mut c = config(dir, Durability::Normal);
+    c.compaction.enabled = true;
+    c.compaction.min_inputs = 2;
+    // Every test segment is far below a quarter of this: all are "small".
+    c.logs.segment_target_bytes = 1 << 20;
+    c
+}
+
+fn seal(s: &Storage, msg: &str) {
+    submit_ok(s, msg);
+    s.rotate_blocking(Signal::Logs).unwrap();
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// Every log message visible after opening `image` as if after a crash.
+fn messages_after_crash(image: &Path) -> Vec<String> {
+    let s = Storage::open(config(image, Durability::Normal), None).unwrap();
+    let snap = s.snapshot(Signal::Logs);
+    let mut messages: Vec<String> = snap
+        .segments
+        .iter()
+        .flat_map(|seg| seg.read_all().unwrap())
+        .chain(snap.batches.iter().flat_map(|b| b.events.clone()))
+        .map(|e| e.message().to_string())
+        .collect();
+    messages.sort();
+    messages
+}
+
+fn crash_image(d: &Path) -> (tempfile::TempDir, std::path::PathBuf) {
+    let root = tempfile::tempdir().unwrap();
+    let image = root.path().join("data");
+    copy_dir(d, &image);
+    (root, image)
+}
+
+#[test]
+fn recompacting_while_an_input_is_held_never_shows_events_twice() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Storage::open(compaction_config(d.path()), None).unwrap();
+    seal(&s, "a");
+    seal(&s, "b");
+    let query = s.snapshot(Signal::Logs); // holds A and B
+    s.maintain_blocking(Signal::Logs).unwrap(); // E = A + B; A and B stay on disk
+    seal(&s, "c");
+    seal(&s, "d");
+    s.maintain_blocking(Signal::Logs).unwrap(); // may merge C and D, but not E
+    let (_root, image) = crash_image(d.path());
+    assert_eq!(messages_after_crash(&image), ["a", "b", "c", "d"]);
+
+    // Once A and B are durably deleted, E is merged like any small segment.
+    drop(query);
+    s.maintain_blocking(Signal::Logs).unwrap();
+    s.maintain_blocking(Signal::Logs).unwrap();
+    assert_eq!(s.snapshot(Signal::Logs).segments.len(), 1, "everything merged in the end");
+    let (_root, image) = crash_image(d.path());
+    assert_eq!(messages_after_crash(&image), ["a", "b", "c", "d"]);
+}
+
+#[test]
+fn recompacting_while_an_input_cannot_be_deleted_never_shows_events_twice() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Storage::open(compaction_config(d.path()), None).unwrap();
+    seal(&s, "a");
+    seal(&s, "b");
+    {
+        // Only A's and B's deletions fail; E's would succeed, which is what
+        // made the merged record of their replacement disappear.
+        let inputs: Vec<_> = s.snapshot(Signal::Logs).segments.iter().map(|seg| seg.path.clone()).collect();
+        let _unlink_fails: Vec<_> =
+            inputs.iter().map(|p| inject(p, "segment.delete", Injected::PermissionDenied)).collect();
+        assert!(s.maintain_blocking(Signal::Logs).is_err(), "E = A + B; deleting A and B fails");
+        seal(&s, "c");
+        seal(&s, "d");
+        let _ = s.maintain_blocking(Signal::Logs);
+        let (_root, image) = crash_image(d.path());
+        assert_eq!(messages_after_crash(&image), ["a", "b", "c", "d"]);
+    }
+    s.maintain_blocking(Signal::Logs).unwrap();
+    s.maintain_blocking(Signal::Logs).unwrap();
+    let (_root, image) = crash_image(d.path());
+    assert_eq!(messages_after_crash(&image), ["a", "b", "c", "d"]);
+    assert!(maintenance_fault(&s).is_none());
+}
