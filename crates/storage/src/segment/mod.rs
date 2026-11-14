@@ -3,11 +3,13 @@
 mod files;
 pub mod format;
 mod reader;
+mod retired;
 mod writer;
 
 pub use files::MAX_OPEN_SEGMENT_FILES;
 pub use format::*;
 pub use reader::{BlockData, MetaRow, Segment, check_segment_format};
+pub(crate) use retired::RetiredFiles;
 pub use writer::{SegmentWriteOptions, WrittenSegment, paths, write_segment};
 
 #[cfg(test)]
@@ -180,9 +182,10 @@ mod tests {
         let catalog = std::sync::Arc::new(Segment::open(&path).unwrap());
         let snapshot = std::sync::Arc::clone(&catalog); // a query still holding it
 
-        catalog.retire();
+        let retired = std::sync::Arc::new(RetiredFiles::default());
+        catalog.retire(&retired);
         drop(catalog); // retention or compaction drops it from the catalog
-        assert!(path.exists(), "deleted while a query still holds it");
+        assert_eq!(retired.len(), 0, "queued for deletion while a query still holds it");
 
         // Even with its handle closed, the query reopens and reads it.
         files::OPEN_FILES.forget(&path);
@@ -190,7 +193,8 @@ mod tests {
         assert!(snapshot.read_index().is_ok());
 
         drop(snapshot);
-        assert!(!path.exists(), "the last holder deletes a retired segment");
+        assert_eq!(retired.take(), std::slice::from_ref(&path), "the last holder hands the file to maintenance");
+        assert!(path.exists(), "maintenance deletes it, not the drop");
     }
 
     #[test]
@@ -215,8 +219,10 @@ mod tests {
         for _ in 0..2 {
             for (events, s) in &segments {
                 assert_eq!(&s.read_all().unwrap(), events);
-                // Shared by every test in the process, so only the cap is certain.
-                assert!(files::OPEN_FILES.len() <= MAX_OPEN_SEGMENT_FILES);
+                // Shared by every test in the process, so only the cap is certain:
+                // open files, cached or in use, never exceed it.
+                let (open, peak) = files::OPEN_FILES.open_and_peak();
+                assert!(open <= MAX_OPEN_SEGMENT_FILES && peak <= MAX_OPEN_SEGMENT_FILES);
             }
         }
     }

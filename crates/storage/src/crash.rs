@@ -18,7 +18,7 @@
 //! | `segment.after_rename`         | segment committed, directory not fsynced                  |
 //! | `seal.before_wal_delete`       | segment committed, its WAL still present                  |
 //! | `compact.before_input_delete`  | compaction output committed, every input still present    |
-//! | `compact.mid_input_delete`     | compaction output committed, some inputs deleted          |
+//! | `compact.mid_input_delete`     | compaction output committed, some inputs retired          |
 //! | `recovery.before_wal_delete`   | recovery sealed an old WAL into a segment, WAL present    |
 
 #[cfg(feature = "crash-points")]

@@ -633,3 +633,97 @@ fn write_probe_sees_a_real_read_only_directory() {
     assert_eq!(f.reason, FaultReason::PermissionDenied);
     assert!(!f.message.contains(&*d.path().to_string_lossy()), "{}", f.message);
 }
+
+// Deleting retired segments: retention and compaction retire a segment, and
+// maintenance deletes its file (then syncs the directory) once nothing holds
+// it. A failure is reported and retried on the next pass, without a restart.
+
+fn retention_config(dir: &Path) -> StorageConfig {
+    let mut c = config(dir, Durability::Normal);
+    // The test events are from 2023, so they are expired as soon as sealed.
+    c.logs.retention = Some(Duration::from_secs(86_400));
+    c
+}
+
+fn segment_files(dir: &Path) -> usize {
+    std::fs::read_dir(dir.join("segments").join("logs")).unwrap().count()
+}
+
+fn maintenance_fault(s: &Storage) -> Option<StorageFault> {
+    s.stats().get(Signal::Logs).faults.iter().find(|f| f.area() == FaultArea::Maintenance).cloned()
+}
+
+#[test]
+fn a_failed_segment_deletion_is_reported_and_retried_without_a_restart() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Storage::open(retention_config(d.path()), None).unwrap();
+    submit_ok(&s, "expired");
+    s.rotate_blocking(Signal::Logs).unwrap();
+    assert_eq!(segment_files(d.path()), 1);
+    {
+        let _unlink_fails = inject(d.path(), "segment.delete", Injected::PermissionDenied);
+        assert!(s.maintain_blocking(Signal::Logs).is_err(), "the pass reports the failed deletion");
+        assert!(s.snapshot(Signal::Logs).segments.is_empty(), "expired data is out of the catalog");
+        assert_eq!(segment_files(d.path()), 1, "its file is still on disk");
+        let f = maintenance_fault(&s).expect("reported as a maintenance fault");
+        assert_eq!(f.reason, FaultReason::PermissionDenied);
+        // Retried on every pass while the failure lasts.
+        assert!(s.maintain_blocking(Signal::Logs).is_err());
+        assert_eq!(segment_files(d.path()), 1);
+    }
+    let rec = record(d.path());
+    s.maintain_blocking(Signal::Logs).unwrap();
+    assert_eq!(segment_files(d.path()), 0, "deleted by the next pass, without a restart");
+    assert_eq!(rec.points(), ["segment.delete", "segment.delete_sync"], "and the deletion was synced");
+    assert!(maintenance_fault(&s).is_none(), "the fault clears");
+}
+
+#[test]
+fn a_failed_directory_sync_after_deleting_is_retried() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Storage::open(retention_config(d.path()), None).unwrap();
+    submit_ok(&s, "expired");
+    s.rotate_blocking(Signal::Logs).unwrap();
+    {
+        let _sync_fails = inject(d.path(), "segment.delete_sync", Injected::NoSpace);
+        assert!(s.maintain_blocking(Signal::Logs).is_err());
+        assert_eq!(segment_files(d.path()), 0, "unlinked");
+        assert!(maintenance_fault(&s).is_some(), "but not yet durable");
+    }
+    let rec = record(d.path());
+    s.maintain_blocking(Signal::Logs).unwrap();
+    assert_eq!(rec.points(), ["segment.delete_sync"], "the sync is retried even with nothing new to delete");
+    assert!(maintenance_fault(&s).is_none());
+}
+
+#[test]
+fn a_segment_a_query_holds_is_deleted_once_released() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Storage::open(retention_config(d.path()), None).unwrap();
+    submit_ok(&s, "held");
+    s.rotate_blocking(Signal::Logs).unwrap();
+    let query = s.snapshot(Signal::Logs);
+    s.maintain_blocking(Signal::Logs).unwrap();
+    assert_eq!(segment_files(d.path()), 1, "kept while a query holds it");
+    assert_eq!(query.segments[0].read_all().unwrap().len(), 1, "and still readable");
+    drop(query);
+    let rec = record(d.path());
+    s.maintain_blocking(Signal::Logs).unwrap();
+    assert_eq!(segment_files(d.path()), 0);
+    assert_eq!(rec.points(), ["segment.delete", "segment.delete_sync"]);
+}
+
+#[test]
+fn an_expired_segment_left_on_disk_is_deleted_before_the_store_serves() {
+    let d = tempfile::tempdir().unwrap();
+    {
+        // Sealed without retention, as if its deletion were lost in a crash.
+        let s = Storage::open(config(d.path(), Durability::Normal), None).unwrap();
+        submit_ok(&s, "deleted before the crash");
+        s.rotate_blocking(Signal::Logs).unwrap();
+    }
+    assert_eq!(segment_files(d.path()), 1);
+    let s = Storage::open(retention_config(d.path()), None).unwrap();
+    assert!(s.snapshot(Signal::Logs).segments.is_empty(), "never visible to a query");
+    assert_eq!(segment_files(d.path()), 0);
+}

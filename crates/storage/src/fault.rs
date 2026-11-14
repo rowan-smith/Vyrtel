@@ -20,6 +20,8 @@
 //! | `segment.write` | writing a segment file in `tmp/` (seal, compaction)  |
 //! | `segment.sync`  | fsync of a segment file before it is committed       |
 //! | `probe`         | the readiness write probe in `tmp/`                  |
+//! | `segment.delete`      | deleting a retired segment file (maintenance)  |
+//! | `segment.delete_sync` | syncing `segments/` after those deletions      |
 
 use std::io;
 use std::path::Path;

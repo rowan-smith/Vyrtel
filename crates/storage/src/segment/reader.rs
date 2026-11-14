@@ -7,32 +7,33 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use telemetry::*;
 
 use crate::codec::{self, Head};
 use crate::encoding::Reader;
 use crate::error::{DecodeError, IoContext, Result, StorageError, corrupt};
-use crate::fsutil::{self, read_exact_at};
+use crate::fsutil::read_exact_at;
 
-use super::files::OPEN_FILES;
+use super::files::{OPEN_FILES, SegmentFile};
 use super::format::*;
+use super::retired::RetiredFiles;
 
-/// A sealed segment. Its file is opened on demand through the bounded set of
+/// A sealed segment. Its file is opened on demand within the budget of
 /// [open segment files](super::files), not held for the segment's lifetime.
 ///
 /// Retention and compaction [`retire`](Segment::retire) a segment rather than
-/// delete its file: the file is removed when the last `Arc<Segment>` drops, so
-/// a query still holding the segment in its snapshot can reopen it.
+/// delete its file: when the last `Arc<Segment>` drops, its path goes to the
+/// stream's [retired files](super::retired), which maintenance deletes. Until
+/// then a query still holding the segment in its snapshot can reopen it.
 #[derive(Debug)]
 pub struct Segment {
     pub summary: SegmentSummary,
     pub path: PathBuf,
     pub file_len: u64,
     index_ref: ChunkRef,
-    retired: AtomicBool,
+    retired: OnceLock<Arc<RetiredFiles>>,
 }
 
 impl Segment {
@@ -40,7 +41,16 @@ impl Segment {
     /// checksum mismatch, truncated file) is an error: the caller
     /// quarantines the file rather than guessing at its contents.
     pub fn open(path: &Path) -> Result<Segment> {
-        let file = File::open(path).ctx(path)?;
+        let opened = Self::open_validated(path);
+        if opened.is_err() {
+            // The file may be quarantined or replaced: keep no handle to it.
+            OPEN_FILES.forget(path);
+        }
+        opened
+    }
+
+    fn open_validated(path: &Path) -> Result<Segment> {
+        let file = OPEN_FILES.get(path).ctx(path)?;
         let file_len = file.metadata().ctx(path)?.len();
         let what = || path.display().to_string();
         // Before the length: a short file of another layout is refused too.
@@ -80,27 +90,20 @@ impl Segment {
             }
         }
         summary.index_bytes = file_len.saturating_sub(summary.data_bytes);
-        OPEN_FILES.keep(path, file);
-        Ok(Segment {
-            summary,
-            path: path.to_path_buf(),
-            file_len,
-            index_ref: footer.index,
-            retired: AtomicBool::new(false),
-        })
+        Ok(Segment { summary, path: path.to_path_buf(), file_len, index_ref: footer.index, retired: OnceLock::new() })
     }
 
     pub fn id(&self) -> u64 {
         self.summary.id
     }
 
-    /// Delete this segment's file once nothing holds the segment any more.
-    /// It stays readable until then.
-    pub fn retire(&self) {
-        self.retired.store(true, Ordering::Release);
+    /// Hand this segment's file to `to` for deletion once nothing holds the
+    /// segment any more. It stays readable until then.
+    pub(crate) fn retire(&self, to: &Arc<RetiredFiles>) {
+        let _ = self.retired.set(Arc::clone(to));
     }
 
-    fn file(&self) -> Result<Arc<File>> {
+    fn file(&self) -> Result<Arc<SegmentFile>> {
         OPEN_FILES.get(&self.path).ctx(&self.path)
     }
 
@@ -196,13 +199,10 @@ impl Segment {
 impl Drop for Segment {
     fn drop(&mut self) {
         OPEN_FILES.forget(&self.path);
-        if self.retired.load(Ordering::Acquire)
-            && let Err(e) = fsutil::remove_file_if_exists(&self.path)
-        {
-            // Retention or compaction already took it out of the catalog; a
-            // file left behind is removed by the next retention pass, or by
-            // recovery if a compacted output replaces it.
-            tracing::warn!(path = %self.path.display(), error = %e, "could not delete a retired segment");
+        // Deleting (and syncing, and retrying) is maintenance's job, where a
+        // failure is reported rather than lost.
+        if let Some(retired) = self.retired.get() {
+            retired.push(std::mem::take(&mut self.path));
         }
     }
 }
@@ -238,7 +238,9 @@ fn foreign(path: &Path, found: String) -> StorageError {
 /// decompressing just the bytes up to its version, so memory stays bounded
 /// and no column or index is decoded.
 pub fn check_segment_format(path: &Path) -> Result<()> {
-    let file = File::open(path).ctx(path)?;
+    // Within the budget of open segment files, but not cached: a file that
+    // fails the check is quarantined.
+    let file = OPEN_FILES.open_uncached(path).ctx(path)?;
     let file_len = file.metadata().ctx(path)?.len();
     check_format(&file, path, file_len)?;
     check_summary_version(&file, path, file_len)

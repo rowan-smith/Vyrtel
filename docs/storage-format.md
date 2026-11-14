@@ -491,13 +491,20 @@ from the catalog and retired.
 Retention deletes whole segments whose `max_ts` is older than the signal's
 retention period: remove from the catalog first, then retire.
 
-A retired segment's file is deleted when the last query still holding the
-segment in its snapshot finishes, or straight away if none does. Segment
-files are not held open for reads: a read opens the file through a set of
-at most 64 open segment files, so a query can still read a retired segment
-whose handle was closed, and file descriptors do not grow with retained
-data. A crash before the deletion leaves the file: recovery removes it if a
-committed segment `replaces` it, and the next retention pass otherwise.
+A retired segment stays readable to queries that still hold it in their
+snapshots. When the last holder lets go, the stream's maintenance deletes
+the file and then syncs `segments/`, so the deletion survives a power loss;
+straight away in the same pass if no query held it, otherwise on the next
+pass. A deletion or sync that fails is retried on every pass and reported as
+a maintenance fault until it succeeds. A crash before the deletion leaves the
+file: recovery removes it if a committed segment `replaces` it, and each
+stream applies retention when it starts, before it serves queries, so an
+expired segment never becomes visible again.
+
+Segment files are not held open: every read opens its file within a budget
+of at most 64 open segment files, cached or in use, and waits for one to
+close if all are in use. File descriptors therefore do not grow with
+retained data.
 
 ## Recovery procedure
 

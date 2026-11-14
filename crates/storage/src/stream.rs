@@ -43,11 +43,11 @@ use telemetry::*;
 use crate::cache::IndexCache;
 use crate::config::{CompactionConfig, Durability, StreamConfig};
 use crate::crash;
-use crate::error::{Result, StorageError};
-use crate::fault::{FaultArea, FaultOp, StorageFault};
+use crate::error::{IoContext, Result, StorageError};
+use crate::fault::{self, FaultArea, FaultOp, StorageFault};
 use crate::fsutil;
 use crate::recovery::{QuarantineScan, Recovered, RecoveryReport, StreamDirs};
-use crate::segment::{Segment, SegmentWriteOptions, write_segment};
+use crate::segment::{RetiredFiles, Segment, SegmentWriteOptions, write_segment};
 use crate::wal::{WalHeader, WalWriter, wal_file_name};
 
 /// A group of events committed together (one WAL record).
@@ -183,6 +183,9 @@ struct Shared {
     rotation_stalled: AtomicBool,
     /// Indexed by [`area_index`].
     faults: Mutex<[Option<StorageFault>; 3]>,
+    /// Files of retired segments that nothing holds any more, for
+    /// maintenance to delete (see [`delete_retired`]).
+    retired: Arc<RetiredFiles>,
 }
 
 fn area_index(a: FaultArea) -> usize {
@@ -305,8 +308,14 @@ impl Stream {
             shutting_down: AtomicBool::new(false),
             rotation_stalled: AtomicBool::new(false),
             faults: Mutex::new([None, None, None]),
+            retired: Arc::new(RetiredFiles::default()),
             config: p.config,
         });
+        // Before the stream serves anything: a segment whose deletion was
+        // lost (a crash before its directory was synced) must not come back.
+        if let Err(e) = apply_retention(&shared, Timestamp::now()).and_then(|()| delete_retired(&shared)) {
+            shared.set_fault(FaultOp::Maintenance, &e, &shared.dirs.segments);
+        }
 
         let capacity = shared.config.queue_events.max(1);
         let (tx, rx) = mpsc::sync_channel(capacity);
@@ -909,6 +918,9 @@ fn maintenance_loop(shared: Arc<Shared>, rx: Receiver<MaintMsg>) {
                 for d in seal_waiters.drain(..) {
                     d(Err(StorageError::Unavailable("shutting down".into())));
                 }
+                // Best effort: whatever is left is deleted at the next start
+                // (retention) or by recovery (compaction inputs).
+                let _ = delete_retired(&shared);
                 return;
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -947,8 +959,10 @@ fn maintenance_loop(shared: Arc<Shared>, rx: Receiver<MaintMsg>) {
 }
 
 fn run_periodic(shared: &Shared) -> Result<()> {
-    apply_retention(shared, Timestamp::now())?;
-    compact(shared)?;
+    let retained = apply_retention(shared, Timestamp::now()).and_then(|()| compact(shared));
+    // Even after a failed step: deletions already queued are retried.
+    let deleted = delete_retired(shared);
+    retained.and(deleted)?;
     shared.clear_fault(FaultArea::Maintenance, None);
     Ok(())
 }
@@ -1044,10 +1058,10 @@ fn apply_retention(shared: &Shared, now: Timestamp) -> Result<()> {
     }
     for s in expired {
         shared.cache.evict(shared.signal, s.summary.id);
-        // Deleted now, or when the last query holding it finishes.
-        s.retire();
+        // Queued for deletion now, or when the last query holding it finishes.
+        s.retire(&shared.retired);
     }
-    fsutil::sync_dir(&shared.dirs.segments)
+    Ok(())
 }
 
 /// Merge small segments (typically sealed by age at low volume) into one
@@ -1117,9 +1131,49 @@ fn compact(shared: &Shared) -> Result<()> {
             crash::point("compact.mid_input_delete");
         }
         shared.cache.evict(shared.signal, s.summary.id);
-        // Deleted now, or when the last query holding it finishes; until
-        // then recovery would remove it as an input `replaces` names.
-        s.retire();
+        // Queued for deletion now, or when the last query holding it
+        // finishes; until then recovery removes it as an input `replaces` names.
+        s.retire(&shared.retired);
     }
-    fsutil::sync_dir(&shared.dirs.segments)
+    Ok(())
+}
+
+/// Delete the files of retired segments that nothing holds any more, then
+/// sync the directory so the deletions survive a power loss. A deletion or
+/// sync that fails is kept and retried on the next pass; the error fails
+/// this pass, which records a maintenance fault until a pass succeeds.
+fn delete_retired(shared: &Shared) -> Result<()> {
+    let paths = shared.retired.take();
+    let mut failed = Vec::new();
+    let mut first_error = None;
+    let mut deleted = false;
+    for path in paths {
+        let removed =
+            fault::check("segment.delete", &path).ctx(&path).and_then(|()| fsutil::remove_file_if_exists(&path));
+        match removed {
+            Ok(_) => deleted = true,
+            Err(e) => {
+                first_error.get_or_insert(e);
+                failed.push(path);
+            }
+        }
+    }
+    if !failed.is_empty() {
+        tracing::warn!(
+            signal = shared.signal.as_str(),
+            files = failed.len(),
+            "could not delete retired segments; retrying on the next maintenance pass"
+        );
+    }
+    shared.retired.retry_later(failed);
+    if deleted || shared.retired.unsynced() {
+        let synced = fault::check("segment.delete_sync", &shared.dirs.segments)
+            .ctx(&shared.dirs.segments)
+            .and_then(|()| fsutil::sync_dir(&shared.dirs.segments));
+        shared.retired.set_unsynced(synced.is_err());
+        if let Err(e) = synced {
+            first_error.get_or_insert(e);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
