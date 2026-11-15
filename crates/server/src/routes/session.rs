@@ -25,14 +25,19 @@ fn cookie(value: &str, max_age: u64) -> HeaderValue {
 }
 
 pub async fn login(State(state): State<SharedState>, ApiJson(b): ApiJson<LoginBody>) -> ApiResult<Response> {
+    // Before the lookup: under load, unknown and known usernames get the same 429.
+    let admitted = auth::admit_sign_in()?;
     let username = b.username.trim().to_string();
     let user = {
         let u = username.clone();
         state.db(move |m| m.find_user(&u)).await?
     };
     let ok = match &user {
-        Some(u) => auth::check_password(&state, b.password.clone(), u.password_hash.clone()).await?,
-        None => false,
+        Some(u) => auth::check_password(&state, admitted, b.password.clone(), u.password_hash.clone()).await?,
+        None => {
+            drop(admitted);
+            false
+        }
     };
     let Some(user) = user.filter(|_| ok) else {
         // Slow down guessing; the response is identical for unknown users.
