@@ -14,9 +14,10 @@
 //! were replaced, and recovery would show them twice (see
 //! [`RetiredFiles::any_outstanding`]).
 //!
-//! Outstanding segments are bounded by [`MAX_OUTSTANDING`]: at the bound,
-//! retention and compaction stop retiring more until deletions catch up, so
-//! a deletion that keeps failing cannot grow this without limit.
+//! Outstanding segments are bounded (by default [`MAX_OUTSTANDING`]): each
+//! retention or compaction batch retires at most the remaining
+//! [`capacity`](RetiredFiles::capacity), so a deletion that keeps failing
+//! cannot grow this without limit, not even within one pass.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -26,9 +27,16 @@ use std::sync::{Mutex, MutexGuard};
 /// paths; far more than a healthy store ever has waiting.
 pub const MAX_OUTSTANDING: usize = 4096;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct RetiredFiles {
+    limit: usize,
     inner: Mutex<Inner>,
+}
+
+impl Default for RetiredFiles {
+    fn default() -> Self {
+        Self::new(MAX_OUTSTANDING)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -42,13 +50,19 @@ struct Inner {
 }
 
 impl RetiredFiles {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self { limit: limit.max(1), inner: Mutex::default() }
+    }
+
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Segment `id` was retired.
+    /// Segment `id` was retired. Callers retire at most [`capacity`](Self::capacity).
     pub(crate) fn retire(&self, id: u64) {
-        self.lock().outstanding.insert(id);
+        let mut inner = self.lock();
+        inner.outstanding.insert(id);
+        debug_assert!(inner.outstanding.len() <= self.limit, "retired past the bound");
     }
 
     /// Nothing holds retired segment `id` any more: its file can go.
@@ -56,9 +70,14 @@ impl RetiredFiles {
         self.lock().queued.push((id, path));
     }
 
-    /// Whether retiring more would pass [`MAX_OUTSTANDING`].
-    pub(crate) fn full(&self) -> bool {
-        self.lock().outstanding.len() >= MAX_OUTSTANDING
+    /// How many more segments may be retired now.
+    pub(crate) fn capacity(&self) -> usize {
+        self.limit.saturating_sub(self.lock().outstanding.len())
+    }
+
+    /// Segments retired and not yet durably deleted.
+    pub(crate) fn outstanding_count(&self) -> usize {
+        self.lock().outstanding.len()
     }
 
     /// Whether any of `ids` is retired and not yet durably deleted.
@@ -98,11 +117,6 @@ impl RetiredFiles {
     pub(crate) fn len(&self) -> usize {
         self.lock().queued.len()
     }
-
-    #[cfg(test)]
-    pub(crate) fn outstanding(&self) -> usize {
-        self.lock().outstanding.len()
-    }
 }
 
 #[cfg(test)]
@@ -122,17 +136,20 @@ mod tests {
         r.synced(vec![], true);
         assert!(!r.any_outstanding(&[1]));
         assert!(!r.unsynced());
-        assert_eq!(r.outstanding(), 0);
+        assert_eq!(r.outstanding_count(), 0);
     }
 
     #[test]
-    fn full_at_the_bound() {
-        let r = RetiredFiles::default();
-        for id in 0..MAX_OUTSTANDING as u64 - 1 {
-            r.retire(id);
-        }
-        assert!(!r.full());
-        r.retire(u64::MAX);
-        assert!(r.full());
+    fn capacity_is_what_is_left_under_the_limit() {
+        let r = RetiredFiles::new(3);
+        assert_eq!(r.capacity(), 3);
+        r.retire(1);
+        r.retire(2);
+        assert_eq!(r.capacity(), 1);
+        r.retire(3);
+        assert_eq!(r.capacity(), 0);
+        r.released(1, PathBuf::from("1.seg"));
+        r.synced(vec![1], true);
+        assert_eq!(r.capacity(), 1, "a durable deletion frees a place");
     }
 }

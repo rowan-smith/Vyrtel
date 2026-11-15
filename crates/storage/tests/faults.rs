@@ -833,3 +833,131 @@ fn recompacting_while_an_input_cannot_be_deleted_never_shows_events_twice() {
     assert_eq!(messages_after_crash(&image), ["a", "b", "c", "d"]);
     assert!(maintenance_fault(&s).is_none());
 }
+
+// The bound on segments retired and not yet durably deleted holds within a
+// single retention or compaction batch, at startup too, and an expired
+// compaction output is not deleted while its own inputs may still be on disk.
+
+fn bounded_config(dir: &Path, retention: Option<Duration>) -> StorageConfig {
+    let mut c = compaction_config(dir);
+    c.logs.retention = retention;
+    c.max_outstanding_retired = 3;
+    c
+}
+
+fn stream_stats(s: &Storage) -> StreamStats {
+    s.stats().get(Signal::Logs).clone()
+}
+
+#[test]
+fn a_retention_batch_larger_than_the_bound_is_retired_in_steps() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = bounded_config(d.path(), Some(Duration::from_secs(86_400)));
+    c.compaction.enabled = false;
+    let s = Storage::open(c, None).unwrap();
+    for i in 0..6 {
+        seal(&s, &format!("expired {i}"));
+    }
+    let query = s.snapshot(Signal::Logs); // holds all six
+    s.maintain_blocking(Signal::Logs).unwrap();
+    let st = stream_stats(&s);
+    assert_eq!((st.retired_outstanding, st.expired_waiting), (3, 3), "retired up to the bound, the rest wait");
+    assert!(s.snapshot(Signal::Logs).segments.is_empty(), "every expired segment is hidden at once");
+    assert_eq!(segment_files(d.path()), 6);
+    s.maintain_blocking(Signal::Logs).unwrap();
+    assert_eq!(stream_stats(&s).retired_outstanding, 3, "still bounded while the query holds them");
+    drop(query);
+    for _ in 0..3 {
+        s.maintain_blocking(Signal::Logs).unwrap();
+        assert!(stream_stats(&s).retired_outstanding <= 3);
+    }
+    let st = stream_stats(&s);
+    assert_eq!((st.retired_outstanding, st.expired_waiting, segment_files(d.path())), (0, 0, 0));
+}
+
+#[test]
+fn startup_with_more_expired_segments_than_the_bound_shows_none_of_them() {
+    let d = tempfile::tempdir().unwrap();
+    {
+        let s = Storage::open(config(d.path(), Durability::Normal), None).unwrap();
+        for i in 0..7 {
+            seal(&s, &format!("expired {i}"));
+        }
+    }
+    let s = Storage::open(bounded_config(d.path(), Some(Duration::from_secs(86_400))), None).unwrap();
+    assert!(s.snapshot(Signal::Logs).segments.is_empty(), "never visible, not even before cleanup finishes");
+    let st = stream_stats(&s);
+    assert!(st.retired_outstanding <= 3);
+    assert_eq!(st.expired_waiting, 4, "three deleted at startup, the rest wait");
+    assert_eq!(segment_files(d.path()), 4);
+    s.maintain_blocking(Signal::Logs).unwrap();
+    s.maintain_blocking(Signal::Logs).unwrap();
+    assert_eq!((stream_stats(&s).expired_waiting, segment_files(d.path())), (0, 0));
+}
+
+#[test]
+fn a_compaction_batch_never_retires_past_the_bound() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = bounded_config(d.path(), None);
+    c.compaction.min_inputs = 2;
+    let s = Storage::open(c, None).unwrap();
+    for i in 0..8 {
+        seal(&s, &format!("small {i}"));
+    }
+    let query = s.snapshot(Signal::Logs); // keeps every input outstanding
+    s.maintain_blocking(Signal::Logs).unwrap();
+    assert!(stream_stats(&s).retired_outstanding <= 3, "{:?}", stream_stats(&s).retired_outstanding);
+    s.maintain_blocking(Signal::Logs).unwrap();
+    assert!(stream_stats(&s).retired_outstanding <= 3);
+    drop(query);
+    for _ in 0..6 {
+        s.maintain_blocking(Signal::Logs).unwrap();
+        assert!(stream_stats(&s).retired_outstanding <= 3);
+    }
+    let (_root, image) = crash_image(d.path());
+    let expected: Vec<String> = (0..8).map(|i| format!("small {i}")).collect();
+    assert_eq!(messages_after_crash(&image), expected);
+}
+
+/// One event stamped now, so it expires after a short retention.
+fn submit_now(s: &Storage, msg: &str) {
+    let mut e = log(0, msg);
+    e.timestamp = Timestamp::now();
+    e.observed_timestamp = e.timestamp;
+    let (tx, rx) = mpsc::sync_channel(1);
+    s.submit(
+        Signal::Logs,
+        vec![e],
+        Box::new(move |r| {
+            let _ = tx.send(r);
+        }),
+    )
+    .unwrap();
+    rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+}
+
+#[test]
+fn an_expired_output_is_kept_on_disk_until_its_inputs_are_durably_deleted() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Storage::open(bounded_config(d.path(), Some(Duration::from_secs(1))), None).unwrap();
+    for msg in ["a", "b"] {
+        submit_now(&s, msg);
+        s.rotate_blocking(Signal::Logs).unwrap();
+    }
+    let inputs: Vec<_> = s.snapshot(Signal::Logs).segments.iter().map(|seg| seg.path.clone()).collect();
+    let unlink_fails: Vec<_> = inputs.iter().map(|p| inject(p, "segment.delete", Injected::PermissionDenied)).collect();
+    assert!(s.maintain_blocking(Signal::Logs).is_err(), "E = A + B; deleting A and B fails");
+    let output = s.snapshot(Signal::Logs).segments[0].path.clone();
+
+    std::thread::sleep(Duration::from_millis(1500)); // E expires
+    let _ = s.maintain_blocking(Signal::Logs);
+    assert!(s.snapshot(Signal::Logs).segments.is_empty(), "expired: hidden from queries");
+    assert!(output.exists(), "but kept while A and B may still be on disk");
+    assert_eq!(stream_stats(&s).expired_waiting, 1);
+
+    drop(unlink_fails);
+    s.maintain_blocking(Signal::Logs).unwrap(); // A and B durably deleted
+    s.maintain_blocking(Signal::Logs).unwrap(); // then E
+    assert!(!output.exists());
+    assert_eq!((segment_files(d.path()), stream_stats(&s).expired_waiting), (0, 0));
+}

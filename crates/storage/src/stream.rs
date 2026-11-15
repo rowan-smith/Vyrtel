@@ -112,6 +112,10 @@ struct State {
     active_since: Option<Instant>,
     frozen: Option<Frozen>,
     segments: Vec<Arc<Segment>>,
+    /// Expired by retention and out of `segments` (no new query sees them),
+    /// waiting to be retired: for capacity under the outstanding bound, or
+    /// for their own inputs' deletion to be durable.
+    expired: Vec<Arc<Segment>>,
 }
 
 /// Point-in-time view used by queries. Holds `Arc`s, so it stays valid
@@ -141,6 +145,11 @@ pub struct StreamStats {
     pub rejected_batches: u64,
     pub oldest: Option<Timestamp>,
     pub newest: Option<Timestamp>,
+    /// Segments retired by retention or compaction whose deletion is not
+    /// yet durable (bounded by `StorageConfig::max_outstanding_retired`).
+    pub retired_outstanding: usize,
+    /// Expired segments, hidden from queries, waiting to be retired.
+    pub expired_waiting: usize,
     /// Current write failures, at most one per [`FaultArea`].
     pub faults: Vec<StorageFault>,
     /// What startup recovery found, including anything quarantined.
@@ -273,6 +282,7 @@ pub(crate) struct StreamParams {
     pub maintenance_interval: Duration,
     pub seg_opts: SegmentWriteOptions,
     pub compaction: CompactionConfig,
+    pub max_outstanding_retired: usize,
     pub cache: Arc<IndexCache>,
     pub hook: Option<CommitHook>,
 }
@@ -299,6 +309,7 @@ impl Stream {
                 active_events,
                 frozen: None,
                 segments: rec.segments,
+                expired: Vec::new(),
             }),
             sealed: (Mutex::new(()), Condvar::new()),
             next_file_id: AtomicU64::new(rec.next_file_id),
@@ -308,7 +319,7 @@ impl Stream {
             shutting_down: AtomicBool::new(false),
             rotation_stalled: AtomicBool::new(false),
             faults: Mutex::new([None, None, None]),
-            retired: Arc::new(RetiredFiles::default()),
+            retired: Arc::new(RetiredFiles::new(p.max_outstanding_retired)),
             config: p.config,
         });
         // Before the stream serves anything: a segment whose deletion was
@@ -456,6 +467,8 @@ impl Stream {
             rejected_batches: self.shared.rejected.load(Ordering::Relaxed),
             faults: self.shared.faults.lock().unwrap().iter().flatten().cloned().collect(),
             recovery: self.recovery.clone(),
+            retired_outstanding: self.shared.retired.outstanding_count(),
+            expired_waiting: st.expired.len(),
             ..Default::default()
         };
         let mut oldest: Option<Timestamp> = None;
@@ -1048,25 +1061,39 @@ pub(crate) fn apply_retention_at(
     expired
 }
 
+/// Every expired segment leaves the catalog at once, so no new query sees
+/// it. It is then retired (and its file deleted once no query holds it),
+/// oldest first, as far as the outstanding bound allows, and only when its
+/// own inputs (`replaces`) are durably deleted: deleting it first would drop
+/// the only record that they were replaced. The rest wait for a later pass.
 fn apply_retention(shared: &Shared, now: Timestamp) -> Result<()> {
-    if shared.retired.full() {
-        // Deletions are failing (already reported): retire nothing more
-        // until they catch up, so the backlog stays bounded.
-        tracing::warn!(signal = shared.signal.as_str(), "retention paused: too many segments wait for deletion");
-        return Ok(());
-    }
-    let expired = {
-        let mut st = shared.state.write().unwrap();
-        apply_retention_at(shared.signal, shared.config.retention, now, &mut st.segments)
-    };
-    if expired.is_empty() {
-        return Ok(());
-    }
-    for s in expired {
+    let mut st = shared.state.write().unwrap();
+    let newly = apply_retention_at(shared.signal, shared.config.retention, now, &mut st.segments);
+    for s in &newly {
         shared.cache.evict(shared.signal, s.summary.id);
-        // Queued for deletion now, or when the last query holding it finishes.
-        s.retire(&shared.retired);
     }
+    st.expired.extend(newly);
+    if st.expired.is_empty() {
+        return Ok(());
+    }
+    let mut capacity = shared.retired.capacity();
+    let mut waiting = Vec::new();
+    for s in std::mem::take(&mut st.expired) {
+        if capacity > 0 && !shared.retired.any_outstanding(&s.summary.replaces) {
+            s.retire(&shared.retired);
+            capacity -= 1;
+        } else {
+            waiting.push(s);
+        }
+    }
+    if !waiting.is_empty() {
+        tracing::debug!(
+            signal = shared.signal.as_str(),
+            segments = waiting.len(),
+            "expired segments wait for earlier deletions before they are deleted"
+        );
+    }
+    st.expired = waiting;
     Ok(())
 }
 
@@ -1079,7 +1106,9 @@ fn compact(shared: &Shared) -> Result<()> {
     if !c.enabled {
         return Ok(());
     }
-    if shared.retired.full() {
+    // Every input is retired: never more than the outstanding bound allows.
+    let capacity = shared.retired.capacity();
+    if capacity < c.min_inputs.max(2) {
         return Ok(());
     }
     let small_limit = shared.config.segment_target_bytes / 4;
@@ -1103,7 +1132,7 @@ fn compact(shared: &Shared) -> Result<()> {
     let mut inputs = Vec::new();
     let mut total = 0u64;
     for s in candidates {
-        if total + s.summary.raw_bytes > c.max_input_bytes && inputs.len() >= 2 {
+        if inputs.len() == capacity || (total + s.summary.raw_bytes > c.max_input_bytes && inputs.len() >= 2) {
             break;
         }
         total += s.summary.raw_bytes;

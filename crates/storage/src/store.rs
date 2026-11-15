@@ -120,6 +120,7 @@ impl Storage {
                     maintenance_interval: config.maintenance_interval,
                     seg_opts: config.segment.clone(),
                     compaction: config.compaction.clone(),
+                    max_outstanding_retired: config.max_outstanding_retired,
                     cache: cache.clone(),
                     hook: hook.clone(),
                 },

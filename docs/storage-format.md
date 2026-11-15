@@ -501,14 +501,19 @@ file: recovery removes it if a committed segment `replaces` it, and each
 stream applies retention when it starts, before it serves queries, so an
 expired segment never becomes visible again.
 
-Until its deletion is durable, a retired segment is *outstanding*.
-Compaction does not merge a segment whose `replaces` names an outstanding
-one: once merged and deleted, nothing would record that the outstanding
-segment was replaced, and after a crash its events would be visible twice.
-Such a segment is merged once its inputs are durably deleted. At most 4,096
-segments are outstanding per stream; at that bound retention and compaction
-retire nothing more until deletions catch up, which keeps a deletion that
-keeps failing from growing memory without limit.
+Until its deletion is durable, a retired segment is *outstanding*. A
+segment whose `replaces` names an outstanding one is neither compacted nor,
+once expired, deleted: that would remove the only record that the
+outstanding segment was replaced, and after a crash its events could be
+visible twice, or visible again after retention had removed them. It is
+merged or deleted once its inputs are durably deleted; an expired one stays
+hidden from queries meanwhile.
+
+At most `max_outstanding_retired` segments (4,096) are outstanding per
+stream, and each retention or compaction batch retires at most what is left
+under that bound, so a deletion that keeps failing cannot grow memory
+without limit. Retention hides every expired segment from queries at once,
+at startup as in every pass, and retires them in steps as the bound allows.
 
 Segment files are not held open: every read opens its file within a budget
 of at most 64 open segment files, cached or in use, and waits for one to
