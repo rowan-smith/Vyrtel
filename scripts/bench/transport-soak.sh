@@ -21,13 +21,25 @@
 #   NOFILE          server open-file limit                           [4096]
 #   SERVER_ENV      extra "-e KEY=VALUE" flags for the server        []
 #   IDLE_AFTER      seconds sampled after the load ends              [30]
+#   ADMIN_PASSWORD  the server's auth.admin_password; connload signs in
+#                   with it for its queries and system/info samples  [random]
+#   INGEST_AUTH     key: connload creates an ingest key and its
+#                   producers send it (protected ingestion);
+#                   open: producers send no key                      [key]
+#
+# The password reaches both containers through the environment (`-e NAME`,
+# so not on the host's command lines) and is not written to any output
+# file. It is still visible to anyone who can run `docker inspect` or read
+# the containers' process environment: use it only for disposable runs.
 #
 # cgroupKb is the server container's memory.current (process memory, page
 # cache and kernel memory charged to it); socketBuffersKb is the `sock` line
 # of its memory.stat: kernel TCP buffers of the server's sockets, which are
 # not part of the process heap or RSS. listenOverflows is the kernel's
 # count of handshakes dropped because the accept queue was full (the
-# server's network namespace, cumulative).
+# server's network namespace, cumulative). kernel records the sysctls that
+# decide what an overflow does, as the server's namespace sees them
+# (net.core.somaxconn caps server.listen_backlog).
 #
 # Writes <out-dir>/resources.csv (one row per second), server.log,
 # summary.json (from connload), and resources.json (peaks, idle levels,
@@ -51,11 +63,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
+export VYRTEL_AUTH_ADMIN_PASSWORD=${ADMIN_PASSWORD:-transport-soak-$RANDOM$RANDOM$RANDOM}
+case ${INGEST_AUTH:-key} in
+  key) ingest_flag=--create-ingest-key ;;
+  open) ingest_flag= ;;
+  *) echo "INGEST_AUTH must be key or open" >&2; exit 2 ;;
+esac
+
 docker network create "$net" >/dev/null
 # shellcheck disable=SC2086 # SERVER_ENV is a list of flags
 docker run -d --name "$server" --network "$net" \
   --memory "${SERVER_MEMORY:-1g}" --cpus "${SERVER_CPUS:-2}" --ulimit "nofile=${NOFILE:-4096}" \
-  -v "${SERVER_VOLUME:-$volume}:/target:ro" -e VYRTEL_ALERTS_ENABLED=false ${SERVER_ENV:-} \
+  -v "${SERVER_VOLUME:-$volume}:/target:ro" \
+  -e VYRTEL_ALERTS_ENABLED=false -e VYRTEL_AUTH_ADMIN_PASSWORD ${SERVER_ENV:-} \
   "$image" /target/release/vyrtel --data-dir /data --bind 0.0.0.0:8080 >/dev/null
 
 # Port 8080 is 1F90 in /proc/net/tcp. For the listening socket, rx_queue is
@@ -88,6 +108,12 @@ for _ in $(seq 1 50); do
 done
 
 ticks=$(docker exec "$server" getconf CLK_TCK)
+kernel=$(docker exec "$server" sh -c '
+  r() { cat "/proc/sys/net/$1" 2>/dev/null || echo null; }
+  printf "{\"release\": \"%s\", \"somaxconn\": %s, \"tcpMaxSynBacklog\": %s, " \
+    "$(uname -r)" "$(r core/somaxconn)" "$(r ipv4/tcp_max_syn_backlog)"
+  printf "\"tcpSyncookies\": %s, \"tcpAbortOnOverflow\": %s, \"tcpSynackRetries\": %s}" \
+    "$(r ipv4/tcp_syncookies)" "$(r ipv4/tcp_abort_on_overflow)" "$(r ipv4/tcp_synack_retries)"')
 # Docker Desktop on Windows (Git Bash) needs a Windows path to mount.
 mount_out=$out
 if command -v cygpath >/dev/null 2>&1; then mount_out=$(cygpath -m "$out"); fi
@@ -99,9 +125,11 @@ sample "$start" &
 sampler=$!
 
 load_status=0
+# shellcheck disable=SC2086 # ingest_flag is one flag or empty
 docker run --name "$load" --network "$net" --cpus "${LOAD_CPUS:-2}" --ulimit nofile=65536 \
-  -v "$volume:/target:ro" -v "$mount_out:/out" "$image" \
-  /target/release/connload --target "http://$server:8080" --out /out "$@" > "$out/connload.log" 2>&1 || load_status=$?
+  -v "$volume:/target:ro" -v "$mount_out:/out" -e VYRTEL_AUTH_ADMIN_PASSWORD "$image" \
+  /target/release/connload --target "http://$server:8080" --out /out $ingest_flag "$@" \
+  > "$out/connload.log" 2>&1 || load_status=$?
 load_end=$(( $(date +%s%3N) - start ))
 
 sleep "${IDLE_AFTER:-30}"
@@ -112,7 +140,7 @@ exit_code=$(docker inspect -f '{{.State.ExitCode}}' "$server")
 wait "$sampler" 2>/dev/null || true
 docker logs "$server" > "$out/server.log" 2>&1
 
-awk -F, -v load_end="$load_end" -v stop_ms="$stop_ms" -v exit_code="$exit_code" -v ticks="$ticks" \
+awk -F, -v kernel="$kernel" -v load_end="$load_end" -v stop_ms="$stop_ms" -v exit_code="$exit_code" -v ticks="$ticks" \
   -v load_status="$load_status" '
   NR == 1 { next }
   NR == 2 { idle_before = $2; other_before = $5 - $14 }
@@ -133,6 +161,7 @@ awk -F, -v load_end="$load_end" -v stop_ms="$stop_ms" -v exit_code="$exit_code" 
     printf "  \"peakSegmentFds\": %d,\n  \"segmentFdsAfter\": %d,\n  \"otherFdsBefore\": %d,\n  \"otherFdsAfter\": %d,\n", segfds, after_seg, other_before, after_fds - after_seg
     printf "  \"peakListenBacklog\": %d,\n  \"peakEstablishedToPort\": %d,\n  \"cpuSeconds\": %.2f,\n", backlog, est, cpu
     printf "  \"peakCgroupKb\": %d,\n  \"peakSocketBuffersKb\": %d,\n  \"listenOverflows\": %d,\n", cg, sockmem, ovf
+    printf "  \"kernel\": %s,\n", kernel
     printf "  \"loadEndedAtMs\": %d,\n  \"connloadExit\": %d,\n  \"shutdownMs\": %d,\n  \"serverExit\": %d\n}\n", load_end, load_status, stop_ms, exit_code
   }' "$out/resources.csv" > "$out/resources.json"
 cat "$out/resources.json"

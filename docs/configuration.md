@@ -57,6 +57,7 @@ admin_password = "change-me"     # or VYRTEL_AUTH_ADMIN_PASSWORD
 | `body_timeout`      | `1m`           | `VYRTEL_SERVER_BODY_TIMEOUT`      | How long a request body may take to arrive in full, from its head; then `408`. Positive, at most `1h`.                                                                                                       |
 | `write_timeout`     | `30s`          | `VYRTEL_SERVER_WRITE_TIMEOUT`     | How long one write may stay blocked because the client is not reading; then the connection closes. Positive, at most `1h`.                                                                                    |
 | `connection_buffer` | `64KB`         | `VYRTEL_SERVER_CONNECTION_BUFFER` | Cap on each connection's read buffer, which holds the request head (larger heads get `431`), and on its write buffer. `8KB` to `408KB`.                                                                       |
+| `listen_backlog`    | `2048`         | `VYRTEL_SERVER_LISTEN_BACKLOG`    | The kernel's queue of connections whose handshake is complete but that Vyrtel has not accepted yet. Linux caps it at `net.core.somaxconn` (Vyrtel warns at startup). 1 to 65535. Not a Vyrtel limit; see [what happens to a connection](#what-happens-to-a-connection). |
 
 ### `[storage]`
 
@@ -552,13 +553,18 @@ the buffer estimate.
 
 1. **Accepted.** The kernel completes the TCP handshake and queues the
    connection in the listen backlog; Vyrtel accepts from it continuously,
-   whatever the connection's state. The backlog is 1024 (also capped by the
-   kernel's `net.core.somaxconn`, 4096 by default on Linux 5.4 and later).
-   It is the kernel's, not Vyrtel's: a burst of connections faster than
-   Vyrtel accepts (1,000 at once on 2 CPUs, in the Linux runs) or running
-   out of file descriptors overflows it. Linux then drops the handshake
-   (`ListenOverflows` in `/proc/net/netstat`) unless
-   `net.ipv4.tcp_abort_on_overflow = 1`. With SYN cookies, the default, the
+   whatever the connection's state. The backlog is `server.listen_backlog`,
+   2048 by default (capped by the kernel's `net.core.somaxconn`, 4096 by
+   default on Linux 5.4 and later; 0.1.2-rc.3 and earlier used tokio's 128).
+   What waits in it is the kernel's, not Vyrtel's: it holds no file
+   descriptor, task or buffer of Vyrtel's, and Vyrtel's deadlines start once
+   a connection leaves it. A burst of connections faster than Vyrtel
+   accepts, larger than the backlog, or running out of file descriptors
+   overflows it. Linux then drops the handshake (`ListenOverflows` in
+   `/proc/net/netstat`) unless `net.ipv4.tcp_abort_on_overflow = 1`, and
+   the client retries it with backoff (1 + 2 + 4 + 8 + 16 s): with a
+   backlog of 128, 1,000 simultaneous connections on 2 CPUs left the slowest
+   client retrying for 31 s. With SYN cookies, the default, the
    client may believe it is connected while the server has no record of it:
    a client that sends data gets a reset, an idle one waits until its own
    timeout. Vyrtel holds nothing for such connections. Clients should use

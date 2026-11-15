@@ -224,6 +224,11 @@ pub struct ServerConfig {
     /// Cap on each connection's read buffer (which holds the request head)
     /// and on its write buffer.
     pub connection_buffer: ByteSize,
+    /// The kernel's listen backlog: connections whose handshake is complete
+    /// but that Vyrtel has not accepted yet (also capped by Linux's
+    /// `net.core.somaxconn`). Not a Vyrtel limit: Vyrtel accepts
+    /// continuously and its own bounds start at accept.
+    pub listen_backlog: u32,
 }
 
 impl Default for ServerConfig {
@@ -240,6 +245,9 @@ impl Default for ServerConfig {
             body_timeout: Duration::from_secs(60),
             write_timeout: Duration::from_secs(30),
             connection_buffer: ByteSize(64 << 10),
+            // Room for a burst of 1,000+ simultaneous connections; see
+            // docs/configuration.md#connections-and-transport-limits.
+            listen_backlog: 2048,
         }
     }
 }
@@ -429,6 +437,7 @@ pub const ENV_VARS: &[&str] = &[
     "VYRTEL_SERVER_BODY_TIMEOUT",
     "VYRTEL_SERVER_WRITE_TIMEOUT",
     "VYRTEL_SERVER_CONNECTION_BUFFER",
+    "VYRTEL_SERVER_LISTEN_BACKLOG",
     "VYRTEL_STORAGE_PATH",
     "VYRTEL_STORAGE_MAX_MEMORY",
     "VYRTEL_STORAGE_SEGMENT_TARGET_SIZE",
@@ -568,6 +577,9 @@ impl Config {
                     "VYRTEL_SERVER_BODY_TIMEOUT" => self.server.body_timeout = parse_duration(&v)?,
                     "VYRTEL_SERVER_WRITE_TIMEOUT" => self.server.write_timeout = parse_duration(&v)?,
                     "VYRTEL_SERVER_CONNECTION_BUFFER" => self.server.connection_buffer = ByteSize::parse(&v)?,
+                    "VYRTEL_SERVER_LISTEN_BACKLOG" => {
+                        self.server.listen_backlog = v.trim().parse().map_err(|_| "must be a number".to_string())?
+                    }
                     "VYRTEL_STORAGE_PATH" => self.storage.path = PathBuf::from(&v),
                     "VYRTEL_STORAGE_MAX_MEMORY" => self.storage.max_memory = ByteSize::parse(&v)?,
                     "VYRTEL_STORAGE_SEGMENT_TARGET_SIZE" => self.storage.segment_target_size = ByteSize::parse(&v)?,
@@ -670,6 +682,7 @@ impl Config {
         const MAX_CONNECTIONS_LIMIT: usize = crate::transport::MAX_CONNECTIONS_LIMIT;
         const MIN_CONNECTION_BUFFER: u64 = crate::transport::MIN_CONNECTION_BUFFER;
         const MAX_CONNECTION_BUFFER: u64 = crate::transport::MAX_CONNECTION_BUFFER;
+        const MAX_LISTEN_BACKLOG: u32 = crate::transport::MAX_LISTEN_BACKLOG;
         let s = &self.server;
         if !(1..=MAX_CONNECTIONS_LIMIT).contains(&s.max_connections) {
             return Err(format!("server.max_connections must be between 1 and {MAX_CONNECTIONS_LIMIT}"));
@@ -695,6 +708,9 @@ impl Config {
                 human_bytes(MIN_CONNECTION_BUFFER),
                 human_bytes(MAX_CONNECTION_BUFFER),
             ));
+        }
+        if !(1..=MAX_LISTEN_BACKLOG).contains(&s.listen_backlog) {
+            return Err(format!("server.listen_backlog must be between 1 and {MAX_LISTEN_BACKLOG}"));
         }
         Ok(())
     }
@@ -963,7 +979,7 @@ mod tests {
             e.starts_with(
                 "unknown environment variable VYRTEL_AUTH_ENABLE: not a setting Vyrtel reads from the environment. \
                  Remove it, or set the option in the configuration file instead (see \
-                 docs/configuration.md#environment-variables for the 27 supported variables)"
+                 docs/configuration.md#environment-variables for the 28 supported variables)"
             ),
             "{e}"
         );
@@ -1084,6 +1100,7 @@ shutdown_timeout = 0",
             (256, Duration::from_secs(10), Duration::from_secs(60), Duration::from_secs(30))
         );
         assert_eq!(d.server.connection_buffer, ByteSize(64 << 10));
+        assert_eq!(d.server.listen_backlog, 2048);
         d.validate().unwrap();
         let l = d.transport_limits();
         assert_eq!((l.max_connections, l.connection_buffer), (256, 64 << 10));
@@ -1113,6 +1130,8 @@ connection_buffer = \"8KB\"",
             ("connection_buffer = \"8191B\"", "server.connection_buffer must be between 8 KB and 408 KB"),
             ("connection_buffer = \"409KB\"", "server.connection_buffer must be between 8 KB and 408 KB"),
             ("connection_buffer = 0", "server.connection_buffer must be between 8 KB and 408 KB"),
+            ("listen_backlog = 0", "server.listen_backlog must be between 1 and 65535"),
+            ("listen_backlog = 65536", "server.listen_backlog must be between 1 and 65535"),
         ] {
             let c = Config::from_toml(&format!("[server]\n{toml}")).unwrap();
             let e = c.validate().unwrap_err();
@@ -1131,6 +1150,7 @@ connection_buffer = \"8KB\"",
             "VYRTEL_SERVER_BODY_TIMEOUT" => Some("2m".to_string()),
             "VYRTEL_SERVER_WRITE_TIMEOUT" => Some("15s".to_string()),
             "VYRTEL_SERVER_CONNECTION_BUFFER" => Some("16KB".to_string()),
+            "VYRTEL_SERVER_LISTEN_BACKLOG" => Some("128".to_string()),
             _ => None,
         };
         c.apply_env(env).unwrap();
@@ -1140,6 +1160,7 @@ connection_buffer = \"8KB\"",
             (64, Duration::from_secs(5), Duration::from_secs(120), Duration::from_secs(15))
         );
         assert_eq!(c.server.connection_buffer, ByteSize(16 << 10));
+        assert_eq!(c.server.listen_backlog, 128);
         for (key, value) in [
             ("VYRTEL_SERVER_MAX_CONNECTIONS", "99999999999999999999999"),
             ("VYRTEL_SERVER_MAX_CONNECTIONS", "-1"),
@@ -1148,6 +1169,8 @@ connection_buffer = \"8KB\"",
             ("VYRTEL_SERVER_BODY_TIMEOUT", "18446744073709551615w"),
             ("VYRTEL_SERVER_WRITE_TIMEOUT", "never"),
             ("VYRTEL_SERVER_CONNECTION_BUFFER", "lots"),
+            ("VYRTEL_SERVER_LISTEN_BACKLOG", "4294967296"),
+            ("VYRTEL_SERVER_LISTEN_BACKLOG", "-1"),
         ] {
             let mut c = Config::default();
             let e = c.apply_env(|k| (k == key).then(|| value.to_string())).unwrap_err();

@@ -256,9 +256,19 @@ fn main() -> ExitCode {
         let (count, stops) = watch::channel(0u32);
         tokio::spawn(signals.count(count, config.server.shutdown_timeout));
         let bind = config.server.bind.clone();
+        let backlog = config.server.listen_backlog;
         let app = App::build_with(config, options)?;
         let listener =
-            tokio::net::TcpListener::bind(&bind).await.with_context(|| format!("cannot listen on {bind}"))?;
+            server::transport::bind(&bind, backlog).await.with_context(|| format!("cannot listen on {bind}"))?;
+        if let Some((effective, somaxconn)) = server::transport::effective_backlog(backlog)
+            && effective < backlog
+        {
+            tracing::warn!(
+                listen_backlog = backlog,
+                somaxconn,
+                "server.listen_backlog is above net.core.somaxconn; the kernel uses {effective}"
+            );
+        }
         println!("{}", app.banner(listener.local_addr()?));
         app.serve_until(listener, stop_requests(stops.clone(), 1), stop_requests(stops, 2)).await
     });

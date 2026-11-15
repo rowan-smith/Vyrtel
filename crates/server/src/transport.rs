@@ -27,7 +27,8 @@
 //!   let complete (it stopped reading).
 //!
 //! The kernel's listen backlog (connections not yet accepted) is outside
-//! this; see docs/configuration.md#connections-and-transport-limits.
+//! this: [`bind`] sets its size (`server.listen_backlog`), but what waits in
+//! it is the kernel's; see docs/configuration.md#connections-and-transport-limits.
 
 use std::error::Error as StdError;
 use std::future::Future;
@@ -76,6 +77,10 @@ pub const MAX_CONNECTION_BUFFER: u64 = 8192 + 4096 * 100;
 
 /// Largest `server.max_connections`.
 pub const MAX_CONNECTIONS_LIMIT: usize = 65_536;
+
+/// Largest `server.listen_backlog` (Linux caps it at `net.core.somaxconn`,
+/// itself at most 65535 before 5.4's 4096 default).
+pub const MAX_LISTEN_BACKLOG: u32 = 65_535;
 
 /// Heap held by one admitted connection apart from its buffers: its task,
 /// hyper's connection state, the per-request service and timers. Measured
@@ -242,6 +247,42 @@ impl Transport {
     fn count(&self, c: impl Fn(&TransportStats) -> &AtomicU64) {
         c(&self.stats).fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// Listen on `addr` (the first address it resolves to that binds) with a
+/// kernel listen backlog of `backlog`. Tokio's own `TcpListener::bind` uses
+/// 128, which a burst of 1,000 simultaneous connections overflows: Linux
+/// then drops handshakes and clients retry them with exponential backoff
+/// (1 + 2 + 4 + 8 + 16 s), outside every bound Vyrtel sets from accept.
+pub async fn bind(addr: &str, backlog: u32) -> io::Result<TcpListener> {
+    let mut last = None;
+    for a in tokio::net::lookup_host(addr).await? {
+        match bind_addr(a, backlog) {
+            Ok(l) => return Ok(l),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "address resolved to nothing")))
+}
+
+fn bind_addr(addr: std::net::SocketAddr, backlog: u32) -> io::Result<TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
+    // As tokio does: quick rebinding after a restart, except on Windows,
+    // where SO_REUSEADDR would allow taking over a port in use.
+    #[cfg(not(windows))]
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(i32::try_from(backlog.clamp(1, MAX_LISTEN_BACKLOG)).unwrap_or(i32::MAX))?;
+    TcpListener::from_std(socket.into())
+}
+
+/// The backlog the kernel will actually use for `requested`: Linux silently
+/// caps it at `net.core.somaxconn`. `None` where that cannot be read.
+pub fn effective_backlog(requested: u32) -> Option<(u32, u32)> {
+    let somaxconn: u32 = std::fs::read_to_string("/proc/sys/net/core/somaxconn").ok()?.trim().parse().ok()?;
+    Some((requested.min(somaxconn), somaxconn))
 }
 
 /// Serve `router` on `listener` until `stop` resolves, then stop accepting,
@@ -583,6 +624,52 @@ mod tests {
         );
         let huge = TransportLimits { max_connections: usize::MAX, connection_buffer: usize::MAX, ..limits };
         assert_eq!(huge.estimated_peak(), u64::MAX, "saturates");
+    }
+
+    #[tokio::test]
+    async fn bind_serves_on_the_resolved_address() {
+        let listener = bind("localhost:0", 64).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        assert!(addr.ip().is_loopback() && addr.port() != 0);
+        let (client, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
+        assert_eq!(client.unwrap().local_addr().unwrap(), accepted.unwrap().1);
+        assert!(bind("256.0.0.1:0", 64).await.is_err());
+        // A port in use is an error, not a silent second listener.
+        assert!(bind(&addr.to_string(), 64).await.is_err());
+    }
+
+    /// The kernel keeps the requested backlog (up to `somaxconn`): 600
+    /// handshakes complete while nothing is accepted. Tokio's default of 128
+    /// would drop most of them, leaving those clients retrying for seconds.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn bind_sets_the_listen_backlog() {
+        let (effective, _) = effective_backlog(1024).unwrap();
+        let listener = bind("127.0.0.1:0", 1024).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        if effective < 600 {
+            return;
+        }
+        let started = Instant::now();
+        let mut clients = Vec::new();
+        for _ in 0..600 {
+            clients.push(TcpStream::connect(("127.0.0.1", port)).await.unwrap());
+        }
+        // A dropped handshake is retried after 1 s at the earliest.
+        assert!(started.elapsed() < Duration::from_millis(900), "no handshake was dropped");
+        drop(listener);
+    }
+
+    #[test]
+    fn effective_backlog_is_capped_by_somaxconn() {
+        let Some((effective, somaxconn)) = effective_backlog(u32::MAX) else {
+            #[cfg(target_os = "linux")]
+            panic!("/proc/sys/net/core/somaxconn is readable on Linux");
+            #[cfg(not(target_os = "linux"))]
+            return;
+        };
+        assert_eq!(effective, somaxconn);
+        assert_eq!(effective_backlog(1), Some((1, somaxconn)));
     }
 
     /// A body whose frames are always ready: reading it never waits.

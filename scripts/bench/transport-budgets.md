@@ -16,6 +16,49 @@ than re-budgeted. Segment files are now opened on demand and at most
 `segmentFdsAfter`) and the idle rule applies to the other descriptors
 (`otherFdsBefore`, `otherFdsAfter`). The peak-FD limit is unchanged.
 
+**Amended again 2026-11-15**, before any measurement of a candidate with
+`server.listen_backlog`. 0.1.2-rc.3 missed "time for a flood wave's
+connections to end ≤ 82 s" with 91.1 s: the 60 s body timeout plus 31 s of
+Linux handshake retries (1 + 2 + 4 + 8 + 16 s), because the listen queue
+overflowed (tokio binds with a backlog of 128). That single figure,
+measured from the client's first attempt, mixes the kernel's handshake,
+which Vyrtel only sizes, with the server's own deadlines, which start at
+accept. It is replaced by the rows marked *(amended)* and *(added)*, all from
+`connload`'s per-attempt timing in `summary.json` (`flood`). The 82 s limit
+from the client's first attempt is kept, not loosened: establishment delay
+is what a client sees. An attempt the server never ended (`abandoned`,
+still open when `connload` gives up) has no accept-to-end figure but counts
+end to end, so it fails that row. Clarified the same day, after two
+exploratory runs that were discarded (`connload` then resolved the target
+name per attempt, and glibc's 5 s DNS retry showed up as establishment
+time) and before the runs that are reported. Dropped handshakes (`listenOverflows`) and the
+container's `net.core.somaxconn` are recorded, not budgeted. The
+`listen_backlog` change must not move any other row; in particular peak
+FDs, kernel socket memory and the steady clients' rows are compared
+against the same run with the old backlog of 128.
+
+**Measurement fix 2026-11-15** (no limit changed). Sign-in is always on
+since 0.1.2, and `connload` did not sign in, so its count queries and
+`system/info` samples were refused: "Acknowledged vs persisted events" and
+"Query latency p95" were INCOMPLETE in the 0.1.2-rc.1 to rc.3 runs.
+`transport-soak.sh` now starts the server with an admin password, and
+`connload` signs in with it (session cookie) for queries and samples and
+sends an ingest-scoped key with every batch. `summary.json` `reconciled` is
+true only when the stored count of connload's service equals the
+acknowledged events; `auth` records the kind of credential each client
+used. Runs without a credential are not evidence for either row. Because
+ingestion is then protected, the flood's `slow-body` attempts send the
+ingest key as well, so they still reach the body read and its timeout
+instead of being refused by authentication; a flood run whose
+`flood.bodyTimeouts` is 0 is invalid. A run is evidence for any row only
+when `summary.json` `workloadValid` is true (events acknowledged, queries
+answered, every sample read with all its counters, no unexpected status or
+transport error on the steady clients, reconciled, no abandoned flood
+attempt whatever `--wave-patience` was, as the wave rows above require).
+`samples.csv` now covers each wave's cleanup, not only the steady load.
+Throughput is over `loadWindowS`, the
+steady load's own window, not the time spent counting afterwards.
+
 Configurations:
 
 * **normal**: defaults (`max_memory = 512MB`, `max_connections = 256`,
@@ -42,7 +85,9 @@ Configurations:
 | Steady clients' transport errors and `server_busy` during floods | count | 0 (ingest, query and sampler clients hold admitted keep-alive connections)        |
 | Acknowledged vs persisted events                      | events  | equal                                                                                       |
 | Shutdown after load                                   | s       | ≤ 8 (`shutdown_timeout`)                                                                    |
-| Time for a flood wave's connections to end            | s       | ≤ `header_timeout` + `body_timeout` + `PENDING_TIMEOUT` + 10                                |
+| Server-side cleanup: a flood-wave connection ends after it is established (`flood.worstWave.acceptToEndMaxMs`) *(amended)* | s | ≤ `header_timeout` + `body_timeout` + `PENDING_TIMEOUT` + 10 (82) |
+| End to end: a flood wave's connections end after the client's first attempt (`flood.longestWaveS`) *(amended)* | s | ≤ `header_timeout` + `body_timeout` + `PENDING_TIMEOUT` + 10 (82) |
+| Connection establishment p99, worst wave (`flood.worstWave.establishmentP99Ms`) *(added)* | s | ≤ 5 |
 
 ## Regression budgets (steady mixed load, no waves, normal configuration)
 

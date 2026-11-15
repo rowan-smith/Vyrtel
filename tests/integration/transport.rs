@@ -606,6 +606,7 @@ async fn system_info_reports_connection_limits_and_outcomes() {
             "body_timeout": "1m",
             "write_timeout": "30s",
             "connection_buffer": 16384,
+            "listen_backlog": 2048,
         })
     );
     s.stop().await;

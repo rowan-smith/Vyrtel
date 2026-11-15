@@ -484,8 +484,23 @@ ingest (4 keep-alive senders of 200-event NDJSON batches every 50 ms) and
 count queries (2 senders, every second), opens waves of simultaneous
 connections of four kinds (idle, a head trickled one byte every 500 ms, a
 body that stalls after 10 bytes, a normal `GET /health`), samples
-`/api/v1/system/info`, and at the end checks that every acknowledged event
-is stored.
+`/api/v1/system/info`, and at the end counts its service's stored events
+and checks that the count equals the acknowledged events
+(`summary.json` `reconciled`).
+
+Sign-in is always on, so the script starts the server with an admin
+password (`ADMIN_PASSWORD`, random by default) and passes it to `connload`
+through the environment: `connload` signs in and sends the session cookie
+with its count queries and `system/*` reads. It also creates an
+ingest-scoped key and its producers send it, so ingestion is protected as
+in production (`INGEST_AUTH=open` sends no key). `summary.json` records
+only which kind of credential each client used (`auth`), never the
+password or keys. The flood's `slow-body` attempts carry the same ingest
+key, so they still reach the body read and its timeout. A run counts as
+evidence only when `summary.json` `workloadValid` is true (see
+[`connload`](#load-generator) for what that requires). A matching count
+shows the events were stored and queryable before the server stopped; it
+is not a crash-durability check.
 
 ```bash
 # Release binaries on a volume (any Linux host with Docker):
@@ -1129,15 +1144,47 @@ opening waves of idle, slow and normal connections, for the
 [transport soak](#transport-soak-on-linux):
 
 ```bash
-cargo run --release -p loadgen --bin connload -- --target http://localhost:8080 \
+VYRTEL_AUTH_ADMIN_PASSWORD=secret cargo run --release -p loadgen --bin connload -- \
+  --target http://localhost:8080 --create-ingest-key \
   --duration 3m --attempts 1000 --wave-interval 30s --out connload-out
 ```
 
 Options: `--attempts`, `--wave-interval`, `--wave-patience`,
 `--ingest-clients`, `--batch`, `--ingest-interval`, `--query-clients`,
 `--query-interval`, `--sample-interval`, `--no-waves`, `--out`, `--label`.
-It writes `summary.json` and `samples.csv`, and exits with status 1 if any
-acknowledged event is missing afterwards.
+Credentials: `--admin-password` (or `VYRTEL_AUTH_ADMIN_PASSWORD`; signs in
+as `--admin-username`, default `admin`) or `--admin-key` (or
+`CONNLOAD_ADMIN_KEY`, sent as `Authorization: Bearer`) for the queries and
+`system/*` reads; `--create-ingest-key` or `--ingest-key` (or
+`CONNLOAD_INGEST_KEY`) for the producers. Without an admin credential the
+queries are refused and the run cannot reconcile. `--create-ingest-key`
+protects ingestion on that server for good, so use it on disposable
+instances. Flood `slow-body` attempts send the ingest key too
+(`--slow-body-auth key`, the default), so they reach the body read and its
+timeout; `--slow-body-auth none` sends them without it, to exercise the
+refusal of unauthenticated ingestion instead.
+
+Other options: `--label` (letters, digits, `.`, `_`, `-`; unique per run by
+default), `--reconcile-timeout` (default 30 s, a hard limit on the final
+count, each request included).
+
+It writes `summary.json` and `samples.csv`. A matching count alone does not
+pass: `workloadValid` is false, `failures` says why and connload exits 1
+unless events were acknowledged, queries were answered (when there are
+query clients; `workload` is `ingest-only` otherwise), every `system/info`
+sample was read with all its counters present as numbers (a missing
+counter is never read as 0), the steady clients saw nothing but 200 (and
+429 for ingest) and no transport error, the stored count equals the
+acknowledged events, no flood attempt was abandoned (still open when
+`--wave-patience` ran out: connload gave up, the server did not end it)
+or lost to a failed task, and, in a flood with authenticated `slow-body`
+attempts, the server's body timeout fired (`flood.bodyTimeouts`, from the
+snapshot taken after every wave ended). Sampling continues until every
+wave has ended, not just the steady load. Attempts that never connected
+are reported (`connectFailures`) but are not a failure on their own.
+`ingest.eventsPerSecond`
+is over the steady load's window (`loadWindowS`), not the whole run; the
+final count's time is `reconcileDurationMs`.
 
 `keychurn`, in the same package, measures authenticated ingest while an
 admin creates and revokes API keys (see
