@@ -26,7 +26,12 @@ which Vyrtel only sizes, with the server's own deadlines, which start at
 accept. It is replaced by the rows marked *(amended)* and *(added)*, all from
 `connload`'s per-attempt timing in `summary.json` (`flood`). The 82 s limit
 from the client's first attempt is kept, not loosened: establishment delay
-is what a client sees. Dropped handshakes (`listenOverflows`) and the
+is what a client sees. An attempt the server never ended (`abandoned`,
+still open when `connload` gives up) has no accept-to-end figure but counts
+end to end, so it fails that row. Clarified the same day, after two
+exploratory runs that were discarded (`connload` then resolved the target
+name per attempt, and glibc's 5 s DNS retry showed up as establishment
+time) and before the runs that are reported. Dropped handshakes (`listenOverflows`) and the
 container's `net.core.somaxconn` are recorded, not budgeted. The
 `listen_backlog` change must not move any other row; in particular peak
 FDs, kernel socket memory and the steady clients' rows are compared

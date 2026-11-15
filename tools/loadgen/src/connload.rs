@@ -36,12 +36,18 @@
 //!   the server's `header_timeout`, `body_timeout` and waiting bound.
 //!
 //! `endToEnd` is the two together; its maximum is about the wave's `tookS`.
+//! An attempt still open when `--wave-patience` runs out is `abandoned`:
+//! the server never ended it (an idle connection whose handshake the server
+//! dropped exists only on the client's side), so it has no `acceptToEnd`,
+//! and no `establishment` unless its bytes were acknowledged. The target is
+//! resolved once, so name lookups are not part of `connect`.
 //! `/api/v1/system/info` is sampled every `--sample-interval` into
 //! `samples.csv`. At the end the events the server acknowledged are
 //! counted back with a query (`persisted` must equal `acknowledged`), and
 //! `summary.json` holds every total, latency percentile and peak.
 
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -256,20 +262,43 @@ struct Timing {
     acked: Option<Duration>,
     /// The connection ended, or the attempt gave up.
     ended: Duration,
+    /// Still open when `--wave-patience` ran out: the server never ended
+    /// it, typically because it never had it (an idle connection whose
+    /// handshake the server dropped is open only on the client's side).
+    abandoned: bool,
 }
 
 impl Timing {
     /// Connection establishment as the server saw it, or its lower bound.
+    /// `None` if it never connected, or if it sent nothing and was
+    /// abandoned: then whether the server ever had it is unknown.
     fn established(&self) -> Option<Duration> {
+        if self.abandoned && self.acked.is_none() {
+            return None;
+        }
         self.acked.or(self.connected)
+    }
+
+    /// From establishment until the server ended the connection; `None` if
+    /// it did not end it.
+    fn accept_to_end(&self) -> Option<Duration> {
+        if self.abandoned {
+            return None;
+        }
+        self.established().map(|e| self.ended.saturating_sub(e))
     }
 }
 
 /// One connection attempt of `kind`; returns its outcome and timing.
-async fn attempt(addr: String, kind: usize, connect_timeout: Duration, patience: Duration) -> (&'static str, Timing) {
+async fn attempt(
+    addr: SocketAddr,
+    kind: usize,
+    connect_timeout: Duration,
+    patience: Duration,
+) -> (&'static str, Timing) {
     let started = Instant::now();
     let mut timing = Timing::default();
-    let outcome = run_attempt(&addr, kind, connect_timeout, patience, started, &mut timing).await;
+    let outcome = run_attempt(addr, kind, connect_timeout, patience, started, &mut timing).await;
     timing.ended = started.elapsed();
     if let (Some(a), Some(c)) = (timing.acked, timing.connected) {
         timing.acked = Some(a.max(c).min(timing.ended));
@@ -278,7 +307,7 @@ async fn attempt(addr: String, kind: usize, connect_timeout: Duration, patience:
 }
 
 async fn run_attempt(
-    addr: &str,
+    addr: SocketAddr,
     kind: usize,
     connect_timeout: Duration,
     patience: Duration,
@@ -330,7 +359,10 @@ async fn run_attempt(
         classify(tcp.read_to_end(&mut got).await.map(|_| got))
     };
     let outcome = tokio::select! {
-        r = tokio::time::timeout(patience, work) => r.unwrap_or("other"),
+        r = tokio::time::timeout(patience, work) => r.unwrap_or_else(|_| {
+            timing.abandoned = true;
+            "other"
+        }),
         () = watch => unreachable!("the watch never ends"),
     };
     timing.acked = acked.get().copied();
@@ -409,10 +441,10 @@ struct Wave {
     timings: Vec<Timing>,
 }
 
-async fn wave(addr: String, attempts: usize, connect_timeout: Duration, patience: Duration) -> Wave {
+async fn wave(addr: SocketAddr, attempts: usize, connect_timeout: Duration, patience: Duration) -> Wave {
     let started = Instant::now();
     let tasks: Vec<_> = (0..attempts)
-        .map(|i| (i % KINDS.len(), tokio::spawn(attempt(addr.clone(), i % KINDS.len(), connect_timeout, patience))))
+        .map(|i| (i % KINDS.len(), tokio::spawn(attempt(addr, i % KINDS.len(), connect_timeout, patience))))
         .collect();
     let mut outcomes = BTreeMap::new();
     for kind in KINDS {
@@ -434,7 +466,7 @@ async fn wave(addr: String, attempts: usize, connect_timeout: Duration, patience
 fn timing_summary(timings: &[Timing]) -> Value {
     let connected: Vec<&Timing> = timings.iter().filter(|t| t.connected.is_some()).collect();
     let by_ack = connected.iter().filter(|t| t.acked.is_some()).count();
-    let accept_to_end = connected.iter().filter_map(|t| t.established().map(|e| t.ended.saturating_sub(e)));
+    let accept_to_end = connected.iter().filter_map(|t| t.accept_to_end());
     json!({
         "connect": distribution(connected.iter().filter_map(|t| t.connected).map(micros).collect()),
         "establishment": distribution(connected.iter().filter_map(|t| t.established()).map(micros).collect()),
@@ -442,6 +474,7 @@ fn timing_summary(timings: &[Timing]) -> Value {
         "endToEnd": distribution(timings.iter().map(|t| micros(t.ended)).collect()),
         "establishedBy": { "firstBytesAcked": by_ack, "connectOnly": connected.len() - by_ack },
         "connectFailures": timings.len() - connected.len(),
+        "abandoned": timings.iter().filter(|t| t.abandoned).count(),
     })
 }
 
@@ -521,7 +554,10 @@ async fn sampler(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let addr = host_port(&args.target)?;
+    // Resolved once: 1,000 simultaneous lookups through Docker's DNS lose
+    // some, and glibc retries them after 5 s, inside `connect`.
+    let host = host_port(&args.target)?;
+    let addr = tokio::net::lookup_host(&host).await?.next().with_context(|| format!("{host} resolved to nothing"))?;
     std::fs::create_dir_all(&args.out).with_context(|| format!("creating {}", args.out.display()))?;
     let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build()?;
     let info: Value = client.get(format!("{}/api/v1/system/info", args.target)).send().await?.json().await?;
@@ -548,7 +584,7 @@ async fn main() -> anyhow::Result<()> {
         while next + Duration::from_secs(1) < until {
             tokio::time::sleep_until(next.into()).await;
             let at = start.elapsed();
-            let w = wave(addr.clone(), args.attempts, args.connect_timeout, args.wave_patience).await;
+            let w = wave(addr, args.attempts, args.connect_timeout, args.wave_patience).await;
             let mut entry = timing_summary(&w.timings);
             eprintln!(
                 "connload: wave at {:.0}s took {:.1}s (establishment p99 {} ms, max {} ms; accept to end max {} ms): {:?}",
@@ -649,21 +685,25 @@ mod tests {
     #[test]
     fn establishment_and_accept_to_end_are_split() {
         let timings = [
-            Timing { connected: Some(ms(1)), acked: Some(ms(31_000)), ended: ms(91_000) },
-            Timing { connected: Some(ms(2)), acked: Some(ms(3)), ended: ms(60_003) },
+            Timing { connected: Some(ms(1)), acked: Some(ms(31_000)), ended: ms(91_000), abandoned: false },
+            Timing { connected: Some(ms(2)), acked: Some(ms(3)), ended: ms(60_003), abandoned: false },
             // Idle: nothing to acknowledge, so connect is the lower bound.
-            Timing { connected: Some(ms(4)), acked: None, ended: ms(10_004) },
+            Timing { connected: Some(ms(4)), acked: None, ended: ms(10_004), abandoned: false },
+            // Idle, and the server never ended it: no establishment, no
+            // accept-to-end, but it counts end to end.
+            Timing { connected: Some(ms(5)), acked: None, ended: ms(95_000), abandoned: true },
             // Never connected.
-            Timing { connected: None, acked: None, ended: ms(90_000) },
+            Timing { connected: None, acked: None, ended: ms(90_000), abandoned: false },
         ];
         let v = timing_summary(&timings);
         assert_eq!(v["establishment"]["maxMs"], 31_000.0);
         assert_eq!(v["establishment"]["samples"], 3);
-        assert_eq!(v["connect"]["maxMs"], 4.0);
+        assert_eq!(v["connect"]["maxMs"], 5.0);
         assert_eq!(v["acceptToEnd"]["maxMs"], 60_000.0);
-        assert_eq!(v["endToEnd"]["maxMs"], 91_000.0);
-        assert_eq!(v["establishedBy"], json!({ "firstBytesAcked": 2, "connectOnly": 1 }));
-        assert_eq!(v["connectFailures"], 1);
+        assert_eq!(v["acceptToEnd"]["samples"], 3);
+        assert_eq!(v["endToEnd"]["maxMs"], 95_000.0);
+        assert_eq!(v["establishedBy"], json!({ "firstBytesAcked": 2, "connectOnly": 2 }));
+        assert_eq!((v["connectFailures"].as_u64(), v["abandoned"].as_u64()), (Some(1), Some(1)));
 
         let waves = [json!({ "tookS": 91.0, "establishment": { "p99Ms": 31_000.0 } }), json!({ "tookS": 12.5 })];
         let f = flood_summary(&waves, &timings);
@@ -674,9 +714,9 @@ mod tests {
 
     /// Answers each connection's request with 200 after `delay`, or closes
     /// idle ones after `delay`.
-    async fn server(delay: Duration) -> String {
+    async fn server(delay: Duration) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
+        let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             loop {
                 let (mut s, _) = listener.accept().await.unwrap();
@@ -696,7 +736,7 @@ mod tests {
     #[tokio::test]
     async fn attempts_time_connect_acknowledgement_and_end() {
         let addr = server(ms(300)).await;
-        let (outcome, t) = attempt(addr.clone(), 3, ms(5000), ms(5000)).await;
+        let (outcome, t) = attempt(addr, 3, ms(5000), ms(5000)).await;
         assert_eq!(outcome, "served");
         let connected = t.connected.unwrap();
         assert!(connected < ms(250) && t.ended >= ms(300), "{t:?}");
@@ -711,9 +751,15 @@ mod tests {
         let (outcome, t) = attempt(addr, 0, ms(5000), ms(5000)).await;
         assert_eq!(outcome, "closed");
         assert_eq!((t.acked, t.established()), (None, t.connected));
+        assert!(!t.abandoned);
+
+        // The server holds it past the client's patience.
+        let (outcome, t) = attempt(server(ms(5000)).await, 0, ms(5000), ms(300)).await;
+        assert_eq!(outcome, "other");
+        assert!(t.abandoned && t.established().is_none() && t.accept_to_end().is_none(), "{t:?}");
 
         // Nothing listening: a failed connect, not an establishment.
-        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().to_string();
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
         let (outcome, t) = attempt(closed, 3, ms(5000), ms(5000)).await;
         assert_eq!((outcome, t.connected), ("reset", None));
     }
