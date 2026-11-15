@@ -16,6 +16,17 @@ than re-budgeted. Segment files are now opened on demand and at most
 `segmentFdsAfter`) and the idle rule applies to the other descriptors
 (`otherFdsBefore`, `otherFdsAfter`). The peak-FD limit is unchanged.
 
+**Measurement fix 2026-11-15** (no limit changed). Sign-in is always on
+since 0.1.2, and `connload` did not sign in, so its count queries and
+`system/info` samples were refused: "Acknowledged vs persisted events" and
+"Query latency p95" were INCOMPLETE in the 0.1.2-rc.1 to rc.3 runs.
+`transport-soak.sh` now starts the server with an admin password, and
+`connload` signs in with it (session cookie) for queries and samples and
+sends an ingest-scoped key with every batch. `summary.json` `reconciled` is
+true only when the stored count of connload's service equals the
+acknowledged events; `auth` records the kind of credential each client
+used. Runs without a credential are not evidence for either row.
+
 Configurations:
 
 * **normal**: defaults (`max_memory = 512MB`, `max_connections = 256`,

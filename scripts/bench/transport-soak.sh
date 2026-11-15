@@ -21,6 +21,14 @@
 #   NOFILE          server open-file limit                           [4096]
 #   SERVER_ENV      extra "-e KEY=VALUE" flags for the server        []
 #   IDLE_AFTER      seconds sampled after the load ends              [30]
+#   ADMIN_PASSWORD  the server's auth.admin_password; connload signs in
+#                   with it for its queries and system/info samples  [random]
+#   INGEST_AUTH     key: connload creates an ingest key and its
+#                   producers send it (protected ingestion);
+#                   open: producers send no key                      [key]
+#
+# The password reaches both containers through the environment (`-e NAME`,
+# not on a command line) and is not written to any output file.
 #
 # cgroupKb is the server container's memory.current (process memory, page
 # cache and kernel memory charged to it); socketBuffersKb is the `sock` line
@@ -51,11 +59,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
+export VYRTEL_AUTH_ADMIN_PASSWORD=${ADMIN_PASSWORD:-transport-soak-$RANDOM$RANDOM$RANDOM}
+case ${INGEST_AUTH:-key} in
+  key) ingest_flag=--create-ingest-key ;;
+  open) ingest_flag= ;;
+  *) echo "INGEST_AUTH must be key or open" >&2; exit 2 ;;
+esac
+
 docker network create "$net" >/dev/null
 # shellcheck disable=SC2086 # SERVER_ENV is a list of flags
 docker run -d --name "$server" --network "$net" \
   --memory "${SERVER_MEMORY:-1g}" --cpus "${SERVER_CPUS:-2}" --ulimit "nofile=${NOFILE:-4096}" \
-  -v "${SERVER_VOLUME:-$volume}:/target:ro" -e VYRTEL_ALERTS_ENABLED=false ${SERVER_ENV:-} \
+  -v "${SERVER_VOLUME:-$volume}:/target:ro" \
+  -e VYRTEL_ALERTS_ENABLED=false -e VYRTEL_AUTH_ADMIN_PASSWORD ${SERVER_ENV:-} \
   "$image" /target/release/vyrtel --data-dir /data --bind 0.0.0.0:8080 >/dev/null
 
 # Port 8080 is 1F90 in /proc/net/tcp. For the listening socket, rx_queue is
@@ -99,9 +115,11 @@ sample "$start" &
 sampler=$!
 
 load_status=0
+# shellcheck disable=SC2086 # ingest_flag is one flag or empty
 docker run --name "$load" --network "$net" --cpus "${LOAD_CPUS:-2}" --ulimit nofile=65536 \
-  -v "$volume:/target:ro" -v "$mount_out:/out" "$image" \
-  /target/release/connload --target "http://$server:8080" --out /out "$@" > "$out/connload.log" 2>&1 || load_status=$?
+  -v "$volume:/target:ro" -v "$mount_out:/out" -e VYRTEL_AUTH_ADMIN_PASSWORD "$image" \
+  /target/release/connload --target "http://$server:8080" --out /out $ingest_flag "$@" \
+  > "$out/connload.log" 2>&1 || load_status=$?
 load_end=$(( $(date +%s%3N) - start ))
 
 sleep "${IDLE_AFTER:-30}"

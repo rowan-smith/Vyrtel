@@ -484,8 +484,18 @@ ingest (4 keep-alive senders of 200-event NDJSON batches every 50 ms) and
 count queries (2 senders, every second), opens waves of simultaneous
 connections of four kinds (idle, a head trickled one byte every 500 ms, a
 body that stalls after 10 bytes, a normal `GET /health`), samples
-`/api/v1/system/info`, and at the end checks that every acknowledged event
-is stored.
+`/api/v1/system/info`, and at the end counts its service's stored events
+and checks that the count equals the acknowledged events
+(`summary.json` `reconciled`).
+
+Sign-in is always on, so the script starts the server with an admin
+password (`ADMIN_PASSWORD`, random by default) and passes it to `connload`
+through the environment: `connload` signs in and sends the session cookie
+with its count queries and `system/*` reads. It also creates an
+ingest-scoped key and its producers send it, so ingestion is protected as
+in production (`INGEST_AUTH=open` sends no key). `summary.json` records
+only which kind of credential each client used (`auth`), never the
+password or keys.
 
 ```bash
 # Release binaries on a volume (any Linux host with Docker):
@@ -1129,15 +1139,22 @@ opening waves of idle, slow and normal connections, for the
 [transport soak](#transport-soak-on-linux):
 
 ```bash
-cargo run --release -p loadgen --bin connload -- --target http://localhost:8080 \
+VYRTEL_AUTH_ADMIN_PASSWORD=secret cargo run --release -p loadgen --bin connload -- \
+  --target http://localhost:8080 --create-ingest-key \
   --duration 3m --attempts 1000 --wave-interval 30s --out connload-out
 ```
 
 Options: `--attempts`, `--wave-interval`, `--wave-patience`,
 `--ingest-clients`, `--batch`, `--ingest-interval`, `--query-clients`,
 `--query-interval`, `--sample-interval`, `--no-waves`, `--out`, `--label`.
+Credentials: `--admin-password` (or `VYRTEL_AUTH_ADMIN_PASSWORD`; signs in
+as `--admin-username`, default `admin`) or `--admin-key` (or
+`CONNLOAD_ADMIN_KEY`, sent as `Authorization: Bearer`) for the queries and
+`system/*` reads; `--create-ingest-key` or `--ingest-key` (or
+`CONNLOAD_INGEST_KEY`) for the producers. Without an admin credential the
+queries are refused and the run cannot reconcile.
 It writes `summary.json` and `samples.csv`, and exits with status 1 if any
-acknowledged event is missing afterwards.
+acknowledged event is missing afterwards or the stored count cannot be read.
 
 `keychurn`, in the same package, measures authenticated ingest while an
 admin creates and revokes API keys (see

@@ -24,6 +24,13 @@
 //! `samples.csv`. At the end the events the server acknowledged are
 //! counted back with a query (`persisted` must equal `acknowledged`), and
 //! `summary.json` holds every total, latency percentile and peak.
+//!
+//! Queries and `system/*` need a credential: `--admin-password` (signs in
+//! as `--admin-username` and sends the session cookie) or `--admin-key`
+//! (`Authorization: Bearer`). With `--create-ingest-key`, connload creates
+//! an ingest-scoped key with that credential before the load, so the
+//! producers exercise protected ingestion. Secrets are read from the
+//! environment as well as flags and never written to `summary.json`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -34,6 +41,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use clap::Parser;
+use reqwest::header::{AUTHORIZATION, COOKIE, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -83,6 +91,99 @@ struct Args {
     /// Label recorded in the summary and used to tag events.
     #[arg(long, default_value = "run")]
     label: String,
+    /// The admin user to sign in as with `--admin-password`.
+    #[arg(long, default_value = "admin")]
+    admin_username: String,
+    /// The admin password (`auth.admin_password`): sign in and send the
+    /// session cookie with queries and `system/*` requests.
+    #[arg(long, env = "VYRTEL_AUTH_ADMIN_PASSWORD", hide_env_values = true, conflicts_with = "admin_key")]
+    admin_password: Option<String>,
+    /// An admin-scoped API key to send as `Authorization: Bearer` with
+    /// queries and `system/*` requests, instead of signing in.
+    #[arg(long, env = "CONNLOAD_ADMIN_KEY", hide_env_values = true)]
+    admin_key: Option<String>,
+    /// Create an ingest-scoped key (needs an admin credential) and send it
+    /// with every ingest batch. Once it exists the server requires a key for
+    /// ingestion (in the default `automatic` mode).
+    #[arg(long, conflicts_with = "ingest_key")]
+    create_ingest_key: bool,
+    /// An existing ingest key to send with every ingest batch.
+    #[arg(long, env = "CONNLOAD_INGEST_KEY", hide_env_values = true)]
+    ingest_key: Option<String>,
+}
+
+/// How a client authenticates; the summary records only this kind, never
+/// the secret.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Credential {
+    None,
+    Session,
+    AdminKey,
+    IngestKey,
+}
+
+impl Credential {
+    fn name(self) -> &'static str {
+        match self {
+            Credential::None => "none",
+            Credential::Session => "session",
+            Credential::AdminKey => "adminKey",
+            Credential::IngestKey => "ingestKey",
+        }
+    }
+}
+
+/// A client with a 60 s timeout that sends `header` (marked sensitive) with
+/// every request, and no cookie store.
+fn client_with(header: Option<(HeaderName, &str)>) -> anyhow::Result<reqwest::Client> {
+    let mut headers = HeaderMap::new();
+    if let Some((name, value)) = header {
+        let mut value = HeaderValue::from_str(value).context("the credential is not a valid header value")?;
+        value.set_sensitive(true);
+        headers.insert(name, value);
+    }
+    Ok(reqwest::Client::builder().default_headers(headers).timeout(Duration::from_secs(60)).build()?)
+}
+
+/// The session cookie (`name=value`) from signing in.
+async fn login(target: &str, username: &str, password: &str) -> anyhow::Result<String> {
+    let r = client_with(None)?
+        .post(format!("{target}/api/v1/auth/login"))
+        .json(&json!({ "username": username, "password": password }))
+        .send()
+        .await
+        .context("signing in")?;
+    anyhow::ensure!(r.status().is_success(), "signing in as {username} failed: {}", r.status());
+    let cookie = r.headers().get("set-cookie").context("signing in returned no session cookie")?.to_str()?;
+    Ok(cookie.split(';').next().unwrap_or_default().to_string())
+}
+
+/// The admin credential header, if any, and its kind.
+async fn admin_credential(args: &Args) -> anyhow::Result<(Option<(HeaderName, String)>, Credential)> {
+    if let Some(key) = &args.admin_key {
+        return Ok((Some((AUTHORIZATION, format!("Bearer {key}"))), Credential::AdminKey));
+    }
+    if let Some(password) = &args.admin_password {
+        let cookie = login(&args.target, &args.admin_username, password).await?;
+        return Ok((Some((COOKIE, cookie)), Credential::Session));
+    }
+    Ok((None, Credential::None))
+}
+
+/// Sends `r`, requiring success, and returns the JSON body.
+async fn json_ok(r: reqwest::RequestBuilder, what: &str) -> anyhow::Result<Value> {
+    let r = r.send().await.with_context(|| what.to_string())?;
+    let status = r.status();
+    if !status.is_success() {
+        let hint = if matches!(status.as_u16(), 401 | 403) { " (pass --admin-password or --admin-key)" } else { "" };
+        anyhow::bail!("{what}: {status}{hint}");
+    }
+    r.json().await.with_context(|| what.to_string())
+}
+
+/// The query that matches connload's own events.
+fn service_query(label: &str) -> String {
+    format!("service = \"connload-{label}\"")
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -192,7 +293,7 @@ async fn ingest_sender(args: Args, client: reqwest::Client, steady: Arc<Steady>,
 
 async fn query_sender(args: Args, client: reqwest::Client, steady: Arc<Steady>, until: Instant) {
     let url = format!("{}/api/v1/query/logs/count", args.target);
-    let body = json!({ "query": format!("service = connload-{} and level = Information", args.label) });
+    let body = json!({ "query": format!("{} and level = Information", service_query(&args.label)) });
     while Instant::now() < until {
         let started = Instant::now();
         match client.post(&url).json(&body).send().await {
@@ -347,20 +448,40 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let addr = host_port(&args.target)?;
     std::fs::create_dir_all(&args.out).with_context(|| format!("creating {}", args.out.display()))?;
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build()?;
-    let info: Value = client.get(format!("{}/api/v1/system/info", args.target)).send().await?.json().await?;
-    let config: Value = client.get(format!("{}/api/v1/system/config", args.target)).send().await?.json().await?;
+    let (admin_header, admin_auth) = admin_credential(&args).await?;
+    let admin_header = admin_header.as_ref().map(|(n, v)| (n.clone(), v.as_str()));
+    // The admin client: setup, queries, system/* and the final count.
+    let client = client_with(admin_header.clone())?;
+    let info = json_ok(client.get(format!("{}/api/v1/system/info", args.target)), "reading system/info").await?;
+    let config = json_ok(client.get(format!("{}/api/v1/system/config", args.target)), "reading system/config").await?;
+    let ingest_key = if args.create_ingest_key {
+        anyhow::ensure!(admin_auth != Credential::None, "--create-ingest-key needs --admin-password or --admin-key");
+        let created = json_ok(
+            client
+                .post(format!("{}/api/v1/api-keys", args.target))
+                .json(&json!({ "name": format!("connload-{}", args.label), "scope": "ingest" })),
+            "creating the ingest key",
+        )
+        .await?;
+        Some(created["key"].as_str().context("the created key has no 'key'")?.to_string())
+    } else {
+        args.ingest_key.clone()
+    };
+    let ingest_auth = if ingest_key.is_some() { Credential::IngestKey } else { Credential::None };
+    let ingest_header = ingest_key.as_ref().map(|k| format!("Bearer {k}"));
+    let ingest_header = ingest_header.as_deref().map(|v| (AUTHORIZATION, v));
+    eprintln!("connload: queries authenticate with {}, ingestion with {}", admin_auth.name(), ingest_auth.name());
 
     let start = Instant::now();
     let until = start + args.duration;
     let steady = Arc::new(Steady::default());
     let mut load = Vec::new();
     for id in 0..args.ingest_clients {
-        let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build()?;
+        let client = client_with(ingest_header.clone())?;
         load.push(tokio::spawn(ingest_sender(args.clone(), client, steady.clone(), until, id)));
     }
     for _ in 0..args.query_clients {
-        let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build()?;
+        let client = client_with(admin_header.clone())?;
         load.push(tokio::spawn(query_sender(args.clone(), client, steady.clone(), until)));
     }
     let sampling = tokio::spawn(sampler(args.clone(), client.clone(), until, start));
@@ -386,18 +507,30 @@ async fn main() -> anyhow::Result<()> {
     let (csv, peaks) = sampling.await?;
     std::fs::write(args.out.join("samples.csv"), csv)?;
 
-    // Acknowledged events must all be stored and queryable.
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    let persisted = client
-        .post(format!("{}/api/v1/query/logs/count", args.target))
-        .json(&json!({ "query": format!("service = connload-{}", args.label) }))
-        .send()
-        .await?
-        .json::<Value>()
-        .await?["count"]
-        .as_u64();
-    let after: Value = client.get(format!("{}/api/v1/system/info", args.target)).send().await?.json().await?;
+    // Acknowledged events must all be stored and queryable. The last batches
+    // get up to 30 s to become visible; a count that never matches, or a
+    // count query that is refused, leaves `reconciled` false.
     let acknowledged = steady.acknowledged.load(Ordering::Relaxed);
+    let count_body = json!({ "query": service_query(&args.label) });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (persisted, reconcile_error) = loop {
+        let r = json_ok(
+            client.post(format!("{}/api/v1/query/logs/count", args.target)).json(&count_body),
+            "counting stored events",
+        )
+        .await;
+        let (persisted, error) = match r {
+            Ok(v) => (v["count"].as_u64(), None),
+            Err(e) => (None, Some(format!("{e:#}"))),
+        };
+        if persisted == Some(acknowledged) || Instant::now() >= deadline {
+            break (persisted, error);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    let after = json_ok(client.get(format!("{}/api/v1/system/info", args.target)), "reading system/info")
+        .await
+        .unwrap_or(Value::Null);
     let elapsed = start.elapsed().as_secs_f64();
     let n = |c: &AtomicU64| c.load(Ordering::Relaxed);
     let summary = json!({
@@ -409,6 +542,7 @@ async fn main() -> anyhow::Result<()> {
             "ingestClients": args.ingest_clients, "batch": args.batch, "ingestIntervalMs": args.ingest_interval.as_millis() as u64,
             "queryClients": args.query_clients, "queryIntervalMs": args.query_interval.as_millis() as u64,
         },
+        "auth": { "queries": admin_auth.name(), "ingest": ingest_auth.name() },
         "server": { "version": info["version"], "config": config["config"]["server"], "before": info["connections"], "after": after["connections"] },
         "ingest": {
             "requestsOk": n(&steady.ingest_ok), "rejected429": n(&steady.ingest_429), "unavailable503": n(&steady.ingest_503),
@@ -424,11 +558,53 @@ async fn main() -> anyhow::Result<()> {
         "waves": waves,
         "peaks": peaks,
         "reconciled": persisted == Some(acknowledged),
+        "reconcileError": reconcile_error,
     });
     std::fs::write(args.out.join("summary.json"), serde_json::to_string_pretty(&summary)?)?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
+    if let Some(e) = reconcile_error {
+        anyhow::bail!("{acknowledged} events acknowledged but the stored count could not be read: {e}");
+    }
     if persisted != Some(acknowledged) {
         anyhow::bail!("{acknowledged} events acknowledged but {persisted:?} stored");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(a: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from(std::iter::once("connload").chain(a.iter().copied()))
+    }
+
+    #[test]
+    fn service_query_quotes_the_label() {
+        assert_eq!(service_query("steady-1"), "service = \"connload-steady-1\"");
+    }
+
+    #[test]
+    fn summary_names_credentials_by_kind() {
+        let names: Vec<_> = [Credential::None, Credential::Session, Credential::AdminKey, Credential::IngestKey]
+            .map(Credential::name)
+            .into();
+        assert_eq!(names, ["none", "session", "adminKey", "ingestKey"]);
+    }
+
+    #[test]
+    fn one_admin_credential_and_one_ingest_key_source() {
+        assert!(parse(&["--admin-password", "p", "--admin-key", "k"]).is_err());
+        assert!(parse(&["--create-ingest-key", "--ingest-key", "k"]).is_err());
+        let a = parse(&["--admin-password", "p", "--create-ingest-key"]).unwrap();
+        assert_eq!(a.admin_password.as_deref(), Some("p"));
+        assert_eq!(a.admin_username, "admin");
+        assert!(a.create_ingest_key);
+    }
+
+    #[test]
+    fn credential_headers_are_validated() {
+        assert!(client_with(Some((AUTHORIZATION, "Bearer abc"))).is_ok());
+        assert!(client_with(Some((AUTHORIZATION, "bad\nvalue"))).is_err());
+    }
 }
