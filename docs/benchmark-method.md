@@ -355,9 +355,11 @@ errors, and the secondary's CPU and network use. After each trial check that:
 ### Mixed query load
 
 Query and system endpoints need an authenticated session or admin key; producers use separate
-ingest keys. Never turn off sign-in to make a benchmark pass. The connection-load tool does not yet
-authenticate its query calls, so mixed-query results are reported as INCOMPLETE until it does. An
-ingest-only ramp can still be run and reported as such.
+ingest keys. Never turn off sign-in to make a benchmark pass. The connection-load tool (`connload`)
+signs in with the admin password for its queries and `system/info` samples and sends an ingest key
+with its batches; a run whose `summary.json` shows `auth.queries` = `none` cannot reconcile stored
+events or measure query latency, and is reported as INCOMPLETE. An ingest-only ramp can still be
+run and reported as such.
 
 ### Soak (48–72 hours)
 
