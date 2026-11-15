@@ -141,6 +141,7 @@ awk -F, -v kernel="$kernel" -v load_end="$load_end" -v stop_ms="$stop_ms" -v exi
     printf "  \"peakSegmentFds\": %d,\n  \"segmentFdsAfter\": %d,\n  \"otherFdsBefore\": %d,\n  \"otherFdsAfter\": %d,\n", segfds, after_seg, other_before, after_fds - after_seg
     printf "  \"peakListenBacklog\": %d,\n  \"peakEstablishedToPort\": %d,\n  \"cpuSeconds\": %.2f,\n", backlog, est, cpu
     printf "  \"peakCgroupKb\": %d,\n  \"peakSocketBuffersKb\": %d,\n  \"listenOverflows\": %d,\n", cg, sockmem, ovf
+    printf "  \"kernel\": %s,\n", kernel
     printf "  \"loadEndedAtMs\": %d,\n  \"connloadExit\": %d,\n  \"shutdownMs\": %d,\n  \"serverExit\": %d\n}\n", load_end, load_status, stop_ms, exit_code
   }' "$out/resources.csv" > "$out/resources.json"
 cat "$out/resources.json"
