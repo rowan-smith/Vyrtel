@@ -50,18 +50,21 @@ the secondary. They are never mixed.
 | Same-host transport | 503s, transport errors and unexpected statuses for steady clients | not run | 0 / 0 / 0 | | PASS |
 | Same-host transport | Flood wave: accept to end / end to end / establishment p99 | not run | 60.0 s / 60.1 s / 92.5 ms | | PASS (82 s / 82 s / 5 s) |
 | Same-host transport | Acknowledged vs stored events (4 runs, 16.3 million events) | not run | equal | | PASS |
-| Same-host transport | Constrained configuration (256 MB, 64 connections, 1,024 FDs) | not run | every budget met | | PASS |
+| Same-host transport | Constrained configuration (256 MB, 64 connections, 1,024 FDs) | not run | every reported budget met | | PASS |
+| Same-host transport | Transport heap, retained heap and runtime tasks (`tests/overload`, release workflow) | not run | assertions held, values not recorded | | PASS |
+| Same-host transport | Peak admitted and waiting connections, sampled | not run | not reported | | INCOMPLETE |
 | Same-host transport | Regression budgets, three steady runs against the baseline build | not run | not run | | INCOMPLETE |
 | Remote | Ingest throughput, p95 / p99 | not run | not run | | INCOMPLETE |
 | Soak | 48–72 hours, data loss, memory trend | not run | not run | | INCOMPLETE |
 
-**Verdict for 0.1.2-rc.4: FAIL on peak memory alone.** Every measured transport budget passes,
-the constrained configuration included, and the flood-wave deadline that 0.1.2-rc.3 failed is
+**Verdict for 0.1.2-rc.4: FAIL on peak memory alone.** Every reported transport budget passes,
+the constrained configuration included (the sampled peaks of admitted and waiting connections
+were not reported, so those two are INCOMPLETE), and the flood-wave deadline that 0.1.2-rc.3 failed is
 met: with a listen backlog of 2,048 the kernel dropped no handshakes, and the slowest connection
 of a wave is the server's own 60 s body timeout. Stored events now match acknowledged events in
 every transport run. In the local baseline, restart to healthy is the accepted regression from
-0.1.2-rc.2, and peak memory is over its budget. The transport regression comparison, remote load
-and the sustained soak remain unvalidated.
+0.1.2-rc.2, and peak memory is over its budget. The transport regression comparison, the sampled connection peaks,
+remote load and the sustained soak remain unvalidated.
 
 - **Peak memory, +32.8% (84.5 → 112.2 MiB).** Nothing in 0.1.2-rc.4 changed memory: its peak is
   within run-to-run noise of 0.1.2-rc.3's (114.7 MiB). The percentage differs from 0.1.2-rc.3's
