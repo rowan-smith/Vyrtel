@@ -1172,10 +1172,17 @@ It writes `summary.json` and `samples.csv`. A matching count alone does not
 pass: `workloadValid` is false, `failures` says why and connload exits 1
 unless events were acknowledged, queries were answered (when there are
 query clients; `workload` is `ingest-only` otherwise), every `system/info`
-sample was read, the steady clients saw nothing but 200 (and 429 for
-ingest) and no transport error, the stored count equals the acknowledged
-events, and, in a flood with authenticated `slow-body` attempts, the
-server's body timeout fired (`flood.bodyTimeouts`). `ingest.eventsPerSecond`
+sample was read with all its counters present as numbers (a missing
+counter is never read as 0), the steady clients saw nothing but 200 (and
+429 for ingest) and no transport error, the stored count equals the
+acknowledged events, no flood attempt was abandoned (still open when
+`--wave-patience` ran out: connload gave up, the server did not end it)
+or lost to a failed task, and, in a flood with authenticated `slow-body`
+attempts, the server's body timeout fired (`flood.bodyTimeouts`, from the
+snapshot taken after every wave ended). Sampling continues until every
+wave has ended, not just the steady load. Attempts that never connected
+are reported (`connectFailures`) but are not a failure on their own.
+`ingest.eventsPerSecond`
 is over the steady load's window (`loadWindowS`), not the whole run; the
 final count's time is `reconcileDurationMs`.
 

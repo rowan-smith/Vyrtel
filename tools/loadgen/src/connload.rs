@@ -61,11 +61,13 @@
 //! The run is judged as a whole, not only by the count: `summary.json`
 //! `workloadValid` is false, with the reasons in `failures`, and connload
 //! exits 1, unless the steady load really ran (events acknowledged, queries
-//! answered, every `system/info` sample read), its clients saw no
-//! unexpected status (anything but 200, or 429 for ingest) or transport
-//! error, the stored count equals the acknowledged events, and, when the
-//! flood's `slow-body` attempts were authenticated, the server's body
-//! timeout fired. `ingest.eventsPerSecond` is over the steady load's own
+//! answered, every `system/info` sample read with all its counters), its
+//! clients saw no unexpected status (anything but 200, or 429 for ingest)
+//! or transport error, the stored count equals the acknowledged events, no
+//! flood attempt was abandoned or lost, and, when the flood's `slow-body`
+//! attempts were authenticated, the server's body timeout fired (counted
+//! from the snapshot after every wave ended; sampling also runs until
+//! then). `ingest.eventsPerSecond` is over the steady load's own
 //! window (`loadWindowS`); the final count's time is `reconcileDurationMs`,
 //! bounded by `--reconcile-timeout`.
 
@@ -596,6 +598,8 @@ struct Wave {
     took: Duration,
     outcomes: BTreeMap<String, u64>,
     timings: Vec<Timing>,
+    /// Attempts whose task panicked or was cancelled: no outcome at all.
+    failed_tasks: usize,
 }
 
 async fn wave(
@@ -619,12 +623,17 @@ async fn wave(
         }
     }
     let mut timings = Vec::with_capacity(attempts);
+    let mut failed_tasks = 0;
     for (kind, t) in tasks {
-        let (outcome, timing) = t.await.unwrap_or(("other", Timing::default()));
-        *outcomes.entry(format!("{}.{outcome}", KINDS[kind])).or_default() += 1;
-        timings.push(timing);
+        match t.await {
+            Ok((outcome, timing)) => {
+                *outcomes.entry(format!("{}.{outcome}", KINDS[kind])).or_default() += 1;
+                timings.push(timing);
+            }
+            Err(_) => failed_tasks += 1,
+        }
     }
-    Wave { took: started.elapsed(), outcomes, timings }
+    Wave { took: started.elapsed(), outcomes, timings, failed_tasks }
 }
 
 /// Connect, establishment, accept-to-end and end-to-end distributions of
@@ -683,44 +692,88 @@ struct Samples {
     csv: String,
     peaks: BTreeMap<String, u64>,
     ok: u64,
+    /// Not read: a transport error, a non-200 or a body that is not JSON.
     failed: u64,
+    /// Read, but without every field of `SAMPLE_FIELDS` as a number.
+    malformed: u64,
+    /// The fields missing from malformed samples.
+    missing: std::collections::BTreeSet<String>,
 }
 
-async fn sampler(args: Args, client: reqwest::Client, until: Instant, start: Instant) -> Samples {
+/// The `SAMPLE_FIELDS` of a `system/info` response, in order; a field that
+/// is missing or not a number is an error, never a zero.
+fn sample_row(v: &Value) -> Result<Vec<u64>, Vec<String>> {
+    let mut row = Vec::with_capacity(SAMPLE_FIELDS.len());
+    let mut missing = Vec::new();
+    for f in SAMPLE_FIELDS {
+        let path = match f {
+            "ingestInFlight" => ["ingest", "inFlight"],
+            "ingestRejected" => ["ingest", "rejected"],
+            f => ["connections", f],
+        };
+        match v[path[0]][path[1]].as_u64() {
+            Some(n) => row.push(n),
+            None => missing.push(path.join(".")),
+        }
+    }
+    if missing.is_empty() { Ok(row) } else { Err(missing) }
+}
+
+/// Samples `system/info` every `--sample-interval` until `stop` turns true:
+/// through the steady load and every flood wave's cleanup.
+async fn sampler(
+    args: Args,
+    client: reqwest::Client,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    start: Instant,
+) -> Samples {
     let url = format!("{}/api/v1/system/info", args.target);
     let mut csv = format!("elapsedMs,ok,{}\n", SAMPLE_FIELDS.join(","));
     let mut peaks: BTreeMap<String, u64> = BTreeMap::new();
-    let (mut ok, mut failed) = (0, 0);
+    let (mut ok, mut failed, mut malformed) = (0, 0, 0);
+    let mut missing = std::collections::BTreeSet::new();
     let mut tick = tokio::time::interval(args.sample_interval);
-    while Instant::now() < until {
-        tick.tick().await;
+    while !*stop.borrow() {
+        tokio::select! {
+            _ = tick.tick() => {}
+            _ = stop.changed() => continue,
+        }
         let elapsed = start.elapsed().as_millis();
         let v = match client.get(&url).send().await {
             Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
             _ => None,
         };
+        let empty = format!("{elapsed},0{}\n", ",".repeat(SAMPLE_FIELDS.len()));
         let Some(v) = v else {
             failed += 1;
-            csv.push_str(&format!("{elapsed},0{}\n", ",".repeat(SAMPLE_FIELDS.len())));
+            csv.push_str(&empty);
             continue;
         };
+        let row = match sample_row(&v) {
+            Ok(row) => row,
+            Err(m) => {
+                malformed += 1;
+                missing.extend(m);
+                csv.push_str(&empty);
+                continue;
+            }
+        };
         ok += 1;
-        let c = &v["connections"];
-        let row: Vec<u64> = SAMPLE_FIELDS
-            .iter()
-            .map(|f| match *f {
-                "ingestInFlight" => v["ingest"]["inFlight"].as_u64().unwrap_or(0),
-                "ingestRejected" => v["ingest"]["rejected"].as_u64().unwrap_or(0),
-                f => c[f].as_u64().unwrap_or(0),
-            })
-            .collect();
         for (f, n) in SAMPLE_FIELDS.iter().zip(&row) {
             let peak = peaks.entry(f.to_string()).or_default();
             *peak = (*peak).max(*n);
         }
         csv.push_str(&format!("{elapsed},1,{}\n", row.iter().map(u64::to_string).collect::<Vec<_>>().join(",")));
     }
-    Samples { csv, peaks, ok, failed }
+    Samples { csv, peaks, ok, failed, malformed, missing }
+}
+
+/// How far the server's body-timeout counter rose during the run: from the
+/// snapshot before the load to the higher of the sampled peak and the
+/// snapshot after every wave ended (the authoritative cumulative value; a
+/// timeout can fire after the last sample).
+fn body_timeouts_rise(before: u64, sampled_peak: u64, after: Option<u64>) -> u64 {
+    sampled_peak.max(after.unwrap_or(0)).saturating_sub(before)
 }
 
 /// The final count: polls until the stored count of connload's service
@@ -779,7 +832,14 @@ struct Evidence {
     query_failures: [u64; 3],
     samples_ok: u64,
     samples_failed: u64,
+    samples_malformed: u64,
+    /// Fields missing from malformed samples (or from the final snapshot).
+    samples_missing: Vec<String>,
     after_read: bool,
+    /// Flood attempts still open when the client gave up (the server never
+    /// ended them), and attempts whose task failed.
+    abandoned: u64,
+    failed_tasks: u64,
     reconcile_error: Option<String>,
     /// `Some(n)`: authenticated (or open) slow-body attempts were sent and
     /// the server's body-timeout counter rose by `n`.
@@ -819,8 +879,25 @@ fn failures(e: &Evidence) -> Vec<String> {
             f.push(format!("query: {n} {}", name.replace(" (not 200 or 429)", " (not 200)")));
         }
     }
+    let taken = e.samples_ok + e.samples_failed + e.samples_malformed;
     if e.samples_ok == 0 || e.samples_failed > 0 {
-        f.push(format!("system/info: {} of {} samples failed", e.samples_failed, e.samples_ok + e.samples_failed));
+        f.push(format!("system/info: {} of {taken} samples failed", e.samples_failed));
+    }
+    if e.samples_malformed > 0 || !e.samples_missing.is_empty() {
+        f.push(format!(
+            "system/info: {} of {taken} samples lacked required fields ({})",
+            e.samples_malformed,
+            e.samples_missing.join(", ")
+        ));
+    }
+    if e.abandoned > 0 {
+        f.push(format!(
+            "flood: {} attempts abandoned (still open when connload stopped waiting; the server never ended them)",
+            e.abandoned
+        ));
+    }
+    if e.failed_tasks > 0 {
+        f.push(format!("flood: {} attempts' tasks failed, so their outcome is unknown", e.failed_tasks));
     }
     if !e.after_read {
         f.push("system/info could not be read after the load".to_string());
@@ -847,6 +924,9 @@ async fn main() -> anyhow::Result<()> {
     // The admin client: setup, queries, system/* and the final count.
     let client = client_with(admin_header.clone())?;
     let info = json_ok(client.get(format!("{}/api/v1/system/info", args.target)), "reading system/info").await?;
+    if let Err(missing) = sample_row(&info) {
+        anyhow::bail!("reading system/info: missing or non-numeric {}", missing.join(", "));
+    }
     let config = json_ok(client.get(format!("{}/api/v1/system/config", args.target)), "reading system/config").await?;
     let ingest_key = if args.create_ingest_key {
         anyhow::ensure!(admin_auth != Credential::None, "--create-ingest-key needs --admin-password or --admin-key");
@@ -880,7 +960,8 @@ async fn main() -> anyhow::Result<()> {
         let client = client_with(admin_header.clone())?;
         load.push(tokio::spawn(query_sender(args.clone(), client, steady.clone(), until)));
     }
-    let sampling = tokio::spawn(sampler(args.clone(), client.clone(), until, start));
+    let (stop_sampling, sampling_stopped) = tokio::sync::watch::channel(false);
+    let sampling = tokio::spawn(sampler(args.clone(), client.clone(), sampling_stopped, start));
     // When the steady load itself ended, apart from the waves' cleanup.
     let load_done = tokio::spawn(async move {
         for t in load {
@@ -891,6 +972,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut waves = Vec::new();
     let mut all_timings = Vec::new();
+    let mut failed_tasks = 0;
     if !args.no_waves {
         let mut next = start + Duration::from_secs(5);
         while next + Duration::from_secs(1) < until {
@@ -912,6 +994,7 @@ async fn main() -> anyhow::Result<()> {
             entry["outcomes"] = json!(w.outcomes);
             waves.push(entry);
             all_timings.extend(w.timings);
+            failed_tasks += w.failed_tasks as u64;
             next += args.wave_interval;
             while next < Instant::now() {
                 next += args.wave_interval;
@@ -919,6 +1002,9 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let load_window = load_done.await??.duration_since(start).as_secs_f64();
+    // Every wave has ended (or been given up on): stop sampling now, not at
+    // the steady load's deadline, so the flood's cleanup is sampled too.
+    let _ = stop_sampling.send(true);
     let samples = sampling.await?;
     std::fs::write(args.out.join("samples.csv"), &samples.csv)?;
 
@@ -938,6 +1024,9 @@ async fn main() -> anyhow::Result<()> {
         && args.attempts > 2
         && (slow_body_key.is_some() || (ingest_key.is_none() && args.slow_body_auth == SlowBodyAuth::Key));
     let body_timeouts_before = info["connections"]["bodyTimeouts"].as_u64().unwrap_or(0);
+    let after_missing = after.as_ref().map(sample_row).and_then(Result::err).unwrap_or_default();
+    let mut samples_missing: Vec<String> = samples.missing.iter().cloned().collect();
+    samples_missing.extend(after_missing.iter().map(|m| format!("{m} (after the load)")));
     let evidence = Evidence {
         ingest_clients: args.ingest_clients,
         query_clients: args.query_clients,
@@ -947,10 +1036,19 @@ async fn main() -> anyhow::Result<()> {
         query_failures: [n(&steady.query_503), n(&steady.query_other), n(&steady.query_errors)],
         samples_ok: samples.ok,
         samples_failed: samples.failed,
+        samples_malformed: samples.malformed,
+        samples_missing,
         after_read: after.is_some(),
+        abandoned: all_timings.iter().filter(|t| t.abandoned).count() as u64,
+        failed_tasks,
         reconcile_error: reconcile_error.clone(),
-        body_timeouts: slow_body_reads
-            .then(|| peaks.get("bodyTimeouts").copied().unwrap_or(0).saturating_sub(body_timeouts_before)),
+        body_timeouts: slow_body_reads.then(|| {
+            body_timeouts_rise(
+                body_timeouts_before,
+                peaks.get("bodyTimeouts").copied().unwrap_or(0),
+                after.as_ref().and_then(|a| a["connections"]["bodyTimeouts"].as_u64()),
+            )
+        }),
     };
     let failures = failures(&evidence);
     let after = after.unwrap_or(Value::Null);
@@ -986,7 +1084,7 @@ async fn main() -> anyhow::Result<()> {
         "flood": if args.no_waves { Value::Null } else { flood_summary(&waves, &all_timings) },
         "waves": waves,
         "peaks": peaks,
-        "samples": { "ok": samples.ok, "failed": samples.failed },
+        "samples": { "ok": samples.ok, "failed": samples.failed, "malformed": samples.malformed },
         "reconciled": reconcile_error.is_none() && persisted == Some(acknowledged),
         "reconcileError": reconcile_error,
         "reconcileDurationMs": reconcile_took.as_millis() as u64,
@@ -996,6 +1094,7 @@ async fn main() -> anyhow::Result<()> {
         // Rise of the server's body-timeout counter; null when slow-body
         // attempts were not expected to reach the body read.
         summary["flood"]["bodyTimeouts"] = json!(evidence.body_timeouts);
+        summary["flood"]["failedTasks"] = json!(evidence.failed_tasks);
     }
     std::fs::write(args.out.join("summary.json"), serde_json::to_string_pretty(&summary)?)?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -1217,6 +1316,91 @@ mod tests {
         assert!(f[0].starts_with("not reconciled"), "{f:?}");
         let f = failures(&Evidence { body_timeouts: Some(0), ..valid() });
         assert!(f[0].contains("body timeout"), "{f:?}");
+    }
+
+    /// The body timeout fires after the steady load (and the last sample):
+    /// the final snapshot still counts it.
+    #[test]
+    fn body_timeouts_count_the_final_snapshot() {
+        assert_eq!(body_timeouts_rise(5, 5, Some(255)), 250);
+        assert_eq!(body_timeouts_rise(5, 105, Some(105)), 100);
+        // A sample can be higher than nothing read afterwards.
+        assert_eq!(body_timeouts_rise(5, 105, None), 100);
+        assert_eq!(body_timeouts_rise(5, 0, Some(5)), 0);
+    }
+
+    /// `--wave-patience` shorter than the server's cleanup: the client gave
+    /// up, which must not pass as the server ending the connections.
+    #[test]
+    fn abandoned_or_failed_flood_attempts_invalidate_the_run() {
+        let f = failures(&Evidence { abandoned: 12, body_timeouts: Some(238), ..valid() });
+        assert!(f.len() == 1 && f[0].contains("12 attempts abandoned"), "{f:?}");
+        let f = failures(&Evidence { failed_tasks: 1, ..valid() });
+        assert!(f.len() == 1 && f[0].contains("1 attempts' tasks failed"), "{f:?}");
+    }
+
+    fn info_sample() -> Value {
+        let connections: serde_json::Map<String, Value> =
+            SAMPLE_FIELDS[..10].iter().enumerate().map(|(i, f)| (f.to_string(), json!(i))).collect();
+        json!({ "connections": connections, "ingest": { "inFlight": 10, "rejected": 11 } })
+    }
+
+    #[test]
+    fn samples_need_every_field_as_a_number() {
+        assert_eq!(sample_row(&info_sample()).unwrap(), (0..12).collect::<Vec<u64>>());
+        let mut v = info_sample();
+        v["connections"].as_object_mut().unwrap().remove("acceptErrors");
+        v["ingest"]["rejected"] = json!("11");
+        assert_eq!(sample_row(&v).unwrap_err(), ["connections.acceptErrors", "ingest.rejected"]);
+        assert!(sample_row(&json!({})).unwrap_err().len() == SAMPLE_FIELDS.len());
+
+        let f = failures(&Evidence {
+            samples_malformed: 3,
+            samples_missing: vec!["connections.acceptErrors".into()],
+            ..valid()
+        });
+        assert!(
+            f.len() == 1 && f[0].contains("3 of 63 samples lacked required fields (connections.acceptErrors)"),
+            "{f:?}"
+        );
+        let f = failures(&Evidence { samples_missing: vec!["connections.refused (after the load)".into()], ..valid() });
+        assert!(f.len() == 1 && f[0].contains("after the load"), "{f:?}");
+    }
+
+    /// Sampling continues past the steady load until told to stop, and a
+    /// sample without the required fields counts as malformed, not zero.
+    #[tokio::test]
+    async fn the_sampler_runs_until_stopped_and_rejects_incomplete_samples() {
+        let body = info_sample().to_string();
+        let ok: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        );
+        let (target, requests) = stub(ok).await;
+        let mut args = parse(&["--target", &target, "--sample-interval", "50ms", "--duration", "1ms"]).unwrap();
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let start = Instant::now();
+        let run = tokio::spawn(sampler(args.clone(), client_with(None).unwrap(), stopped, start));
+        tokio::time::sleep(ms(400)).await;
+        stop.send(true).unwrap();
+        let samples = run.await.unwrap();
+        assert!(samples.ok >= 4 && samples.failed == 0 && samples.malformed == 0, "{} ok", samples.ok);
+        assert_eq!(samples.ok, requests.load(Ordering::Relaxed));
+        assert_eq!(samples.peaks["ingestRejected"], 11);
+
+        let (target, _) =
+            stub("HTTP/1.1 200 OK\r\ncontent-length: 2\r\ncontent-type: application/json\r\n\r\n{}").await;
+        args.target = target;
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let run = tokio::spawn(sampler(args, client_with(None).unwrap(), stopped, start));
+        tokio::time::sleep(ms(200)).await;
+        stop.send(true).unwrap();
+        let samples = run.await.unwrap();
+        assert!(samples.ok == 0 && samples.malformed >= 1, "{} malformed", samples.malformed);
+        assert!(samples.missing.contains("connections.acceptErrors"));
     }
 
     #[test]

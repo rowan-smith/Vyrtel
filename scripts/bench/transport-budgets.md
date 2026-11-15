@@ -52,8 +52,11 @@ ingest key as well, so they still reach the body read and its timeout
 instead of being refused by authentication; a flood run whose
 `flood.bodyTimeouts` is 0 is invalid. A run is evidence for any row only
 when `summary.json` `workloadValid` is true (events acknowledged, queries
-answered, every sample read, no unexpected status or transport error on
-the steady clients, reconciled). Throughput is over `loadWindowS`, the
+answered, every sample read with all its counters, no unexpected status or
+transport error on the steady clients, reconciled, no abandoned flood
+attempt whatever `--wave-patience` was, as the wave rows above require).
+`samples.csv` now covers each wave's cleanup, not only the steady load.
+Throughput is over `loadWindowS`, the
 steady load's own window, not the time spent counting afterwards.
 
 Configurations:
