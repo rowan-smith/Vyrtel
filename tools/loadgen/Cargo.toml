@@ -14,6 +14,10 @@ reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# TIOCOUTQ: when the server's kernel acknowledged an attempt's first bytes (connload).
+libc = "0.2"
+
 [[bin]]
 name = "loadgen"
 path = "src/main.rs"

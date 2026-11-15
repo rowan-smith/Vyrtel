@@ -27,7 +27,9 @@
 # of its memory.stat: kernel TCP buffers of the server's sockets, which are
 # not part of the process heap or RSS. listenOverflows is the kernel's
 # count of handshakes dropped because the accept queue was full (the
-# server's network namespace, cumulative).
+# server's network namespace, cumulative). kernel records the sysctls that
+# decide what an overflow does, as the server's namespace sees them
+# (net.core.somaxconn caps server.listen_backlog).
 #
 # Writes <out-dir>/resources.csv (one row per second), server.log,
 # summary.json (from connload), and resources.json (peaks, idle levels,
@@ -88,6 +90,12 @@ for _ in $(seq 1 50); do
 done
 
 ticks=$(docker exec "$server" getconf CLK_TCK)
+kernel=$(docker exec "$server" sh -c '
+  r() { cat "/proc/sys/net/$1" 2>/dev/null || echo null; }
+  printf "{\"release\": \"%s\", \"somaxconn\": %s, \"tcpMaxSynBacklog\": %s, " \
+    "$(uname -r)" "$(r core/somaxconn)" "$(r ipv4/tcp_max_syn_backlog)"
+  printf "\"tcpSyncookies\": %s, \"tcpAbortOnOverflow\": %s, \"tcpSynackRetries\": %s}" \
+    "$(r ipv4/tcp_syncookies)" "$(r ipv4/tcp_abort_on_overflow)" "$(r ipv4/tcp_synack_retries)"')
 # Docker Desktop on Windows (Git Bash) needs a Windows path to mount.
 mount_out=$out
 if command -v cygpath >/dev/null 2>&1; then mount_out=$(cygpath -m "$out"); fi
@@ -112,7 +120,7 @@ exit_code=$(docker inspect -f '{{.State.ExitCode}}' "$server")
 wait "$sampler" 2>/dev/null || true
 docker logs "$server" > "$out/server.log" 2>&1
 
-awk -F, -v load_end="$load_end" -v stop_ms="$stop_ms" -v exit_code="$exit_code" -v ticks="$ticks" \
+awk -F, -v kernel="$kernel" -v load_end="$load_end" -v stop_ms="$stop_ms" -v exit_code="$exit_code" -v ticks="$ticks" \
   -v load_status="$load_status" '
   NR == 1 { next }
   NR == 2 { idle_before = $2; other_before = $5 - $14 }

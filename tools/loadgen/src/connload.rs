@@ -20,6 +20,22 @@
 //! `refused` (the fixed 503 `server_busy`, or part of it), `rejected` (429
 //! from ingest admission), `timeout` (408),
 //! `closed` (no bytes, then EOF), `reset` (a connection error) or `other`.
+//!
+//! Each wave's timing is split in two, because the server's own deadlines
+//! start at accept while a client waits from its first attempt:
+//!
+//! * `establishment`: from the attempt's start until the server's kernel had
+//!   completed the handshake. On Linux this is when the attempt's first
+//!   bytes were acknowledged (`TIOCOUTQ` drops to 0): when the listen queue
+//!   is full the server drops the handshake and the client keeps
+//!   retransmitting, even though its own `connect` may already have
+//!   returned. Idle attempts send nothing, so for them (and on other
+//!   systems) it is when `connect` returned, a lower bound. `connect` is
+//!   reported on its own too.
+//! * `acceptToEnd`: from establishment until the connection ended: the part
+//!   the server's `header_timeout`, `body_timeout` and waiting bound.
+//!
+//! `endToEnd` is the two together; its maximum is about the wave's `tookS`.
 //! `/api/v1/system/info` is sampled every `--sample-interval` into
 //! `samples.csv`. At the end the events the server acknowledged are
 //! counted back with a query (`persisted` must equal `acknowledged`), and
@@ -28,8 +44,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -53,9 +69,15 @@ struct Args {
     /// Time between the starts of waves (the first starts after 5 s).
     #[arg(long, default_value = "30s", value_parser = parse_duration)]
     wave_interval: Duration,
-    /// How long one wave's connections are given to end on their own.
+    /// How long one wave's connections are given to end on their own, once
+    /// connected.
     #[arg(long, default_value = "90s", value_parser = parse_duration)]
     wave_patience: Duration,
+    /// How long one attempt may take to connect before it counts as `reset`.
+    /// Longer than Linux's SYN retries (1 + 2 + 4 + 8 + 16 s), so a dropped
+    /// handshake shows in `establishment` instead of being cut short.
+    #[arg(long, default_value = "90s", value_parser = parse_duration)]
+    connect_timeout: Duration,
     /// Concurrent ingest senders (keep-alive connections).
     #[arg(long, default_value_t = 4)]
     ingest_clients: usize,
@@ -108,25 +130,33 @@ const OUTCOMES: [&str; 7] = ["served", "refused", "rejected", "timeout", "closed
 /// The start of the fixed refusal response (`transport::BUSY_RESPONSE`).
 const BUSY_PREFIX: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n";
 
+/// Count, p50, p95, p99 and maximum of `micros`, in milliseconds.
+fn distribution(mut micros: Vec<u32>) -> Value {
+    micros.sort_unstable();
+    let p = |q: f64| -> Value {
+        if micros.is_empty() {
+            return Value::Null;
+        }
+        let i = ((micros.len() as f64 - 1.0) * q).round() as usize;
+        json!(micros[i] as f64 / 1000.0)
+    };
+    json!({ "samples": micros.len(), "p50Ms": p(0.50), "p95Ms": p(0.95), "p99Ms": p(0.99), "maxMs": p(1.0) })
+}
+
+fn micros(d: Duration) -> u32 {
+    d.as_micros().min(u32::MAX as u128) as u32
+}
+
 #[derive(Default)]
 struct Latencies(Mutex<Vec<u32>>);
 
 impl Latencies {
     fn record(&self, d: Duration) {
-        self.0.lock().unwrap().push(d.as_micros().min(u32::MAX as u128) as u32);
+        self.0.lock().unwrap().push(micros(d));
     }
 
     fn summary(&self) -> Value {
-        let mut v = self.0.lock().unwrap().clone();
-        v.sort_unstable();
-        let p = |q: f64| -> Value {
-            if v.is_empty() {
-                return Value::Null;
-            }
-            let i = ((v.len() as f64 - 1.0) * q).round() as usize;
-            json!(v[i] as f64 / 1000.0)
-        };
-        json!({ "samples": v.len(), "p50Ms": p(0.50), "p95Ms": p(0.95), "p99Ms": p(0.99), "maxMs": p(1.0) })
+        distribution(self.0.lock().unwrap().clone())
     }
 }
 
@@ -211,50 +241,153 @@ async fn query_sender(args: Args, client: reqwest::Client, steady: Arc<Steady>, 
     }
 }
 
-/// One connection attempt of `kind`; returns its outcome.
-async fn attempt(addr: String, kind: usize, patience: Duration) -> &'static str {
-    let Ok(Ok(mut tcp)) = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(&addr)).await else {
+const SLOW_HEAD: &[u8] = b"GET /health HTTP/1.1\r\nHost: connload\r\nX-Slow: ";
+const SLOW_BODY_HEAD: &[u8] = b"POST /api/v1/events HTTP/1.1\r\nHost: connload\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n[{\"message\"";
+const NORMAL_REQUEST: &[u8] = b"GET /health HTTP/1.1\r\nHost: connload\r\nConnection: close\r\n\r\n";
+
+/// When things happened during one attempt, from its start.
+#[derive(Debug, Clone, Copy, Default)]
+struct Timing {
+    /// `connect` returned: the client's side of the handshake.
+    connected: Option<Duration>,
+    /// The server's kernel acknowledged the attempt's first bytes, so its
+    /// side of the handshake was complete. `None` for idle attempts and
+    /// where it cannot be observed.
+    acked: Option<Duration>,
+    /// The connection ended, or the attempt gave up.
+    ended: Duration,
+}
+
+impl Timing {
+    /// Connection establishment as the server saw it, or its lower bound.
+    fn established(&self) -> Option<Duration> {
+        self.acked.or(self.connected)
+    }
+}
+
+/// One connection attempt of `kind`; returns its outcome and timing.
+async fn attempt(addr: String, kind: usize, connect_timeout: Duration, patience: Duration) -> (&'static str, Timing) {
+    let started = Instant::now();
+    let mut timing = Timing::default();
+    let outcome = run_attempt(&addr, kind, connect_timeout, patience, started, &mut timing).await;
+    timing.ended = started.elapsed();
+    if let (Some(a), Some(c)) = (timing.acked, timing.connected) {
+        timing.acked = Some(a.max(c).min(timing.ended));
+    }
+    (outcome, timing)
+}
+
+async fn run_attempt(
+    addr: &str,
+    kind: usize,
+    connect_timeout: Duration,
+    patience: Duration,
+    started: Instant,
+    timing: &mut Timing,
+) -> &'static str {
+    let Ok(Ok(mut tcp)) = tokio::time::timeout(connect_timeout, TcpStream::connect(addr)).await else {
         return "reset";
     };
+    timing.connected = Some(started.elapsed());
+    let first: &[u8] = match KINDS[kind] {
+        "idle" => b"",
+        "slow-head" => &SLOW_HEAD[..1],
+        "slow-body" => SLOW_BODY_HEAD,
+        _ => NORMAL_REQUEST,
+    };
+    if !first.is_empty() && tcp.write_all(first).await.is_err() {
+        return "reset";
+    }
+    let outq = OutQueue::of(&tcp);
+    let acked = OnceLock::new();
+    let watch = async {
+        if !first.is_empty()
+            && let Some(at) = outq.wait_empty(started).await
+        {
+            let _ = acked.set(at);
+        }
+        std::future::pending::<()>().await
+    };
     let work = async {
-        match KINDS[kind] {
-            "idle" => {}
-            "slow-head" => {
-                let (mut rd, mut wr) = tcp.split();
-                let trickle = async {
-                    for b in
-                        b"GET /health HTTP/1.1\r\nHost: connload\r\nX-Slow: ".iter().chain(std::iter::repeat(&b'a'))
-                    {
-                        if wr.write_all(&[*b]).await.is_err() {
-                            return;
-                        }
-                        tokio::time::sleep(Duration::from_millis(500)).await;
+        if KINDS[kind] == "slow-head" {
+            let (mut rd, mut wr) = tcp.split();
+            let trickle = async {
+                for b in SLOW_HEAD[1..].iter().chain(std::iter::repeat(&b'a')) {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    if wr.write_all(&[*b]).await.is_err() {
+                        return;
                     }
-                };
-                let mut got = Vec::new();
-                let read = rd.read_to_end(&mut got);
-                return tokio::select! {
-                    r = read => classify(r.map(|_| got)),
-                    _ = trickle => "other",
-                };
-            }
-            "slow-body" => {
-                let head = "POST /api/v1/events HTTP/1.1\r\nHost: connload\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n[{\"message\"";
-                if tcp.write_all(head.as_bytes()).await.is_err() {
-                    return "reset";
                 }
-            }
-            _ => {
-                if tcp.write_all(b"GET /health HTTP/1.1\r\nHost: connload\r\nConnection: close\r\n\r\n").await.is_err()
-                {
-                    return "reset";
-                }
-            }
+            };
+            let mut got = Vec::new();
+            let read = rd.read_to_end(&mut got);
+            return tokio::select! {
+                r = read => classify(r.map(|_| got)),
+                _ = trickle => "other",
+            };
         }
         let mut got = Vec::new();
         classify(tcp.read_to_end(&mut got).await.map(|_| got))
     };
-    tokio::time::timeout(patience, work).await.unwrap_or("other")
+    let outcome = tokio::select! {
+        r = tokio::time::timeout(patience, work) => r.unwrap_or("other"),
+        () = watch => unreachable!("the watch never ends"),
+    };
+    timing.acked = acked.get().copied();
+    // A response can arrive between two looks at the queue; the bytes were
+    // acknowledged by now at the latest.
+    if !first.is_empty() && timing.acked.is_none() && outq.is_empty() == Some(true) {
+        timing.acked = Some(started.elapsed());
+    }
+    outcome
+}
+
+/// Bytes written to a socket that its peer has not acknowledged yet.
+#[derive(Clone, Copy)]
+struct OutQueue {
+    #[cfg(target_os = "linux")]
+    fd: std::os::fd::RawFd,
+}
+
+impl OutQueue {
+    /// The caller keeps `tcp` open for as long as the result is used.
+    fn of(tcp: &TcpStream) -> OutQueue {
+        #[cfg(target_os = "linux")]
+        return OutQueue { fd: std::os::fd::AsRawFd::as_raw_fd(tcp) };
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = tcp;
+            OutQueue {}
+        }
+    }
+
+    /// Whether every byte written was acknowledged; `None` if unknown.
+    fn is_empty(self) -> Option<bool> {
+        #[cfg(target_os = "linux")]
+        {
+            let mut n: libc::c_int = 0;
+            // SAFETY: TIOCOUTQ writes one c_int, and the fd is open (see `of`).
+            let r = unsafe { libc::ioctl(self.fd, libc::TIOCOUTQ, &mut n) };
+            (r == 0).then_some(n == 0)
+        }
+        #[cfg(not(target_os = "linux"))]
+        None
+    }
+
+    /// Wait until [`Self::is_empty`] and return when, from `started`. Looks
+    /// every 2 ms at first, backing off to every 50 ms.
+    async fn wait_empty(self, started: Instant) -> Option<Duration> {
+        let mut pause = Duration::from_millis(2);
+        loop {
+            match self.is_empty() {
+                Some(true) => return Some(started.elapsed()),
+                Some(false) => {}
+                None => return None,
+            }
+            tokio::time::sleep(pause).await;
+            pause = (pause * 2).min(Duration::from_millis(50));
+        }
+    }
 }
 
 fn classify(r: std::io::Result<Vec<u8>>) -> &'static str {
@@ -270,10 +403,16 @@ fn classify(r: std::io::Result<Vec<u8>>) -> &'static str {
     }
 }
 
-async fn wave(addr: String, attempts: usize, patience: Duration) -> (Duration, BTreeMap<String, u64>) {
+struct Wave {
+    took: Duration,
+    outcomes: BTreeMap<String, u64>,
+    timings: Vec<Timing>,
+}
+
+async fn wave(addr: String, attempts: usize, connect_timeout: Duration, patience: Duration) -> Wave {
     let started = Instant::now();
     let tasks: Vec<_> = (0..attempts)
-        .map(|i| (i % KINDS.len(), tokio::spawn(attempt(addr.clone(), i % KINDS.len(), patience))))
+        .map(|i| (i % KINDS.len(), tokio::spawn(attempt(addr.clone(), i % KINDS.len(), connect_timeout, patience))))
         .collect();
     let mut outcomes = BTreeMap::new();
     for kind in KINDS {
@@ -281,11 +420,48 @@ async fn wave(addr: String, attempts: usize, patience: Duration) -> (Duration, B
             outcomes.insert(format!("{kind}.{outcome}"), 0);
         }
     }
+    let mut timings = Vec::with_capacity(attempts);
     for (kind, t) in tasks {
-        let outcome = t.await.unwrap_or("other");
+        let (outcome, timing) = t.await.unwrap_or(("other", Timing::default()));
         *outcomes.entry(format!("{}.{outcome}", KINDS[kind])).or_default() += 1;
+        timings.push(timing);
     }
-    (started.elapsed(), outcomes)
+    Wave { took: started.elapsed(), outcomes, timings }
+}
+
+/// Connect, establishment, accept-to-end and end-to-end distributions of
+/// `timings`.
+fn timing_summary(timings: &[Timing]) -> Value {
+    let connected: Vec<&Timing> = timings.iter().filter(|t| t.connected.is_some()).collect();
+    let by_ack = connected.iter().filter(|t| t.acked.is_some()).count();
+    let accept_to_end = connected.iter().filter_map(|t| t.established().map(|e| t.ended.saturating_sub(e)));
+    json!({
+        "connect": distribution(connected.iter().filter_map(|t| t.connected).map(micros).collect()),
+        "establishment": distribution(connected.iter().filter_map(|t| t.established()).map(micros).collect()),
+        "acceptToEnd": distribution(accept_to_end.map(micros).collect()),
+        "endToEnd": distribution(timings.iter().map(|t| micros(t.ended)).collect()),
+        "establishedBy": { "firstBytesAcked": by_ack, "connectOnly": connected.len() - by_ack },
+        "connectFailures": timings.len() - connected.len(),
+    })
+}
+
+/// Every wave together: the distributions over all attempts, the longest
+/// wave and the worst wave's figures.
+fn flood_summary(waves: &[Value], timings: &[Timing]) -> Value {
+    let worst = |path: &[&str]| -> Value {
+        let at = |w: &Value| path.iter().fold(w, |v, k| &v[*k]).as_f64();
+        waves.iter().filter_map(at).reduce(f64::max).map_or(Value::Null, |v| json!(v))
+    };
+    let mut v = timing_summary(timings);
+    v["waves"] = json!(waves.len());
+    v["longestWaveS"] = worst(&["tookS"]);
+    v["worstWave"] = json!({
+        "establishmentP99Ms": worst(&["establishment", "p99Ms"]),
+        "establishmentMaxMs": worst(&["establishment", "maxMs"]),
+        "acceptToEndMaxMs": worst(&["acceptToEnd", "maxMs"]),
+        "endToEndMaxMs": worst(&["endToEnd", "maxMs"]),
+    });
+    v
 }
 
 const SAMPLE_FIELDS: [&str; 12] = [
@@ -366,14 +542,28 @@ async fn main() -> anyhow::Result<()> {
     let sampling = tokio::spawn(sampler(args.clone(), client.clone(), until, start));
 
     let mut waves = Vec::new();
+    let mut all_timings = Vec::new();
     if !args.no_waves {
         let mut next = start + Duration::from_secs(5);
         while next + Duration::from_secs(1) < until {
             tokio::time::sleep_until(next.into()).await;
             let at = start.elapsed();
-            let (took, outcomes) = wave(addr.clone(), args.attempts, args.wave_patience).await;
-            eprintln!("connload: wave at {:.0}s took {:.1}s: {outcomes:?}", at.as_secs_f64(), took.as_secs_f64());
-            waves.push(json!({ "startedAtS": at.as_secs_f64(), "tookS": took.as_secs_f64(), "outcomes": outcomes }));
+            let w = wave(addr.clone(), args.attempts, args.connect_timeout, args.wave_patience).await;
+            let mut entry = timing_summary(&w.timings);
+            eprintln!(
+                "connload: wave at {:.0}s took {:.1}s (establishment p99 {} ms, max {} ms; accept to end max {} ms): {:?}",
+                at.as_secs_f64(),
+                w.took.as_secs_f64(),
+                entry["establishment"]["p99Ms"],
+                entry["establishment"]["maxMs"],
+                entry["acceptToEnd"]["maxMs"],
+                w.outcomes
+            );
+            entry["startedAtS"] = json!(at.as_secs_f64());
+            entry["tookS"] = json!(w.took.as_secs_f64());
+            entry["outcomes"] = json!(w.outcomes);
+            waves.push(entry);
+            all_timings.extend(w.timings);
             next += args.wave_interval;
             while next < Instant::now() {
                 next += args.wave_interval;
@@ -406,6 +596,7 @@ async fn main() -> anyhow::Result<()> {
         "durationS": elapsed,
         "args": {
             "attempts": args.attempts, "waveIntervalS": args.wave_interval.as_secs_f64(), "noWaves": args.no_waves,
+            "connectTimeoutS": args.connect_timeout.as_secs_f64(), "wavePatienceS": args.wave_patience.as_secs_f64(),
             "ingestClients": args.ingest_clients, "batch": args.batch, "ingestIntervalMs": args.ingest_interval.as_millis() as u64,
             "queryClients": args.query_clients, "queryIntervalMs": args.query_interval.as_millis() as u64,
         },
@@ -421,6 +612,7 @@ async fn main() -> anyhow::Result<()> {
             "ok": n(&steady.query_ok), "unavailable503": n(&steady.query_503), "otherStatus": n(&steady.query_other),
             "transportErrors": n(&steady.query_errors), "latency": steady.query_latency.summary(),
         },
+        "flood": if args.no_waves { Value::Null } else { flood_summary(&waves, &all_timings) },
         "waves": waves,
         "peaks": peaks,
         "reconciled": persisted == Some(acknowledged),
@@ -431,4 +623,98 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("{acknowledged} events acknowledged but {persisted:?} stored");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    #[test]
+    fn distribution_reports_percentiles_in_ms() {
+        let v = distribution((1..=100).map(|n| n * 1000).collect());
+        assert_eq!(v["samples"], 100);
+        assert_eq!(
+            (v["p50Ms"].as_f64(), v["p99Ms"].as_f64(), v["maxMs"].as_f64()),
+            (Some(51.0), Some(99.0), Some(100.0))
+        );
+        assert_eq!(distribution(Vec::new())["p99Ms"], Value::Null);
+    }
+
+    /// The 0.1.2-rc.3 case: connected at once, but the server's kernel took
+    /// 31 s to complete the handshake, then the body timeout took 60 s.
+    #[test]
+    fn establishment_and_accept_to_end_are_split() {
+        let timings = [
+            Timing { connected: Some(ms(1)), acked: Some(ms(31_000)), ended: ms(91_000) },
+            Timing { connected: Some(ms(2)), acked: Some(ms(3)), ended: ms(60_003) },
+            // Idle: nothing to acknowledge, so connect is the lower bound.
+            Timing { connected: Some(ms(4)), acked: None, ended: ms(10_004) },
+            // Never connected.
+            Timing { connected: None, acked: None, ended: ms(90_000) },
+        ];
+        let v = timing_summary(&timings);
+        assert_eq!(v["establishment"]["maxMs"], 31_000.0);
+        assert_eq!(v["establishment"]["samples"], 3);
+        assert_eq!(v["connect"]["maxMs"], 4.0);
+        assert_eq!(v["acceptToEnd"]["maxMs"], 60_000.0);
+        assert_eq!(v["endToEnd"]["maxMs"], 91_000.0);
+        assert_eq!(v["establishedBy"], json!({ "firstBytesAcked": 2, "connectOnly": 1 }));
+        assert_eq!(v["connectFailures"], 1);
+
+        let waves = [json!({ "tookS": 91.0, "establishment": { "p99Ms": 31_000.0 } }), json!({ "tookS": 12.5 })];
+        let f = flood_summary(&waves, &timings);
+        assert_eq!((f["waves"].as_u64(), f["longestWaveS"].as_f64()), (Some(2), Some(91.0)));
+        assert_eq!(f["worstWave"]["establishmentP99Ms"], 31_000.0);
+        assert_eq!(f["worstWave"]["acceptToEndMaxMs"], Value::Null);
+    }
+
+    /// Answers each connection's request with 200 after `delay`, or closes
+    /// idle ones after `delay`.
+    async fn server(delay: Duration) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            loop {
+                let (mut s, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let got = tokio::time::timeout(delay, s.read(&mut buf)).await;
+                    tokio::time::sleep(delay).await;
+                    if matches!(got, Ok(Ok(n)) if n > 0) {
+                        let _ = s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n").await;
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn attempts_time_connect_acknowledgement_and_end() {
+        let addr = server(ms(300)).await;
+        let (outcome, t) = attempt(addr.clone(), 3, ms(5000), ms(5000)).await;
+        assert_eq!(outcome, "served");
+        let connected = t.connected.unwrap();
+        assert!(connected < ms(250) && t.ended >= ms(300), "{t:?}");
+        // The local kernel acknowledges at once; the response waits 300 ms.
+        if cfg!(target_os = "linux") {
+            assert!(t.acked.unwrap() < ms(250), "{t:?}");
+        } else {
+            assert_eq!(t.acked, None);
+        }
+        assert!(t.established().unwrap() <= t.ended);
+
+        let (outcome, t) = attempt(addr, 0, ms(5000), ms(5000)).await;
+        assert_eq!(outcome, "closed");
+        assert_eq!((t.acked, t.established()), (None, t.connected));
+
+        // Nothing listening: a failed connect, not an establishment.
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().to_string();
+        let (outcome, t) = attempt(closed, 3, ms(5000), ms(5000)).await;
+        assert_eq!((outcome, t.connected), ("reset", None));
+    }
 }
