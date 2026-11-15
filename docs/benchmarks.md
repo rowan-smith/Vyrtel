@@ -39,7 +39,7 @@ the secondary. They are never mixed.
 | Local baseline | Ingest under mixed load (events/s) | 16,866 | 17,064 | +1.2% | PASS (budget 15%) |
 | Local baseline | Seeding throughput (items/s) | 35,307 | 32,354 | −8.4% | not gated |
 | Local baseline | Query p95, `level = Error` under mixed load (ms) | 75.3 | 72.0 | −4.5% | PASS (budget 20%) |
-| Local baseline | Peak memory (MiB) | 79.6 | 114.7 | +44.0% | **FAIL** (budget 30%); acceptance open |
+| Local baseline | Peak memory (MiB) | 79.6 | 114.7 | +44.0% | **FAIL** (budget 30%); acceptance open, cause partly profiled |
 | Local baseline | Restart to healthy (ms) | 52.3 | 103.2 | +97.3% | accepted in 0.1.2-rc.2 |
 | Local baseline | Compression ratio | 4.01× | 4.00× | −0.2% | PASS |
 | Local baseline | Stored bytes per event | 73.2 | 73.1 | −0.1% | PASS (budget 2%) |
@@ -52,23 +52,33 @@ the secondary. They are never mixed.
 | Remote | Ingest throughput, p95 / p99 | not run | not run | | INCOMPLETE |
 | Soak | 48–72 hours, data loss, memory trend | not run | not run | | INCOMPLETE |
 
-**Verdict for 0.1.2-rc.3: FAIL, with two decisions open.** Everything 0.1.2-rc.1 failed on is fixed
-except as below: the release asset runs on baseline x86-64 CPUs, file descriptors are bounded, and
-there were no 503s or transport errors.
+**Verdict for 0.1.2-rc.3: FAIL.** Two measured exceptions in the local baseline: restart to
+healthy (accepted in 0.1.2-rc.2) and peak memory (acceptance open). One transport failure: the
+flood-wave deadline. Transport integrity (acknowledged against stored events), the constrained
+configuration, remote load and the sustained soak remain unvalidated; resolving the open decisions
+would not complete release validation. What 0.1.2-rc.1 failed on is otherwise fixed: the release
+asset runs on baseline x86-64 CPUs, file descriptors are bounded, and steady clients saw no 503s or
+transport errors.
 
-- **Peak memory, +44%.** The remaining cost of sign-in being always on: each login checks the
-  password with Argon2id, which allocates 19 MiB (one check at a time since 0.1.2-rc.2). Open: accept
-  it as part of that decision, like restart to healthy, or reduce it.
-- **Longest flood wave, 91.1 s.** 60 s of body timeout plus 31 s of the kernel's SYN retransmission
-  backoff (1 + 2 + 4 + 8 + 16 s): the listen queue overflowed during the wave, and the budget counts
-  from the client's first attempt, while the server's bounds start at accept. Open: measure it from
-  accept, enlarge the listen backlog, or both.
+- **Peak memory, +44% (79.6 → 114.7 MiB).** Argon2id is a known contributor: each password check
+  allocates 19 MiB, and four concurrent checks were the whole of 0.1.2-rc.1's increase under
+  heaptrack, which is why checks run one at a time since 0.1.2-rc.2. The increase that remains after
+  that change has not been profiled, so how much of it is Argon2id, allocator retention or other
+  changes in 0.1.2 is not established. Open: accept it as a documented trade-off once profiled, or
+  reduce it.
+- **Longest flood wave, 91.1 s (limit 82 s).** 60 s of body timeout plus 31 s of the kernel's SYN
+  retransmission backoff (1 + 2 + 4 + 8 + 16 s): the listen queue overflowed during the wave. The
+  budget counts from the client's first attempt; the server's own bounds start at accept. Open:
+  measure the two separately and test a larger listen backlog.
 
 Details, and the full metric tables, are on the [0.1.2-rc.3 page](benchmarks/0.1.2-rc.3.md).
 
-**Integrity:** in every one of the 10 baseline runs, 100,000 logs, 3,000 spans and 100 metric
-points were offered, acknowledged and stored exactly; no mixed-load request was rejected.
-Unexplained errors or data loss: none.
+**Integrity:** in every one of the 10 baseline runs, the seeded dataset (100,000 logs, 3,000 spans
+and 100 metric points) was offered, acknowledged and stored exactly. Under mixed load, one request
+of 0.1.2-rc.3 (run 2) was turned away with expected backpressure (429, 0.01% of requests), with no
+other rejections and no transport errors; mixed-load ingest is counted, not reconciled against
+storage. In transport, acknowledged events were not reconciled either (see limitations).
+Unexplained errors or data loss: none found.
 **Limitations and untested areas:** no secondary machine, so no remote load or soak. The transport
 load tool does not sign in, so stored events were not reconciled and query latency was not
 measured. The baseline's data directories were on tmpfs. 0.1.1 had no smoke or transport run.
@@ -77,7 +87,7 @@ measured. The baseline's data directories were on tmpfs. 0.1.1 had no smoke or t
 
 | Version | Date | Verdict | Local ingest | Remote ingest | Local query p95 | Notes |
 |---|---|---|---|---|---|---|
-| [0.1.2-rc.3](benchmarks/0.1.2-rc.3.md) | 2026-11-15 | FAIL, two decisions open | 17,064 events/s | not run | 72.0 ms | Published asset fixed (glibc 2.34, no AVX2 needed); file descriptors bounded; peak memory +44% (budget 30%); longest flood wave 91.1 s (budget 82 s) |
+| [0.1.2-rc.3](benchmarks/0.1.2-rc.3.md) | 2026-11-15 | FAIL: peak memory open, flood deadline failed, validation incomplete | 17,064 events/s | not run | 72.0 ms | Published asset fixed (glibc 2.34, no AVX2 needed); file descriptors bounded; peak memory +44% (budget 30%); longest flood wave 91.1 s (budget 82 s) |
 | [0.1.2-rc.2](benchmarks/0.1.2-rc.2.md) | 2026-11-11 | FAIL (transport); baseline PASS with one accepted regression | 17,073 events/s | not run | 72.0 ms | Published asset fixed (glibc 2.34, no AVX2 needed). Peak memory +30.2% (budget 40%) after password checks were limited to one at a time; restart to healthy +97.2%, **accepted** (below); file-descriptor budgets and one 503 missed in transport. Measured while it was prepared: baseline of its exact code, smoke and transport of `bd25064` |
 | [0.1.2-rc.1](benchmarks/0.1.2-rc.1.md) | 2026-11-10 | FAIL | 17,054 events/s | not run | 71.1 ms | Peak memory +52% and restart to healthy +97% against 0.1.1; release asset needs AVX2 and glibc 2.38; transport file-descriptor budgets missed |
 | [0.1.1](benchmarks/0.1.1.md) | 2026-11-10 | not judged | 16,847 events/s | not run | 73.6 ms | Measured as the previous release for 0.1.2-rc.1; no earlier release to compare with. Measured again for 0.1.2-rc.3 on 2026-11-15 (16,866 events/s, 75.3 ms) |
