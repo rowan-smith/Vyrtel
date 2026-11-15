@@ -8,6 +8,7 @@ pub mod auth;
 pub mod config;
 pub mod datadir;
 pub mod error;
+pub mod limits;
 pub mod routes;
 pub mod state;
 pub mod transport;

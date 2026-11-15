@@ -7,6 +7,7 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use telemetry::*;
 
@@ -15,15 +16,24 @@ use crate::encoding::Reader;
 use crate::error::{DecodeError, IoContext, Result, StorageError, corrupt};
 use crate::fsutil::read_exact_at;
 
+use super::files::{OPEN_FILES, SegmentFile};
 use super::format::*;
+use super::retired::RetiredFiles;
 
+/// A sealed segment. Its file is opened on demand within the budget of
+/// [open segment files](super::files), not held for the segment's lifetime.
+///
+/// Retention and compaction [`retire`](Segment::retire) a segment rather than
+/// delete its file: when the last `Arc<Segment>` drops, its path goes to the
+/// stream's [retired files](super::retired), which maintenance deletes. Until
+/// then a query still holding the segment in its snapshot can reopen it.
 #[derive(Debug)]
 pub struct Segment {
     pub summary: SegmentSummary,
     pub path: PathBuf,
     pub file_len: u64,
-    file: File,
     index_ref: ChunkRef,
+    retired: OnceLock<Arc<RetiredFiles>>,
 }
 
 impl Segment {
@@ -31,7 +41,16 @@ impl Segment {
     /// checksum mismatch, truncated file) is an error: the caller
     /// quarantines the file rather than guessing at its contents.
     pub fn open(path: &Path) -> Result<Segment> {
-        let file = File::open(path).ctx(path)?;
+        let opened = Self::open_validated(path);
+        if opened.is_err() {
+            // The file may be quarantined or replaced: keep no handle to it.
+            OPEN_FILES.forget(path);
+        }
+        opened
+    }
+
+    fn open_validated(path: &Path) -> Result<Segment> {
+        let file = OPEN_FILES.get(path).ctx(path)?;
         let file_len = file.metadata().ctx(path)?.len();
         let what = || path.display().to_string();
         // Before the length: a short file of another layout is refused too.
@@ -71,11 +90,23 @@ impl Segment {
             }
         }
         summary.index_bytes = file_len.saturating_sub(summary.data_bytes);
-        Ok(Segment { summary, path: path.to_path_buf(), file_len, file, index_ref: footer.index })
+        Ok(Segment { summary, path: path.to_path_buf(), file_len, index_ref: footer.index, retired: OnceLock::new() })
     }
 
     pub fn id(&self) -> u64 {
         self.summary.id
+    }
+
+    /// Hand this segment's file to `to` for deletion once nothing holds the
+    /// segment any more. It stays readable until then.
+    pub(crate) fn retire(&self, to: &Arc<RetiredFiles>) {
+        if self.retired.set(Arc::clone(to)).is_ok() {
+            to.retire(self.summary.id);
+        }
+    }
+
+    fn file(&self) -> Result<Arc<SegmentFile>> {
+        OPEN_FILES.get(&self.path).ctx(&self.path)
     }
 
     pub fn index_compressed_len(&self) -> u64 {
@@ -84,7 +115,8 @@ impl Segment {
 
     /// Read and decode the index region. Callers cache the result.
     pub fn read_index(&self) -> Result<SegmentIndex> {
-        let raw = read_chunk(&self.file, &self.path, &self.index_ref, self.file_len)?;
+        let file = self.file()?;
+        let raw = read_chunk(&file, &self.path, &self.index_ref, self.file_len)?;
         let idx =
             SegmentIndex::decode(&mut Reader::new(&raw)).map_err(|e| corrupt(self.path.display().to_string(), e))?;
         if idx.blocks.len() != self.summary.blocks.len() {
@@ -98,6 +130,7 @@ impl Segment {
         let meta = &self.summary.blocks[block];
         let n = meta.count as usize;
         let what = || format!("{} block {block}", self.path.display());
+        let file = self.file()?;
         let mut data = BlockData {
             len: n,
             bytes_read: 0,
@@ -111,7 +144,7 @@ impl Segment {
         let mut load = |c: Column| -> Result<Vec<u8>> {
             let r = &meta.columns[c as usize];
             data.bytes_read += r.len as u64;
-            read_chunk(&self.file, &self.path, r, self.file_len)
+            read_chunk(&file, &self.path, r, self.file_len)
         };
 
         let ts_raw = load(Column::Ts)?;
@@ -165,6 +198,17 @@ impl Segment {
     }
 }
 
+impl Drop for Segment {
+    fn drop(&mut self) {
+        OPEN_FILES.forget(&self.path);
+        // Deleting (and syncing, and retrying) is maintenance's job, where a
+        // failure is reported rather than lost.
+        if let Some(retired) = self.retired.get() {
+            retired.released(self.summary.id, std::mem::take(&mut self.path));
+        }
+    }
+}
+
 fn unsupported(path: &Path, found: u16) -> StorageError {
     StorageError::UnsupportedFormat {
         path: path.to_path_buf(),
@@ -196,7 +240,9 @@ fn foreign(path: &Path, found: String) -> StorageError {
 /// decompressing just the bytes up to its version, so memory stays bounded
 /// and no column or index is decoded.
 pub fn check_segment_format(path: &Path) -> Result<()> {
-    let file = File::open(path).ctx(path)?;
+    // Within the budget of open segment files, but not cached: a file that
+    // fails the check is quarantined.
+    let file = OPEN_FILES.open_uncached(path).ctx(path)?;
     let file_len = file.metadata().ctx(path)?.len();
     check_format(&file, path, file_len)?;
     check_summary_version(&file, path, file_len)

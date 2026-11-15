@@ -79,6 +79,11 @@ pub struct StorageConfig {
     pub logs: StreamConfig,
     pub traces: StreamConfig,
     pub metrics: StreamConfig,
+    /// Per stream, the most segments retired by retention or compaction and
+    /// not yet durably deleted. Each retention or compaction batch retires
+    /// at most what is left, so a deletion that keeps failing cannot grow
+    /// this backlog (and its memory) without limit.
+    pub max_outstanding_retired: usize,
 }
 
 impl StorageConfig {
@@ -94,6 +99,7 @@ impl StorageConfig {
             logs: StreamConfig::default(),
             traces: StreamConfig::default(),
             metrics: StreamConfig::default(),
+            max_outstanding_retired: crate::segment::MAX_OUTSTANDING_RETIRED,
         }
     }
 

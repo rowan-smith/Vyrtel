@@ -660,16 +660,13 @@ limit, or lower `max_connections`.
 
 **File descriptors.** Vyrtel needs one per connection (slots and waiting
 places, `max_connections + 64`), about 25 for the listener, the runtime, the
-WAL and the metadata database, and one per segment file it has open, which
-grows with the data kept (storage keeps each sealed segment open for reads).
-In the 30-minute Linux soaks, segment files added about 120 (normal) and
-190 (constrained, smaller segments) descriptors. So allow
-`max_connections + 64 + 25 + segments`, with room for growth: 1024 covers
-the defaults for a modest data directory; size it from
-`ls /proc/$(pidof vyrtel)/fd | wc -l` on a running instance. Raise
-`ulimit -n` (systemd `LimitNOFILE=`, Docker `--ulimit nofile=`) if you raise
-`max_connections`, and check it where Vyrtel actually runs: many systems
-default to 1024.
+WAL and the metadata database, and at most 64 for segment files: storage
+opens a segment's file when a query or compaction reads it and keeps only
+the 64 most recently used open, however much data is kept. So allow
+`max_connections + 64 + 25 + 64`, about 410 with the defaults; 1024 leaves
+room. Raise `ulimit -n` (systemd `LimitNOFILE=`, Docker `--ulimit nofile=`)
+if you raise `max_connections`, and check it where Vyrtel actually runs:
+many systems default to 1024.
 Running out shows as `acceptErrors` and a `cannot accept connections`
 warning; Vyrtel pauses accepting for 250 ms and retries.
 

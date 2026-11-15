@@ -65,12 +65,13 @@ probe='
 s=/proc/1/status; read -r _ _ _ _ _ _ _ _ _ _ _ _ _ ut st _ < /proc/1/stat
 rss=$(awk "/VmRSS/{print \$2}" $s); hwm=$(awk "/VmHWM/{print \$2}" $s); thr=$(awk "/Threads/{print \$2}" $s)
 fds=$(ls /proc/1/fd | wc -l); socks=$(ls -l /proc/1/fd 2>/dev/null | grep -c socket || true)
+segfds=$(ls -l /proc/1/fd 2>/dev/null | grep -c " -> /data/segments/" || true)
 hex=$(awk "NR>1 && \$2 ~ /:1F90$/ && \$4==\"0A\" {split(\$5,q,\":\"); print q[2]}" /proc/net/tcp | head -1)
 est=$(awk "NR>1 && \$2 ~ /:1F90$/ && \$4==\"01\"" /proc/net/tcp | wc -l)
 cg=$(cat /sys/fs/cgroup/memory.current 2>/dev/null || echo 0)
 sock=$(awk "\$1==\"sock\" {print \$2}" /sys/fs/cgroup/memory.stat 2>/dev/null)
 ovf=$(awk "/^TcpExt:/{if(!h){split(\$0,k);h=1}else{split(\$0,v);for(i=1;i<=NF;i++) if(k[i]==\"ListenOverflows\") print v[i]}}" /proc/net/netstat)
-echo "$rss,$hwm,$thr,$fds,$socks,$ut,$st,$((0x${hex:-0})),$est,$((cg / 1024)),$(( ${sock:-0} / 1024 )),${ovf:-0}"'
+echo "$rss,$hwm,$thr,$fds,$socks,$ut,$st,$((0x${hex:-0})),$est,$((cg / 1024)),$(( ${sock:-0} / 1024 )),${ovf:-0},${segfds:-0}"'
 
 sample() {
   local start=$1
@@ -91,7 +92,7 @@ ticks=$(docker exec "$server" getconf CLK_TCK)
 mount_out=$out
 if command -v cygpath >/dev/null 2>&1; then mount_out=$(cygpath -m "$out"); fi
 
-echo "elapsedMs,rssKb,hwmKb,threads,fds,sockets,utimeTicks,stimeTicks,listenBacklog,established,cgroupKb,socketBuffersKb,listenOverflows" > "$out/resources.csv"
+echo "elapsedMs,rssKb,hwmKb,threads,fds,sockets,utimeTicks,stimeTicks,listenBacklog,established,cgroupKb,socketBuffersKb,listenOverflows,segmentFds" > "$out/resources.csv"
 start=$(date +%s%3N)
 sleep 5 # idle level before load
 sample "$start" &
@@ -114,18 +115,22 @@ docker logs "$server" > "$out/server.log" 2>&1
 awk -F, -v load_end="$load_end" -v stop_ms="$stop_ms" -v exit_code="$exit_code" -v ticks="$ticks" \
   -v load_status="$load_status" '
   NR == 1 { next }
-  NR == 2 { idle_before = $2 }
+  NR == 2 { idle_before = $2; other_before = $5 - $14 }
   {
     rows++; last = $0
     if ($2 > rss) rss = $2; if ($4 > thr) thr = $4; if ($5 > fds) fds = $5; if ($6 > socks) socks = $6
     if ($9 > backlog) backlog = $9; if ($10 > est) est = $10; if ($11 > cg) cg = $11; if ($12 > sockmem) sockmem = $12; if ($13 > ovf) ovf = $13
+    if ($14 > segfds) segfds = $14
     cpu = ($7 + $8) / ticks
-    if ($1 > load_end) { after[++n] = $2; after_socks = $6; after_fds = $5 }
+    if ($1 > load_end) { after[++n] = $2; after_socks = $6; after_fds = $5; after_seg = $14 }
   }
   END {
     idle_after = n ? after[n] : 0
     printf "{\n  \"samples\": %d,\n  \"rssKb\": {\"idleBefore\": %d, \"peak\": %d, \"idleAfter\": %d},\n", rows, idle_before, rss, idle_after
     printf "  \"peakThreads\": %d,\n  \"peakFds\": %d,\n  \"peakSockets\": %d,\n  \"socketsAfter\": %d,\n  \"fdsAfter\": %d,\n", thr, fds, socks, after_socks, after_fds
+    # Segment files stay open up to storage::segment::MAX_OPEN_SEGMENT_FILES by design, so they are
+    # budgeted apart from the other descriptors, which must return to their idle level.
+    printf "  \"peakSegmentFds\": %d,\n  \"segmentFdsAfter\": %d,\n  \"otherFdsBefore\": %d,\n  \"otherFdsAfter\": %d,\n", segfds, after_seg, other_before, after_fds - after_seg
     printf "  \"peakListenBacklog\": %d,\n  \"peakEstablishedToPort\": %d,\n  \"cpuSeconds\": %.2f,\n", backlog, est, cpu
     printf "  \"peakCgroupKb\": %d,\n  \"peakSocketBuffersKb\": %d,\n  \"listenOverflows\": %d,\n", cg, sockmem, ovf
     printf "  \"loadEndedAtMs\": %d,\n  \"connloadExit\": %d,\n  \"shutdownMs\": %d,\n  \"serverExit\": %d\n}\n", load_end, load_status, stop_ms, exit_code

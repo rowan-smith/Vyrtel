@@ -486,10 +486,39 @@ already acknowledged stays safe in the WAL.
 Compaction merges small segments (raw size < ¼ of the segment target, at
 least 4 of them) into a new segment whose summary lists the inputs in
 `replaces`. After the merged segment is committed, the inputs are removed
-from the catalog and deleted.
+from the catalog and retired.
 
 Retention deletes whole segments whose `max_ts` is older than the signal's
-retention period: remove from the catalog first, then unlink.
+retention period: remove from the catalog first, then retire.
+
+A retired segment stays readable to queries that still hold it in their
+snapshots. When the last holder lets go, the stream's maintenance deletes
+the file and then syncs `segments/`, so the deletion survives a power loss;
+straight away in the same pass if no query held it, otherwise on the next
+pass. A deletion or sync that fails is retried on every pass and reported as
+a maintenance fault until it succeeds. A crash before the deletion leaves the
+file: recovery removes it if a committed segment `replaces` it, and each
+stream applies retention when it starts, before it serves queries, so an
+expired segment never becomes visible again.
+
+Until its deletion is durable, a retired segment is *outstanding*. A
+segment whose `replaces` names an outstanding one is neither compacted nor,
+once expired, deleted: that would remove the only record that the
+outstanding segment was replaced, and after a crash its events could be
+visible twice, or visible again after retention had removed them. It is
+merged or deleted once its inputs are durably deleted; an expired one stays
+hidden from queries meanwhile.
+
+At most `max_outstanding_retired` segments (4,096) are outstanding per
+stream, and each retention or compaction batch retires at most what is left
+under that bound, so a deletion that keeps failing cannot grow memory
+without limit. Retention hides every expired segment from queries at once,
+at startup as in every pass, and retires them in steps as the bound allows.
+
+Segment files are not held open: every read opens its file within a budget
+of at most 64 open segment files, cached or in use, and waits for one to
+close if all are in use. File descriptors therefore do not grow with
+retained data.
 
 ## Recovery procedure
 
