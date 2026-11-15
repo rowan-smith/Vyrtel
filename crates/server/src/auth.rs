@@ -90,7 +90,7 @@ impl Admission {
         let mut n = self.admitted.load(Ordering::Acquire);
         while n < self.limit {
             match self.admitted.compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => return Some(SignIn(Arc::new(Admitted(self.clone())))),
+                Ok(_) => return Some(SignIn { _place: Arc::new(Admitted(self.clone())) }),
                 Err(now) => n = now,
             }
         }
@@ -115,7 +115,10 @@ impl Drop for Admitted {
 /// blocking step it starts holds a clone, so a client that disconnects
 /// mid-step frees the place only once that step's work has finished.
 #[derive(Clone)]
-pub struct SignIn(Arc<Admitted>);
+pub struct SignIn {
+    // Never read: holding it is the point; the last clone dropped frees the place.
+    _place: Arc<Admitted>,
+}
 
 /// Admit one sign-in request, before its user is looked up, so known and
 /// unknown usernames are refused alike under load.
