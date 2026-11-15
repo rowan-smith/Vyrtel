@@ -979,7 +979,7 @@ mod tests {
             e.starts_with(
                 "unknown environment variable VYRTEL_AUTH_ENABLE: not a setting Vyrtel reads from the environment. \
                  Remove it, or set the option in the configuration file instead (see \
-                 docs/configuration.md#environment-variables for the 27 supported variables)"
+                 docs/configuration.md#environment-variables for the 28 supported variables)"
             ),
             "{e}"
         );

@@ -662,13 +662,14 @@ mod tests {
 
     #[test]
     fn effective_backlog_is_capped_by_somaxconn() {
-        match effective_backlog(u32::MAX) {
-            Some((effective, somaxconn)) => {
-                assert_eq!(effective, somaxconn);
-                assert_eq!(effective_backlog(1), Some((1, somaxconn)));
-            }
-            None => assert!(!cfg!(target_os = "linux")),
-        }
+        let Some((effective, somaxconn)) = effective_backlog(u32::MAX) else {
+            #[cfg(target_os = "linux")]
+            panic!("/proc/sys/net/core/somaxconn is readable on Linux");
+            #[cfg(not(target_os = "linux"))]
+            return;
+        };
+        assert_eq!(effective, somaxconn);
+        assert_eq!(effective_backlog(1), Some((1, somaxconn)));
     }
 
     /// A body whose frames are always ready: reading it never waits.
