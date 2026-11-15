@@ -191,6 +191,7 @@ const DOCS = [
   { slug: 'benchmarks', file: 'docs/benchmarks.md', title: 'Benchmarks', group: 'Project' },
   // One page per measured version, newest first, listed under Benchmarks.
   { slug: 'benchmarks-0.1.2-rc.3', file: 'docs/benchmarks/0.1.2-rc.3.md', title: 'Benchmarks: 0.1.2-rc.3', label: '0.1.2-rc.3', group: 'Project', parent: 'benchmarks' },
+  { slug: 'benchmarks-0.1.2-rc.2', file: 'docs/benchmarks/0.1.2-rc.2.md', title: 'Benchmarks: 0.1.2-rc.2', label: '0.1.2-rc.2', group: 'Project', parent: 'benchmarks' },
   { slug: 'benchmarks-0.1.2-rc.1', file: 'docs/benchmarks/0.1.2-rc.1.md', title: 'Benchmarks: 0.1.2-rc.1', label: '0.1.2-rc.1', group: 'Project', parent: 'benchmarks' },
   { slug: 'benchmarks-0.1.1', file: 'docs/benchmarks/0.1.1.md', title: 'Benchmarks: 0.1.1', label: '0.1.1', group: 'Project', parent: 'benchmarks' },
   { slug: 'benchmark-method', file: 'docs/benchmark-method.md', title: 'Benchmark method', group: 'Project' },

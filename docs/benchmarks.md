@@ -5,6 +5,7 @@ so that anyone can repeat them. This page compares the most recent measured vers
 previous release; each version has its own page with every metric of every test:
 
 - [0.1.2-rc.3](benchmarks/0.1.2-rc.3.md)
+- [0.1.2-rc.2](benchmarks/0.1.2-rc.2.md)
 - [0.1.2-rc.1](benchmarks/0.1.2-rc.1.md)
 - [0.1.1](benchmarks/0.1.1.md)
 
@@ -77,7 +78,7 @@ measured. The baseline's data directories were on tmpfs. 0.1.1 had no smoke or t
 | Version | Date | Verdict | Local ingest | Remote ingest | Local query p95 | Notes |
 |---|---|---|---|---|---|---|
 | [0.1.2-rc.3](benchmarks/0.1.2-rc.3.md) | 2026-11-15 | FAIL, two decisions open | 17,064 events/s | not run | 72.0 ms | Published asset fixed (glibc 2.34, no AVX2 needed); file descriptors bounded; peak memory +44% (budget 30%); longest flood wave 91.1 s (budget 82 s) |
-| 0.1.2-rc.2 candidate (`1332e29`) | 2026-11-11 | FAIL (transport); baseline PASS with one accepted regression | 17,073 events/s | not run | 72.0 ms | Pre-tag, baseline only, against 0.1.1. Peak memory +30.2% (budget 40%) after password checks were limited to one at a time; restart to healthy +97.2%, **accepted** (below) |
+| [0.1.2-rc.2](benchmarks/0.1.2-rc.2.md) | 2026-11-11 | FAIL (transport); baseline PASS with one accepted regression | 17,073 events/s | not run | 72.0 ms | Published asset fixed (glibc 2.34, no AVX2 needed). Peak memory +30.2% (budget 40%) after password checks were limited to one at a time; restart to healthy +97.2%, **accepted** (below); file-descriptor budgets and one 503 missed in transport. Measured while it was prepared: baseline of its exact code, smoke and transport of `bd25064` |
 | [0.1.2-rc.1](benchmarks/0.1.2-rc.1.md) | 2026-11-10 | FAIL | 17,054 events/s | not run | 71.1 ms | Peak memory +52% and restart to healthy +97% against 0.1.1; release asset needs AVX2 and glibc 2.38; transport file-descriptor budgets missed |
 | [0.1.1](benchmarks/0.1.1.md) | 2026-11-10 | not judged | 16,847 events/s | not run | 73.6 ms | Measured as the previous release for 0.1.2-rc.1; no earlier release to compare with. Measured again for 0.1.2-rc.3 on 2026-11-15 (16,866 events/s, 75.3 ms) |
 
