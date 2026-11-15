@@ -27,7 +27,7 @@
 # instead of hanging it: every request has a 5 s connect and 30 s total
 # timeout (the genuine sign-in's is cut to what is left of its deadline),
 # readiness has READY_S, shutdown SHUTDOWN_S before SIGKILL, and
-# `--version` 5 s.
+# `--version` 5 s (then SIGKILL 1 s later).
 #
 # Uses the default allocator: do not set MALLOC_* for a measurement.
 # FLOOD_S is the wrong-password flood's minimum length beside the steady
@@ -57,7 +57,8 @@ trap 'kill -9 $(jobs -p) 2>/dev/null || true; rm -rf "$WORK"' EXIT
 : >"$OUT/invalid.txt"
 invalid() { echo "$1" >>"$OUT/invalid.txt"; }
 json_list() { awk '{ gsub(/"/, "\\\""); s = s sprintf("%s\"%s\"", NR > 1 ? ", " : "", $0) } END { print "[" s "]" }' "$1"; }
-VERSION=$(timeout 5 "$BINARY" --version 2>/dev/null | head -1 || true)
+# SIGTERM after 5 s, SIGKILL 1 s later: a binary that ignores SIGTERM cannot hold the run.
+VERSION=$(timeout --kill-after=1s 5s "$BINARY" --version 2>/dev/null | head -1 || true)
 # An invalid run that cannot go on still leaves its evidence.
 invalid_exit() {
   printf '{\n  "binary": "%s",\n  "valid": false, "invalidReasons": %s,\n  "pass": false\n}\n' \
