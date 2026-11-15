@@ -65,13 +65,13 @@ pub use crate::password::{hash_password, verify_password};
 /// about 20 passwords a second on modest hardware.
 static PASSWORD_CHECKS: Semaphore = Semaphore::const_new(1);
 
-/// Sign-in attempts admitted at once: the one being checked and those
-/// waiting for [`PASSWORD_CHECKS`]. More are refused with 429 before any
-/// hashing, so a flood of attempts cannot queue unbounded work (each waits
-/// about 50 ms per attempt ahead of it, so 16 is under a second's wait).
+/// Sign-in requests in progress at once ([`AppState::sign_ins`]), from
+/// admission to their response: the user lookup, waiting for and running
+/// the password check, the delay after a failure and creating the session.
+/// More are refused with 429 before any of that, so a flood of attempts
+/// cannot queue unbounded work (a check takes about 50 ms, so the 15 ahead
+/// of one are under a second's wait).
 pub const MAX_SIGN_INS_ADMITTED: usize = 16;
-
-static SIGN_INS: Admission = Admission::new(MAX_SIGN_INS_ADMITTED);
 
 /// A counting bound that refuses instead of waiting.
 pub struct Admission {
@@ -84,35 +84,43 @@ impl Admission {
         Self { limit, admitted: AtomicUsize::new(0) }
     }
 
-    pub fn try_admit(&self) -> Option<Admitted<'_>> {
+    /// One place, or `None` when all are taken. The place is shared
+    /// ([`SignIn`]): it is free again once every clone is dropped.
+    pub fn try_admit(self: &Arc<Self>) -> Option<SignIn> {
         let mut n = self.admitted.load(Ordering::Acquire);
         while n < self.limit {
             match self.admitted.compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => return Some(Admitted(self)),
+                Ok(_) => return Some(SignIn(Arc::new(Admitted(self.clone())))),
                 Err(now) => n = now,
             }
         }
         None
     }
 
+    /// Places taken now.
     pub fn admitted(&self) -> usize {
         self.admitted.load(Ordering::Acquire)
     }
 }
 
-/// One admitted attempt; released when dropped.
-pub struct Admitted<'a>(&'a Admission);
+struct Admitted(Arc<Admission>);
 
-impl Drop for Admitted<'_> {
+impl Drop for Admitted {
     fn drop(&mut self) {
         self.0.admitted.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
-/// Admit one sign-in attempt, before its user is looked up, so known and
+/// An admitted sign-in. The request holds it until its response, and each
+/// blocking step it starts holds a clone, so a client that disconnects
+/// mid-step frees the place only once that step's work has finished.
+#[derive(Clone)]
+pub struct SignIn(Arc<Admitted>);
+
+/// Admit one sign-in request, before its user is looked up, so known and
 /// unknown usernames are refused alike under load.
-pub fn admit_sign_in() -> ApiResult<Admitted<'static>> {
-    SIGN_INS.try_admit().ok_or_else(|| {
+pub fn admit_sign_in(state: &AppState) -> ApiResult<SignIn> {
+    state.sign_ins.try_admit().ok_or_else(|| {
         ApiError::new(
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
@@ -122,18 +130,13 @@ pub fn admit_sign_in() -> ApiResult<Admitted<'static>> {
 }
 
 /// [`verify_password`] on the blocking pool, one check at a time. The
-/// admission and the permit move into the blocking task, so a request
+/// sign-in and the permit move into the blocking task, so a request
 /// cancelled mid-check still counts until the hashing (and its memory) is done.
-pub async fn check_password(
-    state: &AppState,
-    admitted: Admitted<'static>,
-    password: String,
-    hash: String,
-) -> ApiResult<bool> {
+pub async fn check_password(state: &AppState, sign_in: SignIn, password: String, hash: String) -> ApiResult<bool> {
     let permit = PASSWORD_CHECKS.acquire().await.expect("the password semaphore is never closed");
     state
         .blocking(move || {
-            let _held = (admitted, permit);
+            let _held = (sign_in, permit);
             Ok(verify_password(&password, &hash))
         })
         .await
@@ -1156,14 +1159,17 @@ mod tests {
 
     #[test]
     fn sign_ins_beyond_the_limit_are_refused_not_queued() {
-        let a = Admission::new(3);
+        let a = Arc::new(Admission::new(3));
         let held: Vec<_> = (0..3).map(|_| a.try_admit().expect("within the limit")).collect();
         assert!(a.try_admit().is_none(), "the fourth is refused");
         assert_eq!(a.admitted(), 3);
+        // A clone (a blocking step's) keeps the place after the request drops its own.
+        let step = held[0].clone();
         drop(held);
-        assert_eq!(a.admitted(), 0, "released on drop");
-        let again = a.try_admit();
-        assert!(again.is_some(), "admitted again once released");
+        assert_eq!(a.admitted(), 1, "held by the clone");
+        drop(step);
+        assert_eq!(a.admitted(), 0, "released once every clone is dropped");
+        assert!(a.try_admit().is_some(), "admitted again once released");
     }
 
     #[test]

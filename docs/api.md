@@ -123,10 +123,12 @@ GET  /api/v1/auth/me       → {"authEnabled": true, "user": "admin" | null}   (
 
 Passwords are checked with Argon2id, one at a time; each check uses 19 MiB
 of working memory, returned to the operating system when the check ends.
-While 16 sign-ins are already waiting or being checked, another gets
-`429 rate_limited` with `Retry-After: 1` before any checking, whatever the
-username; retry it. A wrong username or password gets `401` after a short
-delay.
+While 16 sign-in requests are in progress (from their arrival to their
+response, including the short delay before a `401`), another gets
+`429 rate_limited` with `Retry-After: 1` before its user is looked up or
+any password is checked, whatever the username; retry it. A request whose
+client disconnects keeps its place until the work it started has finished.
+A wrong username or password gets `401` after a short delay.
 
 ### Ingestion mode
 

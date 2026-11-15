@@ -1024,22 +1024,30 @@ arena, so concurrent sign-ins (wrong passwords too) left about 111 MiB
 resident on an empty server, and more under longer floods. Since rc.5 the
 work area is mapped for each check and unmapped after it
 ([`password.rs`](../crates/server/src/password.rs)), and at most 16
-sign-ins are admitted at once; more get `429` before any hashing
-([API](api.md#authentication)).
+sign-in requests are in progress at once, each until its response; more
+get `429` before any lookup or hashing ([API](api.md#authentication)).
 
 ```bash
 cargo test -p server --lib password::                     # PHC format and parameters, both-way compatibility with the argon2 crate, stored parameters honoured, malformed hashes
-cargo test -p server --lib auth::tests::sign_ins          # the admission bound refuses instead of queueing
+cargo test -p server --lib auth::tests::sign_ins          # the bound refuses instead of queueing; a step's clone keeps the place
+cargo test -p server --test integration auth::sign_ins auth::a_disconnected   # over HTTP: 17 at once (unknown usernames, wrong passwords) get 429 until the 16 answer; a client that disconnects during its lookup keeps its place until the lookup ends
 cargo test -p server --test password_memory               # Linux: 64 concurrent checks on 16 threads keep no work area (fails with the old allocator path: 304 MiB kept)
 scripts/bench/signin-memory.sh target/release/vyrtel      # Linux: the budgets below, on a real server
 ```
 
+Each integration test fails when its part of the bound is removed: releasing
+the place before the delay after a failed sign-in (the 17th is admitted), or
+not holding it in the blocking lookup (a disconnected client frees it while
+the lookup still waits).
+
 `signin-memory.sh` runs 250 sequential sign-ins, 256 at 64 at once (right
 and wrong passwords), 768 at 128 at once, then a wrong-password flood of
 `FLOOD_S` seconds (default 20) at 128 at once while steady clients ingest
-and query, and a genuine sign-in retries until it gets in. It samples the
-server's RSS every 100 ms with the default allocator, writes `summary.json`
-and exits 1 on a missed budget. The budgets, declared before any candidate
+and query, and a genuine sign-in retries until it gets in or
+`GENUINE_DEADLINE_S` (30 s) passes. It samples the server's RSS every 100 ms
+with the default allocator, writes `summary.json` to a new results
+directory, and exits 1 when the run is invalid (it did not show the work
+succeeding, see the budgets' measurement fix) or a budget is missed. The budgets, declared before any candidate
 measurement, are in [signin-budgets.md](../scripts/bench/signin-budgets.md).
 
 Reference host (OneProvider E3-1245 v2), 2026-11-15. The first pair used

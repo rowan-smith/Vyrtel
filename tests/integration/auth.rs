@@ -1052,3 +1052,82 @@ async fn api_key_last_used_is_recorded_and_revoked_keys_are_reclaimed() {
     }
     s.stop().await;
 }
+
+/// AUTH-PERF-04: at most `MAX_SIGN_INS_ADMITTED` sign-in requests are in
+/// progress at once, counted from admission to the response: unknown
+/// usernames through the delay after their lookup, wrong passwords through
+/// their check and delay. The next gets 429 with `Retry-After` before any
+/// lookup or hashing, whatever its username, and places are free again
+/// once those requests answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sign_ins_are_bounded_for_their_whole_request() {
+    let s = Arc::new(start_secure().await);
+    let limit = server::auth::MAX_SIGN_INS_ADMITTED;
+    for (what, username, password) in [("unknown usernames", "nobody", "x"), ("wrong passwords", "admin", "wrong")] {
+        let first: Vec<_> = (0..limit)
+            .map(|i| {
+                let s = s.clone();
+                let username = if username == "nobody" { format!("nobody-{i}") } else { username.to_string() };
+                tokio::spawn(async move {
+                    s.post("/api/v1/auth/login", json!({"username": username, "password": password}))
+                        .await
+                        .status()
+                        .as_u16()
+                })
+            })
+            .collect();
+        wait_until(what, || s.state().sign_ins.admitted() == limit).await;
+        for (u, p) in [("admin", "correct horse"), ("nobody-else", "x")] {
+            let r = s.post("/api/v1/auth/login", json!({"username": u, "password": p})).await;
+            assert_eq!(r.status(), 429, "{what}: one more ({u}) is refused");
+            assert_eq!(r.headers()["retry-after"], "1");
+        }
+        for t in first {
+            assert_eq!(t.await.unwrap(), 401, "{what}");
+        }
+        assert_eq!(s.state().sign_ins.admitted(), 0, "{what}: free once they answered");
+        assert_eq!(login(&s, "correct horse").await.status(), 200, "{what}: then admitted again");
+    }
+    Arc::into_inner(s).unwrap().stop().await;
+}
+
+/// AUTH-PERF-04: a client that disconnects while its sign-in's lookup waits
+/// does not free the place: the blocking lookup holds it until it has run.
+/// The lookup is held up by a key create waiting for SQLite's write lock,
+/// which another connection holds (the store has one connection).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_disconnected_sign_in_keeps_its_place_until_its_lookup_ends() {
+    let s = Arc::new(start_secure().await);
+    let admin = authorized_client("cookie", &session_cookie(&login(&s, "correct horse").await));
+    let db = rusqlite::Connection::open(s.data_dir().join(server::datadir::METADATA_DB)).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let creating = tokio::spawn({
+        let (s, admin) = (s.clone(), admin.clone());
+        async move {
+            admin
+                .post(s.u("/api/v1/api-keys"))
+                .json(&json!({"name": "slow", "scope": "admin"}))
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let impatient = reqwest::Client::builder().timeout(std::time::Duration::from_millis(300)).build().unwrap();
+    let gave_up = impatient
+        .post(s.u("/api/v1/auth/login"))
+        .json(&json!({"username": "admin", "password": "correct horse"}))
+        .send()
+        .await;
+    assert!(gave_up.is_err_and(|e| e.is_timeout()), "the sign-in waits behind the stalled write");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(s.state().sign_ins.admitted(), 1, "its lookup is still waiting, so its place is still taken");
+
+    db.execute_batch("COMMIT").unwrap();
+    assert_eq!(creating.await.unwrap(), 201);
+    wait_until("the lookup to finish and free its place", || s.state().sign_ins.admitted() == 0).await;
+    drop(db);
+    Arc::into_inner(s).unwrap().stop().await;
+}

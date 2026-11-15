@@ -58,6 +58,9 @@ pub struct AppState {
     pub api_keys: Arc<crate::auth::ApiKeys>,
     /// Session cache and lookup timings (AUTH-PERF-02).
     pub sessions: crate::auth::Sessions,
+    /// Sign-in requests in progress, at most
+    /// [`crate::auth::MAX_SIGN_INS_ADMITTED`] (AUTH-PERF-04).
+    pub sign_ins: Arc<crate::auth::Admission>,
     /// Flips to `true` when shutdown starts: new ingest, queries and live
     /// streams are refused and live-tail streams end, so the drain only
     /// waits for work that was already accepted.

@@ -25,32 +25,46 @@ fn cookie(value: &str, max_age: u64) -> HeaderValue {
 }
 
 pub async fn login(State(state): State<SharedState>, ApiJson(b): ApiJson<LoginBody>) -> ApiResult<Response> {
-    // Before the lookup: under load, unknown and known usernames get the same 429.
-    let admitted = auth::admit_sign_in()?;
+    // Before the lookup, so under load unknown and known usernames get the
+    // same 429. Held until the response; each blocking step holds a clone,
+    // so a client that disconnects mid-step frees its place only when that
+    // step's work is done.
+    let sign_in = auth::admit_sign_in(&state)?;
     let username = b.username.trim().to_string();
     let user = {
-        let u = username.clone();
-        state.db(move |m| m.find_user(&u)).await?
+        let (u, held) = (username.clone(), sign_in.clone());
+        state
+            .db(move |m| {
+                let _held = held;
+                m.find_user(&u)
+            })
+            .await?
     };
     let ok = match &user {
-        Some(u) => auth::check_password(&state, admitted, b.password.clone(), u.password_hash.clone()).await?,
-        None => {
-            drop(admitted);
-            false
-        }
+        Some(u) => auth::check_password(&state, sign_in.clone(), b.password.clone(), u.password_hash.clone()).await?,
+        None => false,
     };
     let Some(user) = user.filter(|_| ok) else {
         // Slow down guessing; the response is identical for unknown users.
+        // The place stays taken through the delay.
         tokio::time::sleep(Duration::from_millis(400)).await;
+        drop(sign_in);
         return Err(ApiError::unauthorized("invalid username or password"));
     };
     let token = auth::random_token(32);
     let ttl = state.config.auth.session_ttl;
     let hash = auth::sha256_hex(&token);
     let uid = user.id;
-    state.db(move |m| m.create_session(&hash, uid, ttl.as_millis() as i64)).await?;
+    let held = sign_in.clone();
+    state
+        .db(move |m| {
+            let _held = held;
+            m.create_session(&hash, uid, ttl.as_millis() as i64)
+        })
+        .await?;
     let mut resp = Json(json!({ "authEnabled": true, "user": user.username })).into_response();
     resp.headers_mut().insert(header::SET_COOKIE, cookie(&token, ttl.as_secs()));
+    drop(sign_in);
     Ok(resp)
 }
 

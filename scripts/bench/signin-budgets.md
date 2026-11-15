@@ -34,6 +34,23 @@ reports ready (it has verified the configured admin password once by then).
 | Steady ingest and query clients during a wrong-password flood: transport errors and 5xx | count | 0 |
 | Argon2id parameters and stored-hash compatibility | — | unchanged (`password::tests`) |
 
+**Measurement fix 2026-11-15** (no limit changed), before any measurement
+of a published candidate with the change. A run's statuses alone could pass
+without the work they stand for: steady queries that all got `401` (a
+failed setup sign-in) or ingestion that got only `429` counted as zero
+errors. A run is now evidence only when it is **valid**: the setup sign-in,
+an authenticated query and an ingest succeed before anything is measured;
+every right-password phase got at least one `200` and every wrong-password
+phase at least one `401`; during the flood the steady clients had
+successful ingest and query requests and no status other than `200` (and
+`429` for ingest, counted apart); a genuine sign-in got in within
+`GENUINE_DEADLINE_S` (30 s); and the server was still running at the end.
+Every request has a 5 s connect and 30 s total timeout, so a candidate that
+hangs fails the run instead of hanging it, and results go to a new
+directory that is never overwritten. The admission bound now covers each
+sign-in request until its response (including the delay after a failure),
+not only its lookup and check.
+
 Recorded, not budgeted: idle RSS, every phase's response counts and times,
 the steady clients' latency, and how long a right-password sign-in takes to
 succeed while the flood runs. Admission is global, not per client, so a
