@@ -13,12 +13,10 @@
 //! of producing a [`Principal`].
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use argon2::password_hash::phc::PasswordHash;
-use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, header};
 use axum::middleware::Next;
@@ -57,31 +55,91 @@ pub fn new_api_key() -> (String, String, String) {
     (key, prefix, hash)
 }
 
-pub fn hash_password(password: &str) -> Result<String, String> {
-    PasswordHasher::<PasswordHash>::hash_password(&Argon2::default(), password.as_bytes())
-        .map(|h| h.to_string())
-        .map_err(|e| e.to_string())
-}
+pub use crate::password::{hash_password, verify_password};
 
-pub fn verify_password(password: &str, hash: &str) -> bool {
-    Argon2::default().verify_password(password.as_bytes(), hash).is_ok()
-}
-
-/// Password checks that may run at once. Each Argon2id check allocates its
-/// whole working memory (19 MiB with the default parameters) and the login
-/// route needs no session, so without a bound N concurrent attempts, right
-/// or wrong, cost N × 19 MiB outside `storage.max_memory`. One at a time
-/// still checks about 20 passwords a second on modest hardware.
+/// Password checks that may run at once. Each Argon2id check fills its whole
+/// working memory (19 MiB with the default parameters, mapped for the check
+/// and unmapped after it: [`crate::password`]) and the login route needs no
+/// session, so without a bound N concurrent attempts, right or wrong, cost
+/// N × 19 MiB outside `storage.max_memory`. One at a time still checks
+/// about 20 passwords a second on modest hardware.
 static PASSWORD_CHECKS: Semaphore = Semaphore::const_new(1);
 
-/// [`verify_password`] on the blocking pool, one check at a time. The permit
-/// moves into the blocking task, so a request cancelled mid-check still
-/// holds it until the hashing (and its memory) is done.
-pub async fn check_password(state: &AppState, password: String, hash: String) -> ApiResult<bool> {
+/// Sign-in requests in progress at once ([`AppState::sign_ins`]), from
+/// admission to their response: the user lookup, waiting for and running
+/// the password check, the delay after a failure and creating the session.
+/// More are refused with 429 before any of that, so a flood of attempts
+/// cannot queue unbounded work (a check takes about 50 ms, so the 15 ahead
+/// of one are under a second's wait).
+pub const MAX_SIGN_INS_ADMITTED: usize = 16;
+
+/// A counting bound that refuses instead of waiting.
+pub struct Admission {
+    limit: usize,
+    admitted: AtomicUsize,
+}
+
+impl Admission {
+    pub const fn new(limit: usize) -> Self {
+        Self { limit, admitted: AtomicUsize::new(0) }
+    }
+
+    /// One place, or `None` when all are taken. The place is shared
+    /// ([`SignIn`]): it is free again once every clone is dropped.
+    pub fn try_admit(self: &Arc<Self>) -> Option<SignIn> {
+        let mut n = self.admitted.load(Ordering::Acquire);
+        while n < self.limit {
+            match self.admitted.compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(SignIn { _place: Arc::new(Admitted(self.clone())) }),
+                Err(now) => n = now,
+            }
+        }
+        None
+    }
+
+    /// Places taken now.
+    pub fn admitted(&self) -> usize {
+        self.admitted.load(Ordering::Acquire)
+    }
+}
+
+struct Admitted(Arc<Admission>);
+
+impl Drop for Admitted {
+    fn drop(&mut self) {
+        self.0.admitted.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// An admitted sign-in. The request holds it until its response, and each
+/// blocking step it starts holds a clone, so a client that disconnects
+/// mid-step frees the place only once that step's work has finished.
+#[derive(Clone)]
+pub struct SignIn {
+    // Never read: holding it is the point; the last clone dropped frees the place.
+    _place: Arc<Admitted>,
+}
+
+/// Admit one sign-in request, before its user is looked up, so known and
+/// unknown usernames are refused alike under load.
+pub fn admit_sign_in(state: &AppState) -> ApiResult<SignIn> {
+    state.sign_ins.try_admit().ok_or_else(|| {
+        ApiError::new(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "too many sign-in attempts at once; retry shortly",
+        )
+    })
+}
+
+/// [`verify_password`] on the blocking pool, one check at a time. The
+/// sign-in and the permit move into the blocking task, so a request
+/// cancelled mid-check still counts until the hashing (and its memory) is done.
+pub async fn check_password(state: &AppState, sign_in: SignIn, password: String, hash: String) -> ApiResult<bool> {
     let permit = PASSWORD_CHECKS.acquire().await.expect("the password semaphore is never closed");
     state
         .blocking(move || {
-            let _permit = permit;
+            let _held = (sign_in, permit);
             Ok(verify_password(&password, &hash))
         })
         .await
@@ -1100,6 +1158,21 @@ mod tests {
         drop(held);
         waiting.await.unwrap().unwrap();
         assert_eq!(PASSWORD_CHECKS.available_permits(), 1);
+    }
+
+    #[test]
+    fn sign_ins_beyond_the_limit_are_refused_not_queued() {
+        let a = Arc::new(Admission::new(3));
+        let held: Vec<_> = (0..3).map(|_| a.try_admit().expect("within the limit")).collect();
+        assert!(a.try_admit().is_none(), "the fourth is refused");
+        assert_eq!(a.admitted(), 3);
+        // A clone (a blocking step's) keeps the place after the request drops its own.
+        let step = held[0].clone();
+        drop(held);
+        assert_eq!(a.admitted(), 1, "held by the clone");
+        drop(step);
+        assert_eq!(a.admitted(), 0, "released once every clone is dropped");
+        assert!(a.try_admit().is_some(), "admitted again once released");
     }
 
     #[test]

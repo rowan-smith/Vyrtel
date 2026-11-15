@@ -212,6 +212,7 @@ impl App {
             received_requests: AtomicU64::new(0),
             http,
             sessions: Default::default(),
+            sign_ins: Arc::new(crate::auth::Admission::new(crate::auth::MAX_SIGN_INS_ADMITTED)),
             api_keys: Arc::new(api_keys),
             shutdown: rx.clone(),
             config,

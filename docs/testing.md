@@ -1016,6 +1016,65 @@ change, this invalidates earlier PERF-GATE-1 and
 [COMPAT-GATE-0.1.2](https://github.com/rowan-smith/Vyrtel/issues/229)
 evidence.
 
+### Sign-in memory (AUTH-PERF-04)
+
+Each Argon2id password check fills 19 MiB of working memory. In 0.1.2-rc.4
+it came from glibc's malloc, which kept a freed work area resident per
+arena, so concurrent sign-ins (wrong passwords too) left about 111 MiB
+resident on an empty server, and more under longer floods. Since rc.5 the
+work area is mapped for each check and unmapped after it
+([`password.rs`](../crates/server/src/password.rs)), and at most 16
+sign-in requests are in progress at once, each until its response; more
+get `429` before any lookup or hashing ([API](api.md#authentication)).
+
+```bash
+cargo test -p server --lib password::                     # PHC format and parameters, both-way compatibility with the argon2 crate, stored parameters honoured, malformed hashes
+cargo test -p server --lib auth::tests::sign_ins          # the bound refuses instead of queueing; a step's clone keeps the place
+cargo test -p server --test integration auth::sign_ins auth::a_disconnected   # over HTTP: 17 at once (unknown usernames, wrong passwords) get 429 until the 16 answer; a client that disconnects during its lookup keeps its place until the lookup ends
+cargo test -p server --test password_memory               # Linux: 64 concurrent checks on 16 threads keep no work area (fails with the old allocator path: 304 MiB kept)
+scripts/bench/signin-memory.sh target/release/vyrtel      # Linux: the budgets below, on a real server
+```
+
+Each integration test fails when its part of the bound is removed: releasing
+the place before the delay after a failed sign-in (the 17th is admitted), or
+not holding it in the blocking lookup (a disconnected client frees it while
+the lookup still waits).
+
+`signin-memory.sh` runs 250 sequential sign-ins, 256 at 64 at once (right
+and wrong passwords), 768 at 128 at once, then a wrong-password flood of
+at least `FLOOD_S` seconds (default 20) at 128 at once while steady clients
+ingest and query, and a genuine sign-in retries until it gets in or
+`GENUINE_DEADLINE_S` (30 s) passes; the flood lasts until the genuine
+sign-in has finished, so a success is one during the flood. It samples the
+server's RSS every 100 ms with the default allocator, writes `summary.json`
+to a new results directory (also for a run that stops early), and exits 1
+when the run is invalid (it did not show the work succeeding, see the
+budgets' measurement fix) or a budget is missed. Nothing waits without a
+bound: requests time out, readiness has `READY_S`, `--version` 5 s, and
+shutdown `SHUTDOWN_S` before SIGKILL. Each failure path was run on the
+reference host with stand-in binaries (one that never becomes ready and
+whose `--version` hangs, one with another admin password, one that ignores
+SIGTERM): each exits 1 in bounded time with `valid: false` and its reason. The budgets, declared before any candidate
+measurement, are in [signin-budgets.md](../scripts/bench/signin-budgets.md).
+
+Reference host (OneProvider E3-1245 v2), 2026-11-15. The first pair used
+an earlier version of the script (a fixed 1,024-attempt flood, which ended
+in seconds once excess attempts were refused, so the steady clients ran
+only briefly); the second is the script as committed (20 s flood):
+
+| Build | Flood | Idle | Peak above idle | 10 s after, above idle | 429s | 429 p99 | Steady errors/5xx | Verdict |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| 0.1.2-rc.4 (published) | 1,024 attempts | 12.4 MiB | 196.6 MiB | 196.7 MiB | 0 | – | 0 of 1,240 | FAIL |
+| `844ae0c` (this change) | 1,024 attempts | 13.2 MiB | 21.0 MiB | 2.2 MiB | 2,194 | 9.5 ms | 0 of 74 | PASS |
+| 0.1.2-rc.4 (published) | 20 s | 12.5 MiB | 119.6 MiB | 119.7 MiB | 0 | – | 0 of 662 | FAIL |
+| `77abdad` (this change, 0.1.2-rc.5) | 20 s | 13.3 MiB | 21.7 MiB | 2.8 MiB | 4,024 | 8.3 ms | 0 of 522 | PASS |
+
+rc.4's retained memory varies between runs (120 to 197 MiB) with how many
+threads the checks happened to land on: the number of malloc arenas
+amplifies it, and is not a ceiling. A genuine sign-in during the flood got
+in after 0.27 s (0 refusals) and 1.78 s (7 refusals) on the fixed builds:
+admission is global, not per client.
+
 ## Frontend tests
 
 Vitest + React Testing Library in `web/tests/unit/`:
