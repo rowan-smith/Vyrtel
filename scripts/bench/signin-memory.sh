@@ -18,15 +18,22 @@
 # wrong ones 401s in every phase; the steady clients had successful ingest
 # and query requests during the flood and no status other than 200 (and 429
 # for ingest, counted apart); a genuine sign-in got in within
-# GENUINE_DEADLINE_S; and the server was still running at the end. Exits 1
-# when the run is invalid or a budget is missed. Every request has a
-# connect timeout (5 s) and a total timeout (30 s), so a candidate that
-# hangs fails the run instead of hanging it.
+# GENUINE_DEADLINE_S, while the flood was still running; and the server was
+# still running at the end and stopped within SHUTDOWN_S of SIGTERM. Exits
+# 1 when the run is invalid or a budget is missed, and writes summary.json
+# either way (an early invalid run writes valid, invalidReasons and pass).
+#
+# Nothing waits without a bound, so a broken candidate fails the run
+# instead of hanging it: every request has a 5 s connect and 30 s total
+# timeout (the genuine sign-in's is cut to what is left of its deadline),
+# readiness has READY_S, shutdown SHUTDOWN_S before SIGKILL, and
+# `--version` 5 s.
 #
 # Uses the default allocator: do not set MALLOC_* for a measurement.
-# FLOOD_S sets how long the wrong-password flood beside the steady clients
-# lasts (default 20 s); GENUINE_DEADLINE_S how long the genuine sign-in may
-# take (default 30 s).
+# FLOOD_S is the wrong-password flood's minimum length beside the steady
+# clients (default 20 s; it also runs until the genuine sign-in has
+# finished); GENUINE_DEADLINE_S how long the genuine sign-in may take
+# (default 30 s); READY_S (20 s) and SHUTDOWN_S (15 s) as above.
 set -euo pipefail
 
 [ $# -eq 1 ] || { echo "usage: $0 BINARY" >&2; exit 2; }
@@ -34,6 +41,8 @@ BINARY=$1
 OUT=${OUT:-target/signin-memory/$(date -u +%Y%m%dT%H%M%SZ)}
 FLOOD_S=${FLOOD_S:-20}
 GENUINE_DEADLINE_S=${GENUINE_DEADLINE_S:-30}
+READY_S=${READY_S:-20}
+SHUTDOWN_S=${SHUTDOWN_S:-15}
 PORT=${PORT:-$((20000 + RANDOM % 20000))}
 B="http://127.0.0.1:$PORT"
 PASSWORD="signin-$RANDOM$RANDOM$RANDOM"
@@ -47,12 +56,26 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/vyrtel-signin.XXXXXX")
 trap 'kill -9 $(jobs -p) 2>/dev/null || true; rm -rf "$WORK"' EXIT
 : >"$OUT/invalid.txt"
 invalid() { echo "$1" >>"$OUT/invalid.txt"; }
+json_list() { awk '{ gsub(/"/, "\\\""); s = s sprintf("%s\"%s\"", NR > 1 ? ", " : "", $0) } END { print "[" s "]" }' "$1"; }
+VERSION=$(timeout 5 "$BINARY" --version 2>/dev/null | head -1 || true)
+# An invalid run that cannot go on still leaves its evidence.
+invalid_exit() {
+  printf '{\n  "binary": "%s",\n  "valid": false, "invalidReasons": %s,\n  "pass": false\n}\n' \
+    "$VERSION" "$(json_list "$OUT/invalid.txt")" >"$OUT/summary.json"
+  echo "INVALID: $(paste -sd ';' "$OUT/invalid.txt") (see $OUT/summary.json)" >&2
+  exit 1
+}
+now() { date +%s.%N; }
 
 VYRTEL_AUTH_ADMIN_PASSWORD=$PASSWORD VYRTEL_ALERTS_ENABLED=false \
   "$BINARY" --data-dir "$WORK/data" --bind "127.0.0.1:$PORT" --log-level warn >"$OUT/server.log" 2>&1 &
 PID=$!
-for _ in $(seq 200); do "${CURL[@]}" -f "$B/ready" >/dev/null 2>&1 && break; sleep 0.1; done
-"${CURL[@]}" -f "$B/ready" >/dev/null || { echo "INVALID: the server did not become ready within 20 s" >&2; exit 1; }
+ready_end=$((SECONDS + READY_S)); READY=false
+while [ $SECONDS -lt $ready_end ] && kill -0 "$PID" 2>/dev/null; do
+  curl -fs --connect-timeout 1 --max-time 1 "$B/ready" >/dev/null 2>&1 && { READY=true; break; }
+  sleep 0.1
+done
+$READY || { invalid "the server did not become ready within ${READY_S} s"; invalid_exit; }
 
 rss() { awk '/^VmRSS:/ { print $2 }' "/proc/$PID/status"; }
 ( while kill -0 "$PID" 2>/dev/null; do printf '%s,%s\n' "$(date +%s.%N)" "$(rss)"; sleep 0.1; done ) >"$OUT/rss.csv" &
@@ -73,14 +96,12 @@ pre_ingest=$(ingest_once | cut -f2); pre_query=$(query_once | cut -f2)
 [ "$setup" = 200 ] || invalid "setup sign-in returned $setup, not 200"
 [ "$pre_query" = 200 ] || invalid "authenticated query before the run returned $pre_query, not 200"
 [ "$pre_ingest" = 200 ] || invalid "ingest before the run returned $pre_ingest, not 200"
-if [ -s "$OUT/invalid.txt" ]; then
-  echo "INVALID: $(paste -sd ';' "$OUT/invalid.txt")" >&2; exit 1
-fi
+[ -s "$OUT/invalid.txt" ] && invalid_exit
 sleep 2
 IDLE=$(rss)
 
-login() {  # login <password> -> "status seconds" (000 when it failed or timed out)
-  curl -s --connect-timeout 5 --max-time 30 -o /dev/null -w '%{http_code}\t%{time_total}\n' -X POST "$B/api/v1/auth/login" \
+login() {  # login <password> [max seconds] -> "status seconds" (000 when it failed or timed out)
+  curl -s --connect-timeout 5 --max-time "${2:-30}" -o /dev/null -w '%{http_code}\t%{time_total}\n' -X POST "$B/api/v1/auth/login" \
     -H 'content-type: application/json' -d "{\"username\":\"admin\",\"password\":\"$1\"}" || true
 }
 export -f login; export B
@@ -97,34 +118,63 @@ phase wrong-64 256 64 wrong-password
 phase concurrent-128 768 128 "$PASSWORD"
 
 # A wrong-password flood while steady clients ingest and query, and a
-# genuine sign-in retries until it gets in or its deadline passes.
+# genuine sign-in retries until it gets in or its deadline passes. The
+# flood runs for at least FLOOD_S and until the genuine sign-in has
+# finished, so a success is always one during the flood.
 steady() {
   while [ ! -e "$WORK/stop" ]; do ingest_once; query_once; sleep 0.05; done >>"$OUT/steady.tsv"
 }
 : >"$OUT/steady.tsv"
 steady & STEADY=$!
 : >"$OUT/flood-wrong-128.tsv"
-( flood_end=$((SECONDS + FLOOD_S))
-  while [ $SECONDS -lt $flood_end ]; do seq 256 | xargs -P 128 -I{} bash -c "login wrong-password"; done
+FLOOD_START=$(now)
+( flood_min_end=$((SECONDS + FLOOD_S))
+  while [ $SECONDS -lt $flood_min_end ] || [ ! -e "$WORK/flood-stop" ]; do
+    seq 256 | xargs -P 128 -I{} bash -c "login wrong-password"
+  done
 ) >>"$OUT/flood-wrong-128.tsv" &
 FLOOD=$!
 sleep 1
-GENUINE_START=$(date +%s.%N); GENUINE_TRIES=0; GENUINE_OK=false
-genuine_end=$((SECONDS + GENUINE_DEADLINE_S))
-while [ $SECONDS -lt $genuine_end ]; do
-  if [ "$(login "$PASSWORD" | cut -f1)" = 200 ]; then GENUINE_OK=true; break; fi
+GENUINE_START=$(now); GENUINE_TRIES=0; GENUINE_OK=false
+GENUINE_DEADLINE=$(awk -v s="$GENUINE_START" -v d="$GENUINE_DEADLINE_S" 'BEGIN { printf "%.3f", s + d }')
+while :; do
+  # Each attempt may take only what is left of the deadline, and at most 30 s.
+  left=$(awk -v d="$GENUINE_DEADLINE" -v n="$(now)" 'BEGIN { l = d - n; if (l > 30) l = 30; printf "%.2f", l }')
+  awk -v l="$left" 'BEGIN { exit !(l >= 0.05) }' || break
+  code=$(login "$PASSWORD" "$left" | cut -f1); at=$(now)
+  if [ "$code" = 200 ] && awk -v a="$at" -v d="$GENUINE_DEADLINE" 'BEGIN { exit !(a <= d) }'; then GENUINE_OK=true; break; fi
   GENUINE_TRIES=$((GENUINE_TRIES + 1)); sleep 0.1
 done
-GENUINE_S=$(awk -v a="$GENUINE_START" -v b="$(date +%s.%N)" 'BEGIN { printf "%.2f", b - a }')
-$GENUINE_OK || invalid "a genuine sign-in did not get in within ${GENUINE_DEADLINE_S} s ($GENUINE_TRIES attempts)"
-wait "$FLOOD"
+GENUINE_AT=$(now)
+GENUINE_S=$(awk -v a="$GENUINE_START" -v b="$GENUINE_AT" 'BEGIN { printf "%.2f", b - a }')
+$GENUINE_OK || invalid "a genuine sign-in did not get in within ${GENUINE_DEADLINE_S} s during the flood ($GENUINE_TRIES attempts)"
+touch "$WORK/flood-stop"; wait "$FLOOD"
+FLOOD_END=$(now)
+FLOOD_RAN_S=$(awk -v a="$FLOOD_START" -v b="$FLOOD_END" 'BEGIN { printf "%.1f", b - a }')
+# By construction the flood outlives the genuine sign-in; checked, not assumed.
+if $GENUINE_OK && ! awk -v g="$GENUINE_AT" -v f="$FLOOD_END" 'BEGIN { exit !(g < f) }'; then
+  invalid "the genuine sign-in finished after the flood ended"
+fi
 touch "$WORK/stop"; wait "$STEADY"
 printf 'flood-wrong-128\t%s\t128\twrong\n' "$(wc -l <"$OUT/flood-wrong-128.tsv")" >>"$OUT/phases.tsv"
 END=$(date +%s.%N)
 
 sleep 10
+SHUTDOWN_MS=-1
 if kill -0 "$PID" 2>/dev/null; then
-  AFTER=$(rss); kill "$PID"; wait "$PID" 2>/dev/null || true
+  AFTER=$(rss)
+  # Graceful shutdown for at most SHUTDOWN_S, then SIGKILL: a candidate that
+  # deadlocks on the way out fails the run instead of holding it.
+  t0=$(now); kill -TERM "$PID"
+  stop_end=$((SECONDS + SHUTDOWN_S))
+  while kill -0 "$PID" 2>/dev/null && [ $SECONDS -lt $stop_end ]; do sleep 0.1; done
+  if kill -0 "$PID" 2>/dev/null; then
+    kill -KILL "$PID" 2>/dev/null || true
+    invalid "the server did not stop within ${SHUTDOWN_S} s of SIGTERM (killed)"
+  else
+    SHUTDOWN_MS=$(awk -v a="$t0" -v b="$(now)" 'BEGIN { printf "%d", (b - a) * 1000 }')
+  fi
+  wait "$PID" 2>/dev/null || true
 else
   AFTER=0; invalid "the server exited during the run (see server.log)"
 fi
@@ -165,10 +215,9 @@ FAILED=0
 case " $V1 $V2 $V3 $V4 $V5 $V6 " in *" FAIL "*) FAILED=1 ;; esac
 $VALID || FAILED=1
 
-json_list() { awk '{ gsub(/"/, "\\\""); s = s sprintf("%s\"%s\"", NR > 1 ? ", " : "", $0) } END { print "[" s "]" }' "$1"; }
 {
   echo "{"
-  echo "  \"binary\": \"$("$BINARY" --version 2>/dev/null | head -1)\","
+  echo "  \"binary\": \"$VERSION\","
   echo "  \"valid\": $VALID, \"invalidReasons\": $(json_list "$OUT/invalid.txt"),"
   echo "  \"idleRssMiB\": $(mib "$IDLE"), \"peakRssMiB\": $(mib "$PEAK"), \"afterRssMiB\": $(mib "$AFTER"),"
   echo "  \"peakAboveIdleMiB\": $PEAK_UP, \"afterAboveIdleMiB\": $AFTER_UP,"
@@ -181,7 +230,8 @@ json_list() { awk '{ gsub(/"/, "\\\""); s = s sprintf("%s\"%s\"", NR > 1 ? ", " 
   echo; echo "  },"
   echo "  \"unexpectedStatuses\": $UNEXPECTED, \"refused429\": $REFUSED, \"p99Ms429\": $P99_429,"
   echo "  \"steady\": {\"requests\": $STEADY_N, \"errorsOr5xx\": $STEADY_BAD, \"ingestOk\": $INGEST_OK, \"ingest429\": $INGEST_429, \"queryOk\": $QUERY_OK, \"otherStatuses\": $STEADY_OTHER},"
-  echo "  \"genuineSignInDuringFlood\": {\"succeeded\": $GENUINE_OK, \"seconds\": $GENUINE_S, \"refusedFirst\": $GENUINE_TRIES},"
+  echo "  \"genuineSignInDuringFlood\": {\"succeeded\": $GENUINE_OK, \"seconds\": $GENUINE_S, \"refusedFirst\": $GENUINE_TRIES, \"deadlineS\": $GENUINE_DEADLINE_S, \"floodRanS\": $FLOOD_RAN_S},"
+  echo "  \"shutdownMs\": $SHUTDOWN_MS,"
   echo "  \"pass\": $([ $FAILED = 0 ] && echo true || echo false)"
   echo "}"
 } >"$OUT/summary.json"
@@ -199,6 +249,7 @@ Steady clients during the flood: $INGEST_OK ingest 200s ($INGEST_429 ingest 429s
 | 429s when over the admission limit | > 0 | $REFUSED | $V4 |
 | 429 response time p99 | ≤ 100 ms | $P99_429 ms | $V5 |
 | Steady clients' errors and 5xx during the flood | 0 | $STEADY_BAD of $STEADY_N | $V6 |
-Genuine sign-in during the flood: $($GENUINE_OK && echo "${GENUINE_S} s, after $GENUINE_TRIES refusals" || echo "none within ${GENUINE_DEADLINE_S} s") (recorded)
+Genuine sign-in during the flood ($FLOOD_RAN_S s): $($GENUINE_OK && echo "${GENUINE_S} s, after $GENUINE_TRIES refusals" || echo "none within ${GENUINE_DEADLINE_S} s") (recorded)
+Shutdown after SIGTERM: $([ "$SHUTDOWN_MS" -ge 0 ] && echo "$SHUTDOWN_MS ms" || echo "not clean")
 EOF
 exit $FAILED
