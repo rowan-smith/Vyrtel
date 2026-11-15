@@ -1042,12 +1042,23 @@ server's RSS every 100 ms with the default allocator, writes `summary.json`
 and exits 1 on a missed budget. The budgets, declared before any candidate
 measurement, are in [signin-budgets.md](../scripts/bench/signin-budgets.md).
 
-Reference host (OneProvider E3-1245 v2), 2026-11-15, with the 1024-attempt flood the script then used:
+Reference host (OneProvider E3-1245 v2), 2026-11-15. The first pair used
+an earlier version of the script (a fixed 1,024-attempt flood, which ended
+in seconds once excess attempts were refused, so the steady clients ran
+only briefly); the second is the script as committed (20 s flood):
 
-| Build | Idle | Peak above idle | 10 s after, above idle | 429s | 429 p99 | Steady errors/5xx | Verdict |
-|---|---:|---:|---:|---:|---:|---:|---|
-| 0.1.2-rc.4 (published) | 12.4 MiB | 196.6 MiB | 196.7 MiB | 0 | – | 0 of 1,240 | FAIL |
-| `844ae0c` (this change, release build) | 13.2 MiB | 21.0 MiB | 2.2 MiB | 2,194 | 9.5 ms | 0 of 74 | PASS |
+| Build | Flood | Idle | Peak above idle | 10 s after, above idle | 429s | 429 p99 | Steady errors/5xx | Verdict |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| 0.1.2-rc.4 (published) | 1,024 attempts | 12.4 MiB | 196.6 MiB | 196.7 MiB | 0 | – | 0 of 1,240 | FAIL |
+| `844ae0c` (this change) | 1,024 attempts | 13.2 MiB | 21.0 MiB | 2.2 MiB | 2,194 | 9.5 ms | 0 of 74 | PASS |
+| 0.1.2-rc.4 (published) | 20 s | 12.5 MiB | 119.6 MiB | 119.7 MiB | 0 | – | 0 of 662 | FAIL |
+| `77abdad` (this change, 0.1.2-rc.5) | 20 s | 13.3 MiB | 21.7 MiB | 2.8 MiB | 4,024 | 8.3 ms | 0 of 522 | PASS |
+
+rc.4's retained memory varies between runs (120 to 197 MiB) with how many
+threads the checks happened to land on: the number of malloc arenas
+amplifies it, and is not a ceiling. A genuine sign-in during the flood got
+in after 0.27 s (0 refusals) and 1.78 s (7 refusals) on the fixed builds:
+admission is global, not per client.
 
 ## Frontend tests
 
