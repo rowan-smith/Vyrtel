@@ -11,12 +11,14 @@
 # target/signin-memory): rss.csv, one <phase>.tsv per phase (HTTP status and
 # seconds per attempt), steady.tsv (the steady clients), summary.json, and
 # the verdicts on stdout. Exits 1 when a budget is missed. Uses the default
-# allocator: do not set MALLOC_* for a measurement.
+# allocator: do not set MALLOC_* for a measurement. FLOOD_S sets how long
+# the wrong-password flood beside the steady clients lasts (default 20 s).
 set -euo pipefail
 
 [ $# -eq 1 ] || { echo "usage: $0 BINARY" >&2; exit 2; }
 BINARY=$1
 OUT=${OUT:-target/signin-memory}
+FLOOD_S=${FLOOD_S:-20}   # seconds of the wrong-password flood beside the steady clients
 PORT=${PORT:-$((20000 + RANDOM % 20000))}
 B="http://127.0.0.1:$PORT"
 PASSWORD="signin-$RANDOM$RANDOM$RANDOM"
@@ -69,7 +71,10 @@ steady() {
 }
 : >"$OUT/steady.tsv"
 steady & STEADY=$!
-seq 1024 | xargs -P 128 -I{} bash -c "login wrong-password" >"$OUT/flood-wrong-128.tsv" &
+: >"$OUT/flood-wrong-128.tsv"
+( flood_end=$((SECONDS + FLOOD_S))
+  while [ $SECONDS -lt $flood_end ]; do seq 256 | xargs -P 128 -I{} bash -c "login wrong-password"; done
+) >>"$OUT/flood-wrong-128.tsv" &
 FLOOD=$!
 sleep 1
 GENUINE_START=$(date +%s.%N); GENUINE_TRIES=0
@@ -77,7 +82,7 @@ until [ "$(login "$PASSWORD" | cut -f1)" = 200 ]; do GENUINE_TRIES=$((GENUINE_TR
 GENUINE_S=$(awk -v a="$GENUINE_START" -v b="$(date +%s.%N)" 'BEGIN { printf "%.2f", b - a }')
 wait "$FLOOD"
 touch "$WORK/stop"; wait "$STEADY"
-printf 'flood-wrong-128\t1024\t128\twrong\n' >>"$OUT/phases.tsv"
+printf 'flood-wrong-128\t%s\t128\twrong\n' "$(wc -l <"$OUT/flood-wrong-128.tsv")" >>"$OUT/phases.tsv"
 END=$(date +%s.%N)
 
 sleep 10
@@ -98,10 +103,12 @@ STEADY_BAD=$(awk -F'\t' '$2 == "000" || $2 >= 500' "$OUT/steady.tsv" | wc -l)
 STEADY_N=$(wc -l <"$OUT/steady.tsv")
 counts() { awk -F'\t' '{ c[$1]++ } END { s = ""; for (k in c) s = s sprintf("%s\"%s\": %d", s ? ", " : "", k, c[k]); print "{" s "}" }' "$1"; }
 
-verdict() { if awk "BEGIN { exit !($1) }"; then echo PASS; else echo FAIL; FAILED=1; fi; }
-FAILED=0
+verdict() { if awk "BEGIN { exit !($1) }"; then echo PASS; else echo FAIL; fi; }
 V1=$(verdict "$PEAK_UP <= 30"); V2=$(verdict "$AFTER_UP <= 8"); V3=$(verdict "$UNEXPECTED == 0")
 V4=$(verdict "$REFUSED > 0"); V5=$(verdict "$P99_429 <= 100"); V6=$(verdict "$STEADY_BAD == 0")
+# Decided here, not inside the $(...) above: a subshell cannot set it.
+FAILED=0
+case " $V1 $V2 $V3 $V4 $V5 $V6 " in *" FAIL "*) FAILED=1 ;; esac
 
 {
   echo "{"

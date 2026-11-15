@@ -1016,6 +1016,39 @@ change, this invalidates earlier PERF-GATE-1 and
 [COMPAT-GATE-0.1.2](https://github.com/rowan-smith/Vyrtel/issues/229)
 evidence.
 
+### Sign-in memory (AUTH-PERF-04)
+
+Each Argon2id password check fills 19 MiB of working memory. In 0.1.2-rc.4
+it came from glibc's malloc, which kept a freed work area resident per
+arena, so concurrent sign-ins (wrong passwords too) left about 111 MiB
+resident on an empty server, and more under longer floods. Since rc.5 the
+work area is mapped for each check and unmapped after it
+([`password.rs`](../crates/server/src/password.rs)), and at most 16
+sign-ins are admitted at once; more get `429` before any hashing
+([API](api.md#authentication)).
+
+```bash
+cargo test -p server --lib password::                     # PHC format and parameters, both-way compatibility with the argon2 crate, stored parameters honoured, malformed hashes
+cargo test -p server --lib auth::tests::sign_ins          # the admission bound refuses instead of queueing
+cargo test -p server --test password_memory               # Linux: 64 concurrent checks on 16 threads keep no work area (fails with the old allocator path: 304 MiB kept)
+scripts/bench/signin-memory.sh target/release/vyrtel      # Linux: the budgets below, on a real server
+```
+
+`signin-memory.sh` runs 250 sequential sign-ins, 256 at 64 at once (right
+and wrong passwords), 768 at 128 at once, then a wrong-password flood of
+`FLOOD_S` seconds (default 20) at 128 at once while steady clients ingest
+and query, and a genuine sign-in retries until it gets in. It samples the
+server's RSS every 100 ms with the default allocator, writes `summary.json`
+and exits 1 on a missed budget. The budgets, declared before any candidate
+measurement, are in [signin-budgets.md](../scripts/bench/signin-budgets.md).
+
+Reference host (OneProvider E3-1245 v2), 2026-11-15, with the 1024-attempt flood the script then used:
+
+| Build | Idle | Peak above idle | 10 s after, above idle | 429s | 429 p99 | Steady errors/5xx | Verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| 0.1.2-rc.4 (published) | 12.4 MiB | 196.6 MiB | 196.7 MiB | 0 | – | 0 of 1,240 | FAIL |
+| `844ae0c` (this change, release build) | 13.2 MiB | 21.0 MiB | 2.2 MiB | 2,194 | 9.5 ms | 0 of 74 | PASS |
+
 ## Frontend tests
 
 Vitest + React Testing Library in `web/tests/unit/`:

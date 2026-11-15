@@ -121,6 +121,13 @@ POST /api/v1/auth/logout
 GET  /api/v1/auth/me       → {"authEnabled": true, "user": "admin" | null}   (authEnabled is always true since 0.1.2)
 ```
 
+Passwords are checked with Argon2id, one at a time; each check uses 19 MiB
+of working memory, returned to the operating system when the check ends.
+While 16 sign-ins are already waiting or being checked, another gets
+`429 rate_limited` with `Retry-After: 1` before any checking, whatever the
+username; retry it. A wrong username or password gets `401` after a short
+delay.
+
 ### Ingestion mode
 
 ```
