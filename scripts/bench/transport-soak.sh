@@ -28,7 +28,9 @@
 #                   open: producers send no key                      [key]
 #
 # The password reaches both containers through the environment (`-e NAME`,
-# not on a command line) and is not written to any output file.
+# so not on the host's command lines) and is not written to any output
+# file. It is still visible to anyone who can run `docker inspect` or read
+# the containers' process environment: use it only for disposable runs.
 #
 # cgroupKb is the server container's memory.current (process memory, page
 # cache and kernel memory charged to it); socketBuffersKb is the `sock` line

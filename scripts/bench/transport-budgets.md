@@ -46,7 +46,15 @@ since 0.1.2, and `connload` did not sign in, so its count queries and
 sends an ingest-scoped key with every batch. `summary.json` `reconciled` is
 true only when the stored count of connload's service equals the
 acknowledged events; `auth` records the kind of credential each client
-used. Runs without a credential are not evidence for either row.
+used. Runs without a credential are not evidence for either row. Because
+ingestion is then protected, the flood's `slow-body` attempts send the
+ingest key as well, so they still reach the body read and its timeout
+instead of being refused by authentication; a flood run whose
+`flood.bodyTimeouts` is 0 is invalid. A run is evidence for any row only
+when `summary.json` `workloadValid` is true (events acknowledged, queries
+answered, every sample read, no unexpected status or transport error on
+the steady clients, reconciled). Throughput is over `loadWindowS`, the
+steady load's own window, not the time spent counting afterwards.
 
 Configurations:
 

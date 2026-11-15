@@ -52,6 +52,22 @@
 //! an ingest-scoped key with that credential before the load, so the
 //! producers exercise protected ingestion. Secrets are read from the
 //! environment as well as flags and never written to `summary.json`.
+//! `--create-ingest-key` changes the server for good (ingestion then needs a
+//! key), so it is meant for disposable benchmark instances. The `slow-body`
+//! flood attempts send the same ingest key (`--slow-body-auth key`), so they
+//! reach the body read and its timeout rather than being refused by
+//! authentication; `--slow-body-auth none` tests that refusal instead.
+//!
+//! The run is judged as a whole, not only by the count: `summary.json`
+//! `workloadValid` is false, with the reasons in `failures`, and connload
+//! exits 1, unless the steady load really ran (events acknowledged, queries
+//! answered, every `system/info` sample read), its clients saw no
+//! unexpected status (anything but 200, or 429 for ingest) or transport
+//! error, the stored count equals the acknowledged events, and, when the
+//! flood's `slow-body` attempts were authenticated, the server's body
+//! timeout fired. `ingest.eventsPerSecond` is over the steady load's own
+//! window (`loadWindowS`); the final count's time is `reconcileDurationMs`,
+//! bounded by `--reconcile-timeout`.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -116,9 +132,19 @@ struct Args {
     /// Directory for summary.json and samples.csv.
     #[arg(long, default_value = "connload-out")]
     out: PathBuf,
-    /// Label recorded in the summary and used to tag events.
-    #[arg(long, default_value = "run")]
+    /// Label recorded in the summary and used to tag events (`connload-<label>`
+    /// is the service): letters, digits, `.`, `_` and `-`. Unique per run by
+    /// default, so a reused data directory does not add earlier events.
+    #[arg(long, value_parser = parse_label, default_value_t = default_label())]
     label: String,
+    /// How long the final count may take to match the acknowledged events.
+    #[arg(long, default_value = "30s", value_parser = parse_duration)]
+    reconcile_timeout: Duration,
+    /// Whether flood `slow-body` attempts send the ingest key: `key` (when
+    /// connload has one) exercises the body timeout; `none` exercises the
+    /// refusal of unauthenticated ingestion.
+    #[arg(long, value_enum, default_value_t = SlowBodyAuth::Key)]
+    slow_body_auth: SlowBodyAuth,
     /// The admin user to sign in as with `--admin-password`.
     #[arg(long, default_value = "admin")]
     admin_username: String,
@@ -138,6 +164,23 @@ struct Args {
     /// An existing ingest key to send with every ingest batch.
     #[arg(long, env = "CONNLOAD_INGEST_KEY", hide_env_values = true)]
     ingest_key: Option<String>,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq, Debug)]
+enum SlowBodyAuth {
+    Key,
+    None,
+}
+
+fn default_label() -> String {
+    format!("run-{}", now_ms())
+}
+
+/// Labels go into NDJSON and query strings unescaped, so only safe characters.
+fn parse_label(s: &str) -> Result<String, String> {
+    let ok =
+        !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if ok { Ok(s.to_string()) } else { Err(format!("'{s}': use 1-64 letters, digits, '.', '_' or '-'")) }
 }
 
 /// How a client authenticates; the summary records only this kind, never
@@ -307,20 +350,20 @@ async fn ingest_sender(args: Args, client: reqwest::Client, steady: Arc<Steady>,
             .collect();
         let started = Instant::now();
         match client.post(&url).header("content-type", "application/x-ndjson").body(body).send().await {
-            Ok(r) => {
-                let status = r.status().as_u16();
-                let v: Value = r.json().await.unwrap_or(Value::Null);
-                match status {
-                    200 => {
+            Ok(r) => match r.status().as_u16() {
+                200 => match r.json::<Value>().await.ok().and_then(|v| v["accepted"].as_u64()) {
+                    Some(accepted) => {
                         steady.ingest_latency.record(started.elapsed());
                         steady.ingest_ok.fetch_add(1, Ordering::Relaxed);
-                        steady.acknowledged.fetch_add(v["accepted"].as_u64().unwrap_or(0), Ordering::Relaxed);
+                        steady.acknowledged.fetch_add(accepted, Ordering::Relaxed);
                     }
-                    429 => drop(steady.ingest_429.fetch_add(1, Ordering::Relaxed)),
-                    503 => drop(steady.ingest_503.fetch_add(1, Ordering::Relaxed)),
-                    _ => drop(steady.ingest_other.fetch_add(1, Ordering::Relaxed)),
-                }
-            }
+                    // Accepted, but how many is unknown: reconciliation would be wrong.
+                    None => drop(steady.ingest_errors.fetch_add(1, Ordering::Relaxed)),
+                },
+                429 => drop(steady.ingest_429.fetch_add(1, Ordering::Relaxed)),
+                503 => drop(steady.ingest_503.fetch_add(1, Ordering::Relaxed)),
+                _ => drop(steady.ingest_other.fetch_add(1, Ordering::Relaxed)),
+            },
             Err(_) => drop(steady.ingest_errors.fetch_add(1, Ordering::Relaxed)),
         }
         tokio::time::sleep(args.ingest_interval).await;
@@ -334,11 +377,13 @@ async fn query_sender(args: Args, client: reqwest::Client, steady: Arc<Steady>, 
         let started = Instant::now();
         match client.post(&url).json(&body).send().await {
             Ok(r) => match r.status().as_u16() {
-                200 => {
-                    let _ = r.bytes().await;
-                    steady.query_latency.record(started.elapsed());
-                    steady.query_ok.fetch_add(1, Ordering::Relaxed);
-                }
+                200 => match r.json::<Value>().await.ok().and_then(|v| v["count"].as_u64()) {
+                    Some(_) => {
+                        steady.query_latency.record(started.elapsed());
+                        steady.query_ok.fetch_add(1, Ordering::Relaxed);
+                    }
+                    None => drop(steady.query_errors.fetch_add(1, Ordering::Relaxed)),
+                },
                 503 => drop(steady.query_503.fetch_add(1, Ordering::Relaxed)),
                 _ => drop(steady.query_other.fetch_add(1, Ordering::Relaxed)),
             },
@@ -349,7 +394,16 @@ async fn query_sender(args: Args, client: reqwest::Client, steady: Arc<Steady>, 
 }
 
 const SLOW_HEAD: &[u8] = b"GET /health HTTP/1.1\r\nHost: connload\r\nX-Slow: ";
-const SLOW_BODY_HEAD: &[u8] = b"POST /api/v1/events HTTP/1.1\r\nHost: connload\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n[{\"message\"";
+/// A head announcing a 100 KB body, then its first 10 bytes; with `key`, it
+/// is authorized like the steady producers, so the server reads the body.
+fn slow_body_head(key: Option<&str>) -> Arc<[u8]> {
+    let auth = key.map(|k| format!("Authorization: Bearer {k}\r\n")).unwrap_or_default();
+    format!(
+        "POST /api/v1/events HTTP/1.1\r\nHost: connload\r\n{auth}Content-Type: application/json\r\nContent-Length: 100000\r\n\r\n[{{\"message\""
+    )
+    .into_bytes()
+    .into()
+}
 const NORMAL_REQUEST: &[u8] = b"GET /health HTTP/1.1\r\nHost: connload\r\nConnection: close\r\n\r\n";
 
 /// When things happened during one attempt, from its start.
@@ -394,12 +448,13 @@ impl Timing {
 async fn attempt(
     addr: SocketAddr,
     kind: usize,
+    slow_body: Arc<[u8]>,
     connect_timeout: Duration,
     patience: Duration,
 ) -> (&'static str, Timing) {
     let started = Instant::now();
     let mut timing = Timing::default();
-    let outcome = run_attempt(addr, kind, connect_timeout, patience, started, &mut timing).await;
+    let outcome = run_attempt(addr, kind, &slow_body, connect_timeout, patience, started, &mut timing).await;
     timing.ended = started.elapsed();
     if let (Some(a), Some(c)) = (timing.acked, timing.connected) {
         timing.acked = Some(a.max(c).min(timing.ended));
@@ -410,6 +465,7 @@ async fn attempt(
 async fn run_attempt(
     addr: SocketAddr,
     kind: usize,
+    slow_body: &[u8],
     connect_timeout: Duration,
     patience: Duration,
     started: Instant,
@@ -422,7 +478,7 @@ async fn run_attempt(
     let first: &[u8] = match KINDS[kind] {
         "idle" => b"",
         "slow-head" => &SLOW_HEAD[..1],
-        "slow-body" => SLOW_BODY_HEAD,
+        "slow-body" => slow_body,
         _ => NORMAL_REQUEST,
     };
     if !first.is_empty() && tcp.write_all(first).await.is_err() {
@@ -542,10 +598,19 @@ struct Wave {
     timings: Vec<Timing>,
 }
 
-async fn wave(addr: SocketAddr, attempts: usize, connect_timeout: Duration, patience: Duration) -> Wave {
+async fn wave(
+    addr: SocketAddr,
+    attempts: usize,
+    slow_body: &Arc<[u8]>,
+    connect_timeout: Duration,
+    patience: Duration,
+) -> Wave {
     let started = Instant::now();
     let tasks: Vec<_> = (0..attempts)
-        .map(|i| (i % KINDS.len(), tokio::spawn(attempt(addr, i % KINDS.len(), connect_timeout, patience))))
+        .map(|i| {
+            let kind = i % KINDS.len();
+            (kind, tokio::spawn(attempt(addr, kind, slow_body.clone(), connect_timeout, patience)))
+        })
         .collect();
     let mut outcomes = BTreeMap::new();
     for kind in KINDS {
@@ -613,15 +678,19 @@ const SAMPLE_FIELDS: [&str; 12] = [
     "ingestRejected",
 ];
 
-async fn sampler(
-    args: Args,
-    client: reqwest::Client,
-    until: Instant,
-    start: Instant,
-) -> (String, BTreeMap<String, u64>) {
+/// What the sampler collected.
+struct Samples {
+    csv: String,
+    peaks: BTreeMap<String, u64>,
+    ok: u64,
+    failed: u64,
+}
+
+async fn sampler(args: Args, client: reqwest::Client, until: Instant, start: Instant) -> Samples {
     let url = format!("{}/api/v1/system/info", args.target);
     let mut csv = format!("elapsedMs,ok,{}\n", SAMPLE_FIELDS.join(","));
     let mut peaks: BTreeMap<String, u64> = BTreeMap::new();
+    let (mut ok, mut failed) = (0, 0);
     let mut tick = tokio::time::interval(args.sample_interval);
     while Instant::now() < until {
         tick.tick().await;
@@ -631,9 +700,11 @@ async fn sampler(
             _ => None,
         };
         let Some(v) = v else {
+            failed += 1;
             csv.push_str(&format!("{elapsed},0{}\n", ",".repeat(SAMPLE_FIELDS.len())));
             continue;
         };
+        ok += 1;
         let c = &v["connections"];
         let row: Vec<u64> = SAMPLE_FIELDS
             .iter()
@@ -649,7 +720,118 @@ async fn sampler(
         }
         csv.push_str(&format!("{elapsed},1,{}\n", row.iter().map(u64::to_string).collect::<Vec<_>>().join(",")));
     }
-    (csv, peaks)
+    Samples { csv, peaks, ok, failed }
+}
+
+/// The final count: polls until the stored count of connload's service
+/// equals `acknowledged`, for at most `wait` in all (each request is cut off
+/// at the deadline). Returns the last count read, the error that kept it
+/// from matching (if any) and how long it took.
+async fn reconcile(
+    client: &reqwest::Client,
+    target: &str,
+    label: &str,
+    acknowledged: u64,
+    wait: Duration,
+) -> (Option<u64>, Option<String>, Duration) {
+    let started = Instant::now();
+    let deadline = started + wait;
+    let body = json!({ "query": service_query(label) });
+    let mut persisted = None;
+    let mut error: Option<String> = None;
+    loop {
+        let count =
+            json_ok(client.post(format!("{target}/api/v1/query/logs/count")).json(&body), "counting stored events");
+        match tokio::time::timeout_at(deadline.into(), count).await {
+            Ok(Ok(v)) => (persisted, error) = (v["count"].as_u64(), None),
+            Ok(Err(e)) => error = Some(format!("{e:#}")),
+            // Cut off at the deadline: report the last count read, else the
+            // last refusal, else that nothing answered.
+            Err(_) if persisted.is_some() => error = None,
+            Err(_) => {
+                error =
+                    error.or_else(|| Some(format!("counting stored events: no answer within {} s", wait.as_secs_f64())))
+            }
+        }
+        let now = Instant::now();
+        if (persisted == Some(acknowledged) && error.is_none()) || now >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500).min(deadline - now)).await;
+    }
+    if error.is_none() && persisted != Some(acknowledged) {
+        error =
+            Some(format!("{acknowledged} events acknowledged but {persisted:?} stored after {} s", wait.as_secs_f64()));
+    }
+    (persisted, error, started.elapsed())
+}
+
+/// Everything that decides whether a run is valid evidence.
+#[derive(Default)]
+struct Evidence {
+    ingest_clients: usize,
+    query_clients: usize,
+    acknowledged: u64,
+    /// Ingest: 503, other non-200 (not 429), transport errors.
+    ingest_failures: [u64; 3],
+    query_ok: u64,
+    /// Query: 503, other non-200, transport errors.
+    query_failures: [u64; 3],
+    samples_ok: u64,
+    samples_failed: u64,
+    after_read: bool,
+    reconcile_error: Option<String>,
+    /// `Some(n)`: authenticated (or open) slow-body attempts were sent and
+    /// the server's body-timeout counter rose by `n`.
+    body_timeouts: Option<u64>,
+}
+
+/// What the load ran: both kinds of steady client, or one.
+fn workload(e: &Evidence) -> &'static str {
+    match (e.ingest_clients > 0, e.query_clients > 0) {
+        (true, true) => "mixed",
+        (true, false) => "ingest-only",
+        (false, true) => "query-only",
+        (false, false) => "none",
+    }
+}
+
+/// Why the run is not valid evidence; empty when it is.
+fn failures(e: &Evidence) -> Vec<String> {
+    let mut f = Vec::new();
+    let names = ["503 responses", "unexpected statuses (not 200 or 429)", "transport or response errors"];
+    if workload(e) == "none" {
+        f.push("no steady clients".to_string());
+    }
+    if e.ingest_clients > 0 && e.acknowledged == 0 {
+        f.push("no ingested events were acknowledged".to_string());
+    }
+    for (n, name) in e.ingest_failures.iter().zip(names) {
+        if *n > 0 {
+            f.push(format!("ingest: {n} {name}"));
+        }
+    }
+    if e.query_clients > 0 && e.query_ok == 0 {
+        f.push("no query was answered".to_string());
+    }
+    for (n, name) in e.query_failures.iter().zip(names) {
+        if *n > 0 {
+            f.push(format!("query: {n} {}", name.replace(" (not 200 or 429)", " (not 200)")));
+        }
+    }
+    if e.samples_ok == 0 || e.samples_failed > 0 {
+        f.push(format!("system/info: {} of {} samples failed", e.samples_failed, e.samples_ok + e.samples_failed));
+    }
+    if !e.after_read {
+        f.push("system/info could not be read after the load".to_string());
+    }
+    if let Some(r) = &e.reconcile_error {
+        f.push(format!("not reconciled: {r}"));
+    }
+    if e.body_timeouts == Some(0) {
+        f.push("flood: authenticated slow-body attempts never reached the body timeout".to_string());
+    }
+    f
 }
 
 #[tokio::main]
@@ -682,6 +864,8 @@ async fn main() -> anyhow::Result<()> {
     let ingest_auth = if ingest_key.is_some() { Credential::IngestKey } else { Credential::None };
     let ingest_header = ingest_key.as_ref().map(|k| format!("Bearer {k}"));
     let ingest_header = ingest_header.as_deref().map(|v| (AUTHORIZATION, v));
+    let slow_body_key = if args.slow_body_auth == SlowBodyAuth::Key { ingest_key.as_deref() } else { None };
+    let slow_body = slow_body_head(slow_body_key);
     eprintln!("connload: queries authenticate with {}, ingestion with {}", admin_auth.name(), ingest_auth.name());
 
     let start = Instant::now();
@@ -697,6 +881,13 @@ async fn main() -> anyhow::Result<()> {
         load.push(tokio::spawn(query_sender(args.clone(), client, steady.clone(), until)));
     }
     let sampling = tokio::spawn(sampler(args.clone(), client.clone(), until, start));
+    // When the steady load itself ended, apart from the waves' cleanup.
+    let load_done = tokio::spawn(async move {
+        for t in load {
+            t.await?;
+        }
+        Ok::<_, tokio::task::JoinError>(Instant::now())
+    });
 
     let mut waves = Vec::new();
     let mut all_timings = Vec::new();
@@ -705,7 +896,7 @@ async fn main() -> anyhow::Result<()> {
         while next + Duration::from_secs(1) < until {
             tokio::time::sleep_until(next.into()).await;
             let at = start.elapsed();
-            let w = wave(addr, args.attempts, args.connect_timeout, args.wave_patience).await;
+            let w = wave(addr, args.attempts, &slow_body, args.connect_timeout, args.wave_patience).await;
             let mut entry = timing_summary(&w.timings);
             eprintln!(
                 "connload: wave at {:.0}s took {:.1}s (establishment p99 {} ms, max {} ms; accept to end max {} ms): {:?}",
@@ -727,38 +918,42 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-    for t in load {
-        t.await?;
-    }
-    let (csv, peaks) = sampling.await?;
-    std::fs::write(args.out.join("samples.csv"), csv)?;
+    let load_window = load_done.await??.duration_since(start).as_secs_f64();
+    let samples = sampling.await?;
+    std::fs::write(args.out.join("samples.csv"), &samples.csv)?;
 
     // Acknowledged events must all be stored and queryable. The last batches
     // get up to 30 s to become visible; a count that never matches, or a
     // count query that is refused, leaves `reconciled` false.
     let acknowledged = steady.acknowledged.load(Ordering::Relaxed);
-    let count_body = json!({ "query": service_query(&args.label) });
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let (persisted, reconcile_error) = loop {
-        let r = json_ok(
-            client.post(format!("{}/api/v1/query/logs/count", args.target)).json(&count_body),
-            "counting stored events",
-        )
-        .await;
-        let (persisted, error) = match r {
-            Ok(v) => (v["count"].as_u64(), None),
-            Err(e) => (None, Some(format!("{e:#}"))),
-        };
-        if persisted == Some(acknowledged) || Instant::now() >= deadline {
-            break (persisted, error);
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    };
-    let after = json_ok(client.get(format!("{}/api/v1/system/info", args.target)), "reading system/info")
-        .await
-        .unwrap_or(Value::Null);
+    let (persisted, reconcile_error, reconcile_took) =
+        reconcile(&client, &args.target, &args.label, acknowledged, args.reconcile_timeout).await;
+    let after = json_ok(client.get(format!("{}/api/v1/system/info", args.target)), "reading system/info").await.ok();
     let elapsed = start.elapsed().as_secs_f64();
     let n = |c: &AtomicU64| c.load(Ordering::Relaxed);
+    let peaks = samples.peaks;
+    // Slow-body attempts reach the body read when they carry the key, or
+    // when ingestion takes no key (the steady producers then have none).
+    let slow_body_reads = !waves.is_empty()
+        && args.attempts > 2
+        && (slow_body_key.is_some() || (ingest_key.is_none() && args.slow_body_auth == SlowBodyAuth::Key));
+    let body_timeouts_before = info["connections"]["bodyTimeouts"].as_u64().unwrap_or(0);
+    let evidence = Evidence {
+        ingest_clients: args.ingest_clients,
+        query_clients: args.query_clients,
+        acknowledged,
+        ingest_failures: [n(&steady.ingest_503), n(&steady.ingest_other), n(&steady.ingest_errors)],
+        query_ok: n(&steady.query_ok),
+        query_failures: [n(&steady.query_503), n(&steady.query_other), n(&steady.query_errors)],
+        samples_ok: samples.ok,
+        samples_failed: samples.failed,
+        after_read: after.is_some(),
+        reconcile_error: reconcile_error.clone(),
+        body_timeouts: slow_body_reads
+            .then(|| peaks.get("bodyTimeouts").copied().unwrap_or(0).saturating_sub(body_timeouts_before)),
+    };
+    let failures = failures(&evidence);
+    let after = after.unwrap_or(Value::Null);
     let summary = json!({
         "label": args.label,
         "startedAtMs": now_ms() - (elapsed * 1000.0) as u128,
@@ -768,14 +963,20 @@ async fn main() -> anyhow::Result<()> {
             "connectTimeoutS": args.connect_timeout.as_secs_f64(), "wavePatienceS": args.wave_patience.as_secs_f64(),
             "ingestClients": args.ingest_clients, "batch": args.batch, "ingestIntervalMs": args.ingest_interval.as_millis() as u64,
             "queryClients": args.query_clients, "queryIntervalMs": args.query_interval.as_millis() as u64,
+            "reconcileTimeoutS": args.reconcile_timeout.as_secs_f64(),
+            "slowBodyAuth": if slow_body_key.is_some() { "ingestKey" } else { "none" },
         },
+        "workload": workload(&evidence),
+        "workloadValid": failures.is_empty(),
+        "failures": failures,
+        "loadWindowS": load_window,
         "auth": { "queries": admin_auth.name(), "ingest": ingest_auth.name() },
         "server": { "version": info["version"], "config": config["config"]["server"], "before": info["connections"], "after": after["connections"] },
         "ingest": {
             "requestsOk": n(&steady.ingest_ok), "rejected429": n(&steady.ingest_429), "unavailable503": n(&steady.ingest_503),
             "otherStatus": n(&steady.ingest_other), "transportErrors": n(&steady.ingest_errors),
             "acknowledgedEvents": acknowledged, "persistedEvents": persisted,
-            "eventsPerSecond": acknowledged as f64 / elapsed,
+            "eventsPerSecond": acknowledged as f64 / load_window,
             "ackLatency": steady.ingest_latency.summary(),
         },
         "query": {
@@ -785,16 +986,23 @@ async fn main() -> anyhow::Result<()> {
         "flood": if args.no_waves { Value::Null } else { flood_summary(&waves, &all_timings) },
         "waves": waves,
         "peaks": peaks,
-        "reconciled": persisted == Some(acknowledged),
+        "samples": { "ok": samples.ok, "failed": samples.failed },
+        "reconciled": reconcile_error.is_none() && persisted == Some(acknowledged),
         "reconcileError": reconcile_error,
+        "reconcileDurationMs": reconcile_took.as_millis() as u64,
     });
+    let mut summary = summary;
+    if summary["flood"].is_object() {
+        // Rise of the server's body-timeout counter; null when slow-body
+        // attempts were not expected to reach the body read.
+        summary["flood"]["bodyTimeouts"] = json!(evidence.body_timeouts);
+    }
     std::fs::write(args.out.join("summary.json"), serde_json::to_string_pretty(&summary)?)?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
-    if let Some(e) = reconcile_error {
-        anyhow::bail!("{acknowledged} events acknowledged but the stored count could not be read: {e}");
-    }
-    if persisted != Some(acknowledged) {
-        anyhow::bail!("{acknowledged} events acknowledged but {persisted:?} stored");
+    let failures = summary["failures"].as_array().cloned().unwrap_or_default();
+    if !failures.is_empty() {
+        let list: Vec<_> = failures.iter().filter_map(Value::as_str).collect();
+        anyhow::bail!("the run is not valid evidence:\n  - {}", list.join("\n  - "));
     }
     Ok(())
 }
@@ -874,7 +1082,7 @@ mod tests {
     #[tokio::test]
     async fn attempts_time_connect_acknowledgement_and_end() {
         let addr = server(ms(300)).await;
-        let (outcome, t) = attempt(addr, 3, ms(5000), ms(5000)).await;
+        let (outcome, t) = attempt(addr, 3, slow_body_head(None), ms(5000), ms(5000)).await;
         assert_eq!(outcome, "served");
         let connected = t.connected.unwrap();
         assert!(connected < ms(250) && t.ended >= ms(300), "{t:?}");
@@ -886,19 +1094,19 @@ mod tests {
         }
         assert!(t.established().unwrap() <= t.ended);
 
-        let (outcome, t) = attempt(addr, 0, ms(5000), ms(5000)).await;
+        let (outcome, t) = attempt(addr, 0, slow_body_head(None), ms(5000), ms(5000)).await;
         assert_eq!(outcome, "closed");
         assert_eq!((t.acked, t.established()), (None, t.connected));
         assert!(!t.abandoned);
 
         // The server holds it past the client's patience.
-        let (outcome, t) = attempt(server(ms(5000)).await, 0, ms(5000), ms(300)).await;
+        let (outcome, t) = attempt(server(ms(5000)).await, 0, slow_body_head(None), ms(5000), ms(300)).await;
         assert_eq!(outcome, "other");
         assert!(t.abandoned && t.established().is_none() && t.accept_to_end().is_none(), "{t:?}");
 
         // Nothing listening: a failed connect, not an establishment.
         let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
-        let (outcome, t) = attempt(closed, 3, ms(5000), ms(5000)).await;
+        let (outcome, t) = attempt(closed, 3, slow_body_head(None), ms(5000), ms(5000)).await;
         assert_eq!((outcome, t.connected), ("reset", None));
     }
 
@@ -927,6 +1135,190 @@ mod tests {
         assert_eq!(a.admin_password.as_deref(), Some("p"));
         assert_eq!(a.admin_username, "admin");
         assert!(a.create_ingest_key);
+    }
+
+    #[test]
+    fn slow_body_carries_the_ingest_key_only_when_given() {
+        let with = String::from_utf8(slow_body_head(Some("k1")).to_vec()).unwrap();
+        assert!(with.contains("\r\nAuthorization: Bearer k1\r\n") && with.ends_with("\r\n\r\n[{\"message\""));
+        assert!(with.find("Authorization").unwrap() < with.find("\r\n\r\n").unwrap());
+        let without = String::from_utf8(slow_body_head(None).to_vec()).unwrap();
+        assert!(!without.contains("Authorization") && without.contains("Content-Length: 100000\r\n"));
+    }
+
+    #[test]
+    fn labels_are_restricted_and_unique_by_default() {
+        assert!(parse_label("steady-1.a_b").is_ok());
+        for bad in ["", "a\"b", "a b", "a\\b", &"x".repeat(65)] {
+            assert!(parse_label(bad).is_err(), "{bad}");
+        }
+        assert!(parse(&["--label", "x\"}"]).is_err());
+        let a = parse(&[]).unwrap();
+        assert!(a.label.starts_with("run-") && parse_label(&a.label).is_ok());
+    }
+
+    fn valid() -> Evidence {
+        Evidence {
+            ingest_clients: 4,
+            query_clients: 2,
+            acknowledged: 1000,
+            query_ok: 10,
+            samples_ok: 60,
+            after_read: true,
+            ..Evidence::default()
+        }
+    }
+
+    #[test]
+    fn a_real_mixed_run_is_valid() {
+        let e = valid();
+        assert_eq!((workload(&e), failures(&e)), ("mixed", Vec::<String>::new()));
+        let e = Evidence { body_timeouts: Some(250), ..valid() };
+        assert!(failures(&e).is_empty());
+    }
+
+    /// A wrong ingest key: every batch refused, nothing stored, 0 == 0.
+    #[test]
+    fn a_run_that_ingested_nothing_is_not_valid_even_if_the_counts_match() {
+        let e = Evidence { acknowledged: 0, ingest_failures: [0, 4000, 0], ..valid() };
+        let f = failures(&e);
+        assert!(f.iter().any(|m| m.contains("no ingested events")), "{f:?}");
+        assert!(f.iter().any(|m| m.contains("ingest: 4000 unexpected statuses")), "{f:?}");
+    }
+
+    #[test]
+    fn steady_503s_refused_queries_and_failed_samples_are_failures() {
+        let e = Evidence {
+            ingest_failures: [3, 0, 0],
+            query_ok: 0,
+            query_failures: [0, 60, 1],
+            samples_failed: 2,
+            after_read: false,
+            ..valid()
+        };
+        let f = failures(&e);
+        for want in [
+            "ingest: 3 503",
+            "no query was answered",
+            "query: 60 unexpected statuses (not 200)",
+            "query: 1 transport",
+            "2 of 62 samples failed",
+            "after the load",
+        ] {
+            assert!(f.iter().any(|m| m.contains(want)), "{want}: {f:?}");
+        }
+        assert!(failures(&Evidence { samples_ok: 0, ..valid() }).iter().any(|m| m.contains("0 of 0")));
+    }
+
+    #[test]
+    fn reconciliation_and_body_timeouts_are_required() {
+        let f =
+            failures(&Evidence { reconcile_error: Some("1000 acknowledged but Some(990) stored".into()), ..valid() });
+        assert!(f[0].starts_with("not reconciled"), "{f:?}");
+        let f = failures(&Evidence { body_timeouts: Some(0), ..valid() });
+        assert!(f[0].contains("body timeout"), "{f:?}");
+    }
+
+    #[test]
+    fn an_ingest_only_run_is_labelled_and_needs_no_queries() {
+        let e = Evidence { query_clients: 0, query_ok: 0, ..valid() };
+        assert_eq!((workload(&e), failures(&e).len()), ("ingest-only", 0));
+    }
+
+    /// Answers every request with `response` (after reading its head and
+    /// body), and counts the requests.
+    async fn stub(response: &'static str) -> (String, Arc<AtomicU64>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(AtomicU64::new(0));
+        let counter = requests.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut s, _) = listener.accept().await.unwrap();
+                let counter = counter.clone();
+                tokio::spawn(async move {
+                    let mut got = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        let Ok(n) = s.read(&mut buf).await else { return };
+                        if n == 0 {
+                            return;
+                        }
+                        got.extend_from_slice(&buf[..n]);
+                        let text = String::from_utf8_lossy(&got).to_ascii_lowercase();
+                        let Some(end) = text.find("\r\n\r\n") else { continue };
+                        let len = text[..end]
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if got.len() < end + 4 + len {
+                            continue;
+                        }
+                        got.drain(..end + 4 + len);
+                        counter.fetch_add(1, Ordering::Relaxed);
+                        if s.write_all(response.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (target, requests)
+    }
+
+    const UNAUTHORIZED: &str =
+        "HTTP/1.1 401 Unauthorized\r\ncontent-length: 2\r\ncontent-type: application/json\r\n\r\n{}";
+
+    #[tokio::test]
+    async fn a_refused_sign_in_or_setup_request_fails_clearly() {
+        let (target, _) = stub(UNAUTHORIZED).await;
+        let e = login(&target, "admin", "wrong").await.unwrap_err();
+        assert!(format!("{e:#}").contains("401"), "{e:#}");
+        let client = client_with(None).unwrap();
+        let e = json_ok(client.get(format!("{target}/api/v1/system/info")), "reading system/info").await.unwrap_err();
+        assert!(format!("{e:#}").contains("--admin-password or --admin-key"), "{e:#}");
+    }
+
+    #[tokio::test]
+    async fn reconciliation_matches_or_reports_why_not() {
+        let client = client_with(None).unwrap();
+        let (target, requests) =
+            stub("HTTP/1.1 200 OK\r\ncontent-length: 14\r\ncontent-type: application/json\r\n\r\n{\"count\":1000}")
+                .await;
+        let (persisted, error, _) = reconcile(&client, &target, "t", 1000, ms(5000)).await;
+        assert_eq!((persisted, error, requests.load(Ordering::Relaxed)), (Some(1000), None, 1));
+
+        // A count that never matches: retried until the deadline, then reported.
+        let (persisted, error, took) = reconcile(&client, &target, "t", 1001, ms(1200)).await;
+        assert_eq!(persisted, Some(1000));
+        assert!(error.unwrap().contains("1001 events acknowledged but Some(1000) stored"));
+        assert!(took >= ms(1200) && took < ms(3000), "{took:?}");
+        assert!(requests.load(Ordering::Relaxed) >= 3);
+
+        let (target, _) = stub(UNAUTHORIZED).await;
+        let (persisted, error, _) = reconcile(&client, &target, "t", 0, ms(300)).await;
+        assert_eq!(persisted, None);
+        assert!(error.unwrap().contains("401"));
+    }
+
+    /// The count request never answers: the deadline still holds, although
+    /// the client's own timeout is 60 s.
+    #[tokio::test]
+    async fn reconciliation_stops_at_its_deadline_when_the_server_stalls() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((s, _)) = listener.accept().await {
+                held.push(s);
+            }
+        });
+        let client = client_with(None).unwrap();
+        let (persisted, error, took) = reconcile(&client, &target, "t", 5, ms(500)).await;
+        assert_eq!(persisted, None);
+        assert!(error.unwrap().contains("no answer within 0.5 s"));
+        assert!(took >= ms(500) && took < ms(2000), "{took:?}");
     }
 
     #[test]
