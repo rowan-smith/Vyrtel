@@ -51,6 +51,15 @@ directory that is never overwritten. The admission bound now covers each
 sign-in request until its response (including the delay after a failure),
 not only its lookup and check.
 
+Clarified the same day, before any published candidate was measured (no
+limit changed): the genuine sign-in counts only when it succeeds before
+its deadline and while the flood is still running. The flood runs for at
+least `FLOOD_S` and until the genuine sign-in has finished, and each of
+its attempts may take only what is left of the deadline. Readiness
+(`READY_S`, 20 s), `--version` (5 s) and shutdown (`SHUTDOWN_S`, 15 s after
+SIGTERM, then SIGKILL) are bounded too, and a server that does not stop in
+time makes the run invalid. Every invalid run writes `summary.json`.
+
 Recorded, not budgeted: idle RSS, every phase's response counts and times,
 the steady clients' latency, and how long a right-password sign-in takes to
 succeed while the flood runs. Admission is global, not per client, so a

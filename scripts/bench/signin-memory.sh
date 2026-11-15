@@ -128,8 +128,9 @@ steady() {
 steady & STEADY=$!
 : >"$OUT/flood-wrong-128.tsv"
 FLOOD_START=$(now)
-( flood_min_end=$((SECONDS + FLOOD_S))
-  while [ $SECONDS -lt $flood_min_end ] || [ ! -e "$WORK/flood-stop" ]; do
+FLOOD_MIN_END=$(awk -v s="$FLOOD_START" -v d="$FLOOD_S" 'BEGIN { printf "%.3f", s + d }')
+( # Wall-clock time, not $SECONDS (whole seconds), so the minimum is never cut short.
+  while awk -v e="$FLOOD_MIN_END" -v n="$(now)" 'BEGIN { exit !(n < e) }' || [ ! -e "$WORK/flood-stop" ]; do
     seq 256 | xargs -P 128 -I{} bash -c "login wrong-password"
   done
 ) >>"$OUT/flood-wrong-128.tsv" &

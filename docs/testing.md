@@ -1042,12 +1042,19 @@ the lookup still waits).
 
 `signin-memory.sh` runs 250 sequential sign-ins, 256 at 64 at once (right
 and wrong passwords), 768 at 128 at once, then a wrong-password flood of
-`FLOOD_S` seconds (default 20) at 128 at once while steady clients ingest
-and query, and a genuine sign-in retries until it gets in or
-`GENUINE_DEADLINE_S` (30 s) passes. It samples the server's RSS every 100 ms
-with the default allocator, writes `summary.json` to a new results
-directory, and exits 1 when the run is invalid (it did not show the work
-succeeding, see the budgets' measurement fix) or a budget is missed. The budgets, declared before any candidate
+at least `FLOOD_S` seconds (default 20) at 128 at once while steady clients
+ingest and query, and a genuine sign-in retries until it gets in or
+`GENUINE_DEADLINE_S` (30 s) passes; the flood lasts until the genuine
+sign-in has finished, so a success is one during the flood. It samples the
+server's RSS every 100 ms with the default allocator, writes `summary.json`
+to a new results directory (also for a run that stops early), and exits 1
+when the run is invalid (it did not show the work succeeding, see the
+budgets' measurement fix) or a budget is missed. Nothing waits without a
+bound: requests time out, readiness has `READY_S`, `--version` 5 s, and
+shutdown `SHUTDOWN_S` before SIGKILL. Each failure path was run on the
+reference host with stand-in binaries (one that never becomes ready and
+whose `--version` hangs, one with another admin password, one that ignores
+SIGTERM): each exits 1 in bounded time with `valid: false` and its reason. The budgets, declared before any candidate
 measurement, are in [signin-budgets.md](../scripts/bench/signin-budgets.md).
 
 Reference host (OneProvider E3-1245 v2), 2026-11-15. The first pair used
