@@ -32,7 +32,6 @@ async-compression = { version = "0.4", default-features = false, features = ["to
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "getrandom", "password-hash"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "macros"] }
 base64 = "0.23"
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 clap = { version = "4", features = ["derive", "env"] }
 crc32fast = "1"
 flate2 = "1"
@@ -42,6 +41,7 @@ http-body = "1"
 # The HTTP/1 server under axum, driven directly so the transport boundary is bounded (REL-18).
 hyper = { version = "1", default-features = false, features = ["server", "http1"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+jiff = { version = "1", default-features = false, features = ["std"] }
 mime_guess = { version = "2", default-features = false }
 prost = { version = "0.14", default-features = false, features = ["std", "derive"] }
 rand = "0.10"

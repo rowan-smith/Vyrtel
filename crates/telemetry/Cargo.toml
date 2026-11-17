@@ -11,7 +11,7 @@ publish = false
 testing = ["dep:proptest"]
 
 [dependencies]
-chrono.workspace = true
+jiff.workspace = true
 proptest = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
