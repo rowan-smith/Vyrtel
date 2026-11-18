@@ -51,7 +51,9 @@ after(() => {
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
 const gateError = (pattern) => (e) => e instanceof GateError && pattern.test(e.message);
 
-/** A committed repository at `version` with the release scripts and the real gate manifest. */
+const GATED_0_1_2 = { gates: [{ id: 'PERF-GATE-1', issue: 170, milestone: '0.1.2 — Reliability and release confidence' }] };
+
+/** A committed repository at `version` with the release scripts and the real gate manifest (0.1.2 gated). */
 function repo(version = '0.1.2') {
   const root = tmp();
   fs.writeFileSync(path.join(root, 'Cargo.toml'), `[workspace]\nmembers = []\n\n[workspace.package]\nversion = "${version}"\n`);
@@ -59,9 +61,14 @@ function repo(version = '0.1.2') {
   fs.mkdirSync(path.join(root, 'web'));
   fs.writeFileSync(path.join(root, 'web/package.json'), JSON.stringify({ version }));
   fs.mkdirSync(path.join(root, 'scripts/release'), { recursive: true });
-  for (const f of ['release.mjs', 'performance.mjs', 'performance-gates.json']) {
+  for (const f of ['release.mjs', 'performance.mjs']) {
     fs.copyFileSync(path.join(HERE, f), path.join(root, 'scripts/release', f));
   }
+  // The gate tests exercise PERF-GATE-1 at 0.1.2 (the record fixture's version), so they keep it
+  // gated here whatever the repository manifest says about the real 0.1.2.
+  const manifest = JSON.parse(fs.readFileSync(path.join(HERE, 'performance-gates.json'), 'utf8'));
+  manifest.versions['0.1.2'] = GATED_0_1_2;
+  fs.writeFileSync(path.join(root, 'scripts/release/performance-gates.json'), JSON.stringify(manifest, null, 2));
   fs.mkdirSync(path.join(root, 'crates/telemetry/src'), { recursive: true });
   fs.writeFileSync(path.join(root, 'crates/telemetry/src/layout.rs'), 'pub const LAYOUT: &str = "0.1.2";\n');
   git(root, 'init', '--quiet', '--initial-branch=main');
@@ -292,8 +299,27 @@ describe('TC-PERF-03: a complete passing matrix for the exact candidate satisfie
         assert.ok(Number.isInteger(g.issue) && g.issue > 0, `${g.id} links an issue`);
       }
     }
-    assert.deepEqual(requiredGates('0.1.2', false, ROOT).gates.map((g) => g.id), ['PERF-GATE-1']);
+    // 0.1.2's gate was deferred by the maintainer: no gates, with the reason recorded.
+    const v012 = requiredGates('0.1.2', false, ROOT);
+    assert.deepEqual(v012.gates, []);
+    assert.match(v012.reason, /PERF-GATE-1 \(#170\) deferred/);
     assert.deepEqual(requiredGates('0.2.1', false, ROOT).gates.map((g) => g.id), ['PERF-GATE-5', 'PERF-GATE-10']);
+  });
+
+  test('a stable version whose gates are waived is tagged with the reason and no release-evidence', () => {
+    const { root, sha } = repo('0.1.2');
+    const manifestPath = path.join(root, GATES_FILE);
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    manifest.versions['0.1.2'] = { gates: [], reason: 'waived for this test' };
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    git(root, 'commit', '--quiet', '-am', 'waive 0.1.2 gate');
+    const head = git(root, 'rev-parse', 'HEAD');
+    assert.notEqual(head, sha);
+    const r = pretag({ tag: 'v0.1.2', cwd: root, create: true });
+    assert.equal(r.sha, head);
+    assert.equal(tags(root), 'v0.1.2');
+    const message = git(root, 'for-each-ref', 'refs/tags/v0.1.2', '--format=%(contents)');
+    assert.match(message, /Performance-Gate: none \(waived for this test\)/);
   });
 });
 

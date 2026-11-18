@@ -2,7 +2,10 @@
   "$comment": "Performance gates each release version needs before it can be tagged (docs/releasing.md#pre-tag-performance-sign-off). Every gate for a version must sign off the same candidate commit. A stable version with no entry cannot be released; give it an empty list and a reason to release without a gate. Future/discovery scope gets an entry only once it is assigned to a delivery milestone.",
   "prereleases": "not-required",
   "versions": {
-    "0.1.2": { "gates": [{ "id": "PERF-GATE-1", "issue": 170, "milestone": "0.1.2 — Reliability and release confidence" }] },
+    "0.1.2": {
+      "gates": [],
+      "reason": "PERF-GATE-1 (#170) deferred by the maintainer: final-candidate profiling on the dedicated sign-off host is not run for 0.1.2; its performance evidence will be published on the website. Pre-release measurements are in docs/benchmarks/0.1.2-rc.5.md."
+    },
     "0.1.3": { "gates": [{ "id": "PERF-GATE-2", "issue": 171, "milestone": "0.1.3 — Complete everyday workflows" }] },
     "0.2.0": {
       "gates": [

@@ -149,6 +149,13 @@ an empty list only with a `reason`. Prereleases need no sign-off (`"prereleases"
 manifest in a reviewed pull request. Future and discovery scope gets no entry until it is
 assigned to a delivery milestone.
 
+**0.1.2 was released without its gate.** The maintainer deferred PERF-GATE-1
+([#170](https://github.com/rowan-smith/Vyrtel/issues/170)): the final candidate was not profiled
+on the dedicated sign-off host and has no approval record, so its manifest entry is an empty list
+with that reason, which the tag message carries (`Performance-Gate: none (…)`). Its performance
+evidence will be published on the website; the measurements made before release are in
+[0.1.2-rc.5](benchmarks/0.1.2-rc.5.md). Later versions keep their gates.
+
 **Where the evidence lives:** one approval record per gate on the `release-evidence` branch, at
 `performance/<version>/<gate id>.json`. The record cannot live in the candidate commit: adding
 it would change the commit it approves. Raw measurements and profiles are linked from `reports`.
