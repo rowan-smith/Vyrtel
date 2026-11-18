@@ -65,9 +65,10 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+      # npm audit --audit-level=high, except advisories on scripts/ci/npm-audit-allowlist.json
+      # (no fix exists yet; each entry has a reason and an expiry date).
       - name: npm audit
-        working-directory: web
-        run: npm audit --audit-level=high
+        run: node scripts/ci/npm-audit.mjs web
 
   frontend:
     name: Frontend (lint, types, tests, build)
@@ -104,6 +105,7 @@ jobs:
           node-version: 22
       - run: node --test scripts/release/*.test.mjs
       - run: node --test scripts/bench/*.test.mjs
+      - run: node --test scripts/ci/*.test.mjs
 
   e2e:
     name: End-to-end (Playwright)
