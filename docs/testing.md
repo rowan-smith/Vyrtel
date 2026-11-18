@@ -508,9 +508,15 @@ docker volume create rel18-target
 docker run --rm -v "$PWD:/src:ro" -v rel18-target:/target -e CARGO_TARGET_DIR=/target -w /src \
   rust:1.96-bookworm cargo build --release --locked -p server -p loadgen
 
-# Steady load only, for a baseline/candidate comparison (repeat 3×; for the
-# baseline, build the prior commit onto another volume and set SERVER_VOLUME):
+# Steady load only, one run:
 IMAGE=rust:1.96-bookworm scripts/bench/transport-soak.sh out/steady-1 --no-waves --duration 60s
+
+# The regression comparison: build the baseline commit declared in
+# transport-budgets.md onto another volume (its vyrtel only), then three
+# interleaved 60 s steady runs of each build with the same connload, and the
+# report against the regression budgets (exits 1 on a miss or missing evidence):
+IMAGE=rust:1.96-bookworm scripts/bench/transport-regression.sh out/regression rel18-baseline rel18-target
+node scripts/bench/transport-regression-report.mjs out/regression --json out/regression/report.json
 
 # 1,000 simultaneous attempts every 30 s for 3 minutes, normal and constrained:
 IMAGE=rust:1.96-bookworm scripts/bench/transport-soak.sh out/flood-normal-1 --duration 180s --attempts 1000
@@ -523,7 +529,10 @@ IMAGE=rust:1.96-bookworm IDLE_AFTER=60 scripts/bench/transport-soak.sh out/soak 
 ```
 
 Each run directory holds `resources.csv`, `resources.json`,
-`samples.csv`, `summary.json`, `connload.log` and `server.log`. The budgets
+`samples.csv`, `summary.json`, `connload.log` and `server.log`. Elapsed
+times in them (`elapsedMs`, `loadEndedAtMs`, `shutdownMs`) are read from
+the monotonic clock, through Perl's `Time::HiRes`, so a wall-clock step
+cannot make them negative. The budgets
 are in [`scripts/bench/transport-budgets.md`](../scripts/bench/transport-budgets.md).
 
 ### Restore drill
