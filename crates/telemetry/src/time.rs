@@ -3,8 +3,6 @@
 
 use std::fmt;
 
-use chrono::{DateTime, SecondsFormat, Utc};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Timestamp(pub i64);
 
@@ -16,8 +14,7 @@ impl Timestamp {
     pub const MAX: Timestamp = Timestamp(i64::MAX);
 
     pub fn now() -> Self {
-        let now = Utc::now();
-        Timestamp(now.timestamp_nanos_opt().unwrap_or(i64::MAX))
+        Timestamp(i64::try_from(jiff::Timestamp::now().as_nanosecond()).unwrap_or(i64::MAX))
     }
 
     pub fn from_nanos(n: i64) -> Self {
@@ -50,8 +47,8 @@ impl Timestamp {
 
     /// Parse an RFC 3339 timestamp (`2026-10-06T10:20:13.485Z`).
     pub fn parse_rfc3339(s: &str) -> Option<Self> {
-        let dt = DateTime::parse_from_rfc3339(s.trim()).ok()?;
-        dt.timestamp_nanos_opt().map(Timestamp)
+        let ts: jiff::Timestamp = s.trim().parse().ok()?;
+        i64::try_from(ts.as_nanosecond()).ok().map(Timestamp)
     }
 
     /// Interpret a bare number as a Unix timestamp, guessing the unit from
@@ -89,8 +86,24 @@ impl Timestamp {
         })
     }
 
+    /// UTC with a `Z` suffix and 0, 3, 6 or 9 fractional digits — the
+    /// fewest that keep the value exact.
     pub fn to_rfc3339(self) -> String {
-        DateTime::<Utc>::from_timestamp_nanos(self.0).to_rfc3339_opts(SecondsFormat::AutoSi, true)
+        let secs = self.0.div_euclid(NANOS_PER_SEC);
+        let sub = self.0.rem_euclid(NANOS_PER_SEC);
+        // Every i64 of nanoseconds lies inside jiff's supported range.
+        let whole = jiff::Timestamp::from_second(secs).expect("i64 nanos fit jiff's range");
+        let mut out = whole.strftime("%Y-%m-%dT%H:%M:%S").to_string();
+        if sub == 0 {
+        } else if sub % 1_000_000 == 0 {
+            out.push_str(&format!(".{:03}", sub / 1_000_000));
+        } else if sub % 1_000 == 0 {
+            out.push_str(&format!(".{:06}", sub / 1_000));
+        } else {
+            out.push_str(&format!(".{sub:09}"));
+        }
+        out.push('Z');
+        out
     }
 }
 
@@ -141,6 +154,18 @@ mod tests {
         assert_eq!(t.to_rfc3339(), "2026-10-06T10:20:13.485Z");
         let t = Timestamp::parse_rfc3339("2026-10-06T10:20:13.485123456+02:00").unwrap();
         assert_eq!(t.to_rfc3339(), "2026-10-06T08:20:13.485123456Z");
+    }
+
+    #[test]
+    fn rfc3339_fraction_widths_and_extremes() {
+        assert_eq!(Timestamp(0).to_rfc3339(), "1970-01-01T00:00:00Z");
+        assert_eq!(Timestamp(485_100_000).to_rfc3339(), "1970-01-01T00:00:00.485100Z");
+        assert_eq!(Timestamp(-1).to_rfc3339(), "1969-12-31T23:59:59.999999999Z");
+        assert_eq!(Timestamp::MIN.to_rfc3339(), "1677-09-21T00:12:43.145224192Z");
+        assert_eq!(Timestamp::MAX.to_rfc3339(), "2262-04-11T23:47:16.854775807Z");
+        assert_eq!(Timestamp::parse_rfc3339(&Timestamp::MIN.to_rfc3339()), Some(Timestamp::MIN));
+        assert_eq!(Timestamp::parse_rfc3339(&Timestamp::MAX.to_rfc3339()), Some(Timestamp::MAX));
+        assert!(Timestamp::parse_rfc3339("2026-10-06T10:20:13").is_none(), "an offset is required");
     }
 
     #[test]
