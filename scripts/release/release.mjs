@@ -8,16 +8,13 @@
 //   node scripts/release/release.mjs verify-image <image> [--version 0.1.2] [--platform linux/arm64]
 //                                    [--bind-mount auto|on|off] [--record <dir>]
 //   node scripts/release/release.mjs verify-pushed-image <ref> [--version 0.1.2] [--tested <dir>]
-//   node scripts/release/release.mjs pretag --tag v0.1.2 [--evidence <dir>] [--create]
-//   node scripts/release/release.mjs check-performance --tag v0.1.2 --sha <commit> --evidence <dir>
-//                                    [--tag-date <iso>] [--artifacts <dir>]
-//                                    [--tag-date <iso>] [--artifacts <dir>]
+//   node scripts/release/release.mjs pretag --tag v0.1.2 [--create]
 //
 // Every command exits non-zero with a "release gate:" message when a check fails, so the
 // workflow stops before anything is published. --version defaults to the workspace version.
 // No dependencies beyond Node 22.
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -336,6 +333,44 @@ export async function verifyBinary(binary, version, { launcher = [], prefixArgs 
 
 // ---- CLI --------------------------------------------------------------------------
 
+const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
+
+/** The annotated tag message `pretag` writes. */
+export function tagMessage(version) {
+  return `Vyrtel ${version}
+`;
+}
+
+/**
+ * The supported way to create a release tag: checks the working tree is clean, the tag matches
+ * the workspace version and does not exist yet, then creates an annotated tag on HEAD. The
+ * compatibility review and any performance profiling (docs/releasing.md) are manual steps
+ * before this and are not checked here. Nothing is tagged if a check fails. Pushing the tag is
+ * left to the maintainer.
+ */
+export function pretag({ tag, cwd = ROOT, create = false }) {
+  const dirty = git(['status', '--porcelain', '--untracked-files=no'], cwd);
+  if (dirty) fail(`the working tree has uncommitted changes; commit or stash them so the tag is the commit that was validated:
+${dirty}`);
+  const sha = git(['rev-parse', 'HEAD'], cwd);
+  const t = checkTagMatchesWorkspace(tag, cwd);
+  let exists = true;
+  try {
+    git(['rev-parse', '--verify', '--quiet', `refs/tags/${tag}`], cwd);
+  } catch {
+    exists = false;
+  }
+  if (exists) fail(`tag ${tag} already exists; a released version is never re-tagged, publish a new version instead`);
+  if (create) {
+    try {
+      git(['tag', '-a', tag, '-m', tagMessage(t.version)], cwd);
+    } catch (e) {
+      fail(`git tag failed: ${e.stderr?.toString().trim() || e.message}`);
+    }
+  }
+  return { version: t.version, sha, created: create };
+}
+
 function writeOutputs(outputs) {
   const file = process.env.GITHUB_OUTPUT;
   if (!file) return;
@@ -418,9 +453,8 @@ export async function main(argv) {
       return;
     }
     case 'pretag': {
-      const perf = await import('./performance.mjs');
-      const r = perf.pretag({ tag: flags.tag, evidence: flags.evidence ? { dir: flags.evidence } : undefined, create: flags.create === true });
-      console.log(perf.tagMessage(r.version, r).trimEnd());
+      const r = pretag({ tag: flags.tag, create: flags.create === true });
+      console.log(tagMessage(r.version).trimEnd());
       if (r.created) console.log(`
 created annotated tag ${flags.tag} on ${r.sha}; publish it with:
   git push origin ${flags.tag}`);
@@ -428,17 +462,8 @@ created annotated tag ${flags.tag} on ${r.sha}; publish it with:
 ${flags.tag} may be tagged on ${r.sha}; rerun with --create to create the tag`);
       return;
     }
-    case 'check-performance': {
-      const perf = await import('./performance.mjs');
-      if (!flags.sha || !flags.evidence) fail('check-performance needs --sha and --evidence');
-      const tagDate = 'tag-date' in flags ? (flags['tag-date'] === true ? '' : flags['tag-date']) : undefined;
-      const r = perf.checkPerformance({ tag: flags.tag, sha: flags.sha, evidence: { dir: flags.evidence }, tagDate });
-      console.log(perf.tagMessage(r.version, r).trimEnd());
-      if (flags.artifacts) perf.checkArtifactsMatchApproval(r.records, flags.artifacts).forEach((l) => console.log(l));
-      return;
-    }
     default:
-      fail(`unknown command "${command}"; use plan, verify-artifacts, verify-binary, verify-server, verify-image, verify-pushed-image, pretag or check-performance`);
+      fail(`unknown command "${command}"; use plan, verify-artifacts, verify-binary, verify-server, verify-image, verify-pushed-image or pretag`);
   }
 }
 

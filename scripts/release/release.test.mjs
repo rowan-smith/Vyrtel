@@ -4,6 +4,7 @@
 //   VYRTEL_BIN=target/debug/vyrtel node --test scripts/release/release.test.mjs   # + a real binary
 
 import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -19,7 +20,9 @@ import {
     maxGlibcVersion,
     parseChecksums,
     parseTag,
+    pretag,
     releasePlan,
+    tagMessage,
     ROOT,
     verifyArtifacts,
     verifyBinary,
@@ -273,9 +276,9 @@ describe('AC2: nothing is published unless every gate passed', () => {
   const workflow = repoFile('.github/workflows/release.yml');
   const needs = jobNeeds(workflow);
 
-  test('the release and image jobs depend on preflight, the three gates, binaries and verify', () => {
+  test('the release and image jobs depend on preflight, the functional gate, binaries and verify', () => {
     for (const job of ['image', 'release']) {
-      for (const gate of ['preflight', 'functional', 'signoff', 'binaries', 'verify']) {
+      for (const gate of ['preflight', 'functional', 'binaries', 'verify']) {
         assert.ok(upstream(needs, job).has(gate), `${job} must (transitively) need ${gate}`);
       }
     }
@@ -355,5 +358,91 @@ describe('Linux binaries run on baseline x86-64 CPUs and older glibc', () => {
     // qemu-user runs the binary on the host's libc; on an amd64v3 runner that libc needs AVX2
     // itself, so the shipped binary is checked in the baseline bookworm image instead.
     assert.match(workflow, /\n {2}verify:\n(?: {4}.*\n|\s*\n)*? {4}container: rust:1-bookworm\n/);
+  });
+});
+
+describe('pretag: the supported way to create a release tag', () => {
+  // Keep the user's git config (signing, hooks, templates) out of the throwaway repositories.
+  const empty = path.join(tempDir(), 'gitconfig');
+  fs.writeFileSync(empty, '');
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: empty, GIT_CONFIG_NOSYSTEM: '1' };
+  const git = (cwd, ...args) => execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: 'pipe' }).trim();
+
+  /** A committed workspace at `version` with the release script, as a maintainer's checkout. */
+  function repo(version = '0.1.2') {
+    const root = workspace({ cargo: version });
+    fs.mkdirSync(path.join(root, 'scripts/release'), { recursive: true });
+    fs.copyFileSync(path.join(import.meta.dirname, 'release.mjs'), path.join(root, 'scripts/release/release.mjs'));
+    git(root, 'init', '--quiet', '--initial-branch=main');
+    git(root, 'config', 'user.name', 'Release Test');
+    git(root, 'config', 'user.email', 'release-test@example.invalid');
+    git(root, 'add', '.');
+    git(root, 'commit', '--quiet', '-m', 'candidate');
+    return { root, sha: git(root, 'rev-parse', 'HEAD') };
+  }
+  const tags = (root) => git(root, 'tag', '--list');
+  const withEnv = (fn) => {
+    const saved = { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM };
+    Object.assign(process.env, { GIT_CONFIG_GLOBAL: empty, GIT_CONFIG_NOSYSTEM: '1' });
+    try {
+      return fn();
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  };
+
+  test('without --create it checks and creates nothing', () => {
+    const { root, sha } = repo();
+    const r = withEnv(() => pretag({ tag: 'v0.1.2', cwd: root }));
+    assert.deepEqual(r, { version: '0.1.2', sha, created: false });
+    assert.equal(tags(root), '');
+  });
+
+  test('--create makes an annotated tag on HEAD', () => {
+    const { root, sha } = repo();
+    withEnv(() => pretag({ tag: 'v0.1.2', cwd: root, create: true }));
+    assert.equal(tags(root), 'v0.1.2');
+    assert.equal(git(root, 'rev-list', '-n', '1', 'v0.1.2'), sha);
+    assert.equal(git(root, 'cat-file', '-t', 'v0.1.2'), 'tag', 'annotated, not lightweight');
+    assert.equal(git(root, 'for-each-ref', 'refs/tags/v0.1.2', '--format=%(contents)'), tagMessage('0.1.2').trim());
+  });
+
+  test('prereleases are tagged the same way', () => {
+    const { root } = repo('0.1.3-rc.1');
+    withEnv(() => pretag({ tag: 'v0.1.3-rc.1', cwd: root, create: true }));
+    assert.equal(tags(root), 'v0.1.3-rc.1');
+  });
+
+  test('uncommitted changes, a version mismatch and an existing tag are refused, and nothing is tagged', () => {
+    const { root } = repo();
+    fs.appendFileSync(path.join(root, 'Cargo.toml'), '# local edit\n');
+    assert.throws(() => withEnv(() => pretag({ tag: 'v0.1.2', cwd: root, create: true })), gateError(/uncommitted changes/));
+    git(root, 'checkout', '--', 'Cargo.toml');
+    assert.throws(() => withEnv(() => pretag({ tag: 'v0.1.3', cwd: root, create: true })), gateError(/tag v0\.1\.3 is version 0\.1\.3 but/));
+    assert.equal(tags(root), '');
+    git(root, 'tag', 'v0.1.2');
+    assert.throws(() => withEnv(() => pretag({ tag: 'v0.1.2', cwd: root, create: true })), gateError(/tag v0\.1\.2 already exists/));
+  });
+
+  test('the CLI creates the tag and says how to push it, and exits 1 on a refusal', () => {
+    const { root, sha } = repo();
+    const cli = (...args) => spawnSync(process.execPath, ['scripts/release/release.mjs', ...args], { cwd: root, encoding: 'utf8', env });
+    const bad = cli('pretag', '--tag', 'v0.2.0', '--create');
+    assert.equal(bad.status, 1, bad.stdout + bad.stderr);
+    assert.match(bad.stderr, /release gate: tag v0\.2\.0 is version 0\.2\.0/);
+    const ok = cli('pretag', '--tag', 'v0.1.2', '--create');
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.ok(ok.stdout.includes(`created annotated tag v0.1.2 on ${sha}`), ok.stdout);
+    assert.match(ok.stdout, /git push origin v0\.1\.2/);
+  });
+});
+
+describe('the release workflow does not depend on a release-evidence branch', () => {
+  test('no sign-off job, evidence download or performance check remains', () => {
+    const workflow = repoFile('.github/workflows/release.yml');
+    assert.doesNotMatch(workflow, /release-evidence|signoff|check-performance/);
   });
 });

@@ -153,8 +153,8 @@ dotnet test dotnet/Vyrtel.slnx -c Release
 Use the benchmark for a quick look while working; use the baseline to decide whether a change
 regressed, because it pins the server configuration, repeats the workload and states how noisy
 the machine is ([`dotnet/Vyrtel.Baseline/README.md`](../dotnet/Vyrtel.Baseline/README.md)).
-Published numbers come only from the performance gates of a release
-([releasing](releasing.md#pre-tag-performance-sign-off)).
+Published numbers come only from a release's performance profiling
+([releasing](releasing.md#performance-profiling)).
 `dotnet/Vyrtel.LiveDataSim` is a sample ASP.NET Core producer (not part of the build).
 
 ## Release builds
