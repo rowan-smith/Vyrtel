@@ -22,8 +22,8 @@ protected (it has ever had an ingest key, or its ingestion mode is `required`), 
 with `--ingest-key <key>` (benchmark) or `VYRTEL_HARNESS_INGEST_KEY`; it is sent on ingest
 requests only.
 
-It is the tool behind the `ingestion`, `queries`, `backpressure`, `footprint` and `storage` rows of a
-[release performance gate](../../docs/releasing.md#pre-tag-performance-sign-off).
+It is the tool behind the ingestion, query, backpressure, footprint and storage measurements of a
+[release's performance profiling](../../docs/releasing.md#performance-profiling).
 
 ## What one run does
 

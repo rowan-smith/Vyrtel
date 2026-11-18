@@ -28,7 +28,7 @@ body:
   id: checklist
   attributes:
     label: Checklist
-    description: Each item becomes a `checklist` entry of the approval record with `pass` or `na` and its evidence.
+    description: Mark each item done, or N/A with the reason, and link its evidence on this issue.
     value: |
       - [ ] **inventory** — every compatibility path found: path/symbol, old contract, callers, removal or replacement, data/security impact, PR. Areas with nothing to remove are listed as N/A with evidence (API/ingest/query, config/CLI/env, WAL/segments/manifest/metadata/backups, auth, persisted UI state, integrations, dependencies).
       - [ ] **removals** — every obsolete compatibility-only branch and dependency removed, duplicates consolidated, callers/tests/docs updated. Retained paths reclassified as current interoperability or safety with evidence. Exceptions only with Rowan's approval, an owner, a removal release and an issue.

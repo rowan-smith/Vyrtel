@@ -1139,11 +1139,9 @@ Set `VYRTEL_BIN` to test a different binary (e.g. a release build).
 
 ## Release gate tests
 
-`scripts/release/release.test.mjs`, `scripts/release/performance.test.mjs` and
-`scripts/release/image.test.mjs` (`node --test`,
+`scripts/release/release.test.mjs` and `scripts/release/image.test.mjs` (`node --test`,
 CI job **Release gate tests**) cover the checks in
 [`scripts/release/release.mjs`](../scripts/release/release.mjs) and
-[`scripts/release/performance.mjs`](../scripts/release/performance.mjs) and
 [`scripts/release/image.mjs`](../scripts/release/image.mjs) that
 [`release.yml`](../.github/workflows/release.yml) runs before publishing (see
 [releasing.md](releasing.md)):
@@ -1151,12 +1149,10 @@ CI job **Release gate tests**) cover the checks in
 | Acceptance criterion | Tests |
 |---|---|
 | A tag whose version differs from the workspace fails | stable and prerelease tags against temporary workspaces; stale `Cargo.toml`, `Cargo.lock` or `web/package.json`; malformed tags; the repository's own version is consistent |
-| Failed checks publish nothing | the workflow's job graph: `image` and `release` transitively need `preflight`, `performance`, `ci` (the whole callable CI workflow), `binaries` and `verify`; only a tag push publishes (a manual run is a rehearsal); release builds set `VYRTEL_REQUIRE_WEB_UI` |
+| Failed checks publish nothing | the workflow's job graph: `image` and `release` transitively need `preflight`, `ci` (the whole callable CI workflow), `binaries` and `verify`; no `release-evidence` branch or performance sign-off is read; only a tag push publishes (a manual run is a rehearsal); release builds set `VYRTEL_REQUIRE_WEB_UI` |
 | Embedded UI, version output and checksums are verified | artifact sets that are complete, missing a binary, tampered, missing `SHA256SUMS` or an entry, holding unexpected or empty files; the artifact list matches the build matrix; a fake binary (`testdata/fake-vyrtel.mjs`) that is correct, prints or serves the wrong version, serves the placeholder UI, misses its UI assets or exits on startup |
 | A prerelease does not replace the stable latest channel | stable plans are Latest and tag `X.Y.Z`, `X.Y`, `latest`; prereleases (`-rc.1`, `-beta`, `-alpha.3`) are not Latest and tag only `X.Y.Z-pre`; image names are lowercased |
-| TC-PERF-01: missing or failed performance evidence blocks tagging and publication | in throwaway git repositories: no record → `pretag --create` (function and CLI) exits 1 and creates no tag; FAIL verdict, missing reviewer, failing or mis-marked metric rows, missing limit/baseline/category/reports, artifact hashes missing for a published binary or listed twice, N/A without reason, budgets declared after measuring; a version with no declared gates; a review after the tag or a lightweight tag is refused by the workflow check; uncommitted changes and existing tags |
-| TC-PERF-02: stale evidence is rejected until revalidated | a commit after PASS makes the record stale (no tag) until a PASS for the new commit; same-version gates (0.2.0) on different commits, or one missing; a record for another gate or version; rebuilt artifacts whose hash differs without documented `equivalence` |
-| TC-PERF-03: a complete passing matrix for the exact candidate passes | the documented template covers every metric category and passes; `pretag --create` makes an annotated tag on the candidate with the PASS lines, which `check-performance --tag-date` (the workflow's check) accepts; matching or documented-equivalent artifacts; prereleases need no sign-off; the manifest declares unique gates with issues; the workflow wiring |
+| `pretag` tags only a clean candidate of the right version | in throwaway git repositories: without `--create` nothing is tagged; `--create` makes an annotated tag on HEAD (stable and prerelease); uncommitted changes, a version mismatch and an existing tag are refused and create no tag; the CLI exits 1 on a refusal and prints the push command on success |
 | REL-09 AC1: on each architecture the image becomes ready and serves the UI | the workflow runs `verify-image` in an `image-smoke` matrix on native `linux/amd64` and `linux/arm64` runners; each platform is pushed by digest only after its smoke test and checked to have the tested layers; `image` tags exactly those digests without building, and the published image is checked against the tested records (`checkManifest`: a missing platform, or a platform whose layers differ from the tested image, fails; `imagesByPlatform`, `testedRecord`); CI runs the same gate on amd64; an image for the wrong platform fails |
 | REL-09 AC2: events in a named volume survive recreating the container | `checkPersisted`: the same events and settings pass; a lost or changed event, an extra event, or a changed `dataDir` or `durability` fail; `docker port` parsing |
 | REL-09 AC3: an unwritable bind mount explains the uid requirement | `checkBindMountRefusal`: a refusal with the hint passes; a start that succeeds, or a refusal without the hint, fails; the strings it expects are the ones in `crates/server/src/access.rs`. Server side: `access::tests` (unit) and `data_dir_access` (integration, Unix, real binary on a `555` directory and on a missing directory under one). `awaitRefusal` with a fake `docker`: the expected refusal is returned and the container removed; a server that keeps running fails at the deadline (0.3 s) instead of hanging; one that prints `Ready.` fails at once; the container is removed every time |
@@ -1169,15 +1165,15 @@ VYRTEL_IMAGE=vyrtel:rc node --test scripts/release/image.test.mjs       # also r
 ```
 
 The CI **End-to-end** job also builds the server with `VYRTEL_REQUIRE_WEB_UI=1` and runs
-`verify-binary` against it, so the gate is exercised against a real binary on every pull request. The performance tests
+`verify-binary` against it, so the gate is exercised against a real binary on every pull request. The `pretag` tests
 run git with an empty global configuration (`GIT_CONFIG_GLOBAL`), so local signing or hook
 settings do not affect them.
 
 ## Benchmarks
 
-Performance is measured for releases, not in this guide: every stable release is signed off
-against performance gates on a fixed host, and the results are attached to the GitHub release
-([releasing](releasing.md#pre-tag-performance-sign-off)). The tools used to produce them:
+Performance is measured for releases, not in this guide: each milestone's final candidate is
+profiled on a fixed host and the results are published on the website
+([releasing](releasing.md#performance-profiling)). The tools used to produce them:
 
 ```bash
 cargo bench -p storage -p query                                          # Criterion micro-benchmarks

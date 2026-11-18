@@ -2,26 +2,18 @@ name: Release
 
 # Publishes a release only after it has been validated (docs/releasing.md):
 #
-#   preflight ─┬─ functional (the full CI suite) ───────────────┐
-#              └─ signoff (performance/reliability) ┴─ binaries ─ verify ─ image-smoke ─ image ─ release
+#   preflight ─── functional (the full CI suite) ─── binaries ─ verify ─ image-smoke ─ image ─ release
 #
-# Three gates decide whether a candidate ships; everything after them checks that what is
-# published is exactly what they approved.
+# Two gates decide whether a candidate ships; everything after them checks that what is
+# published is exactly what they tested.
 #
 # - preflight: the tag must be v<semver> and match the workspace version, or nothing runs.
 # - functional: every required CI check, run against the tagged commit.
-# - signoff: from the release-evidence branch, fetched once:
-#   - performance/reliability: every performance gate for the version has a reviewer PASS for
-#     this exact commit, signed off before the tag was created. The sign-off itself happens
-#     before tagging (scripts/release/release.mjs pretag); this job refuses to publish a tag
-#     that bypassed it.
-#   The compatibility review (docs/releasing.md#pre-tag-compatibility-review) is a manual step
-#   for the maintainer before tagging; this workflow does not check it.
+#   The compatibility review and performance profiling (docs/releasing.md) are manual steps
+#   for the maintainer before tagging; this workflow does not check them.
 # - binaries: built with the UI that CI tested; each one's --version and embedded UI are
 #   checked on its own runner before it is uploaded.
-# - verify: the full artifact set and SHA256SUMS, plus the Linux binary as shipped, and the
-#   built artifacts match the hashes the performance gates approved (or
-#   documented equivalence).
+# - verify: the full artifact set and SHA256SUMS, plus the Linux binary as shipped.
 # - image-smoke: on native amd64 and arm64 runners, each image is checked as an operator runs it:
 #   non-root user and version label, readiness and the embedded UI, events surviving a recreated
 #   container on a named volume, and the uid hint on an unwritable bind mount. Only then is it
@@ -82,43 +74,9 @@ jobs:
       contents: read
       checks: write
 
-  signoff:
-    name: Performance/reliability gates
-    needs: preflight
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-      - name: Fetch approval records
-        # A missing branch leaves evidence/ empty, which fails the checks below as missing evidence.
-        run: |
-          mkdir -p evidence
-          if git fetch --depth=1 origin release-evidence; then git archive FETCH_HEAD | tar -x -C evidence; fi
-      - name: Tag date
-        id: tag
-        run: |
-          if [ "$PUBLISH" = "true" ]; then
-            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
-            # Empty for a lightweight tag, which the checks reject when gates are required.
-            echo "date=$(git for-each-ref "refs/tags/$TAG" --format='%(taggerdate:iso-strict)')" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Performance/reliability sign-off for this commit
-        run: |
-          args=()
-          if [ "$PUBLISH" = "true" ]; then args=(--tag-date "${{ steps.tag.outputs.date }}"); fi
-          node scripts/release/release.mjs check-performance --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence "${args[@]}"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: signoff-evidence
-          path: |
-            evidence/performance
-          if-no-files-found: ignore
-
   binaries:
     name: Build and check ${{ matrix.name }}
-    needs: [preflight, functional, signoff]
+    needs: [preflight, functional]
     strategy:
       fail-fast: true
       matrix:
@@ -190,7 +148,7 @@ jobs:
 
   verify:
     name: Verify release artifacts
-    needs: [preflight, signoff, binaries]
+    needs: [preflight, binaries]
     runs-on: ubuntu-24.04
     # Under qemu-user a binary runs on the host's libc, so the baseline-CPU check needs a libc
     # built for baseline x86-64. ubuntu-latest (26.04) runners are Ubuntu's amd64v3 variant,
@@ -206,11 +164,6 @@ jobs:
           path: artifacts
           pattern: vyrtel-*
           merge-multiple: true
-      - uses: actions/download-artifact@v8
-        with:
-          name: signoff-evidence
-          path: evidence
-        continue-on-error: true
       - name: Combined checksums
         run: |
           cd artifacts
@@ -224,10 +177,6 @@ jobs:
           apt-get update && apt-get install -y qemu-user
           chmod +x artifacts/vyrtel-linux-x86_64
           node scripts/release/release.mjs verify-binary artifacts/vyrtel-linux-x86_64 --version "${{ needs.preflight.outputs.version }}" --cpu qemu64 --max-glibc 2.34
-      - name: Check artifacts match the approved candidate
-        run: |
-          mkdir -p evidence
-          node scripts/release/release.mjs check-performance --tag "$TAG" --sha "$GITHUB_SHA" --evidence evidence --artifacts artifacts
       - uses: actions/upload-artifact@v7
         with:
           name: release-artifacts
