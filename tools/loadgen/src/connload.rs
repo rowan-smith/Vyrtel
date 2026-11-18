@@ -131,6 +131,13 @@ struct Args {
     /// Run only the steady load, without connection waves (for baselines).
     #[arg(long)]
     no_waves: bool,
+    /// The server predates the transport counters (`connections.*`,
+    /// `ingest.inFlight`, `ingest.rejected` in `system/info`; added with
+    /// REL-18): sample `system/info` without requiring them. Steady load
+    /// only, for measuring an older baseline build; the samples then hold
+    /// no counters, and the summary records it (`args.transportCounters`).
+    #[arg(long, requires = "no_waves")]
+    no_transport_counters: bool,
     /// Directory for summary.json and samples.csv.
     #[arg(long, default_value = "connload-out")]
     out: PathBuf,
@@ -701,8 +708,12 @@ struct Samples {
 }
 
 /// The `SAMPLE_FIELDS` of a `system/info` response, in order; a field that
-/// is missing or not a number is an error, never a zero.
-fn sample_row(v: &Value) -> Result<Vec<u64>, Vec<String>> {
+/// is missing or not a number is an error, never a zero. Without
+/// `counters` (`--no-transport-counters`) nothing is required or read.
+fn sample_row(v: &Value, counters: bool) -> Result<Vec<u64>, Vec<String>> {
+    if !counters {
+        return Ok(Vec::new());
+    }
     let mut row = Vec::with_capacity(SAMPLE_FIELDS.len());
     let mut missing = Vec::new();
     for f in SAMPLE_FIELDS {
@@ -749,7 +760,7 @@ async fn sampler(
             csv.push_str(&empty);
             continue;
         };
-        let row = match sample_row(&v) {
+        let row = match sample_row(&v, !args.no_transport_counters) {
             Ok(row) => row,
             Err(m) => {
                 malformed += 1;
@@ -763,7 +774,12 @@ async fn sampler(
             let peak = peaks.entry(f.to_string()).or_default();
             *peak = (*peak).max(*n);
         }
-        csv.push_str(&format!("{elapsed},1,{}\n", row.iter().map(u64::to_string).collect::<Vec<_>>().join(",")));
+        if row.is_empty() {
+            // No counters to record (`--no-transport-counters`): blank fields, never zeros.
+            csv.push_str(&format!("{elapsed},1{}\n", ",".repeat(SAMPLE_FIELDS.len())));
+        } else {
+            csv.push_str(&format!("{elapsed},1,{}\n", row.iter().map(u64::to_string).collect::<Vec<_>>().join(",")));
+        }
     }
     Samples { csv, peaks, ok, failed, malformed, missing }
 }
@@ -924,7 +940,8 @@ async fn main() -> anyhow::Result<()> {
     // The admin client: setup, queries, system/* and the final count.
     let client = client_with(admin_header.clone())?;
     let info = json_ok(client.get(format!("{}/api/v1/system/info", args.target)), "reading system/info").await?;
-    if let Err(missing) = sample_row(&info) {
+    let counters = !args.no_transport_counters;
+    if let Err(missing) = sample_row(&info, counters) {
         anyhow::bail!("reading system/info: missing or non-numeric {}", missing.join(", "));
     }
     let config = json_ok(client.get(format!("{}/api/v1/system/config", args.target)), "reading system/config").await?;
@@ -1024,7 +1041,7 @@ async fn main() -> anyhow::Result<()> {
         && args.attempts > 2
         && (slow_body_key.is_some() || (ingest_key.is_none() && args.slow_body_auth == SlowBodyAuth::Key));
     let body_timeouts_before = info["connections"]["bodyTimeouts"].as_u64().unwrap_or(0);
-    let after_missing = after.as_ref().map(sample_row).and_then(Result::err).unwrap_or_default();
+    let after_missing = after.as_ref().map(|a| sample_row(a, counters)).and_then(Result::err).unwrap_or_default();
     let mut samples_missing: Vec<String> = samples.missing.iter().cloned().collect();
     samples_missing.extend(after_missing.iter().map(|m| format!("{m} (after the load)")));
     let evidence = Evidence {
@@ -1058,6 +1075,7 @@ async fn main() -> anyhow::Result<()> {
         "durationS": elapsed,
         "args": {
             "attempts": args.attempts, "waveIntervalS": args.wave_interval.as_secs_f64(), "noWaves": args.no_waves,
+            "transportCounters": counters,
             "connectTimeoutS": args.connect_timeout.as_secs_f64(), "wavePatienceS": args.wave_patience.as_secs_f64(),
             "ingestClients": args.ingest_clients, "batch": args.batch, "ingestIntervalMs": args.ingest_interval.as_millis() as u64,
             "queryClients": args.query_clients, "queryIntervalMs": args.query_interval.as_millis() as u64,
@@ -1214,6 +1232,12 @@ mod tests {
     }
 
     #[test]
+    fn no_transport_counters_is_for_steady_runs_only() {
+        assert!(parse(&["--no-transport-counters"]).is_err());
+        assert!(parse(&["--no-transport-counters", "--no-waves"]).unwrap().no_transport_counters);
+    }
+
+    #[test]
     fn service_query_quotes_the_label() {
         assert_eq!(service_query("steady-1"), "service = \"connload-steady-1\"");
     }
@@ -1347,12 +1371,14 @@ mod tests {
 
     #[test]
     fn samples_need_every_field_as_a_number() {
-        assert_eq!(sample_row(&info_sample()).unwrap(), (0..12).collect::<Vec<u64>>());
+        assert_eq!(sample_row(&info_sample(), true).unwrap(), (0..12).collect::<Vec<u64>>());
         let mut v = info_sample();
         v["connections"].as_object_mut().unwrap().remove("acceptErrors");
         v["ingest"]["rejected"] = json!("11");
-        assert_eq!(sample_row(&v).unwrap_err(), ["connections.acceptErrors", "ingest.rejected"]);
-        assert!(sample_row(&json!({})).unwrap_err().len() == SAMPLE_FIELDS.len());
+        assert_eq!(sample_row(&v, true).unwrap_err(), ["connections.acceptErrors", "ingest.rejected"]);
+        assert!(sample_row(&json!({}), true).unwrap_err().len() == SAMPLE_FIELDS.len());
+        // An older baseline without the counters: nothing required, nothing read.
+        assert_eq!(sample_row(&json!({}), false).unwrap(), Vec::<u64>::new());
 
         let f = failures(&Evidence {
             samples_malformed: 3,

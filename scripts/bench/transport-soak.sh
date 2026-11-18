@@ -41,6 +41,10 @@
 # decide what an overflow does, as the server's namespace sees them
 # (net.core.somaxconn caps server.listen_backlog).
 #
+# Elapsed times (elapsedMs, loadEndedAtMs, shutdownMs) are read from the
+# monotonic clock (mono_ms below), not the wall clock: in 0.1.2-rc.5 a
+# wall-clock step between two `date` readings made one shutdown -447 ms.
+#
 # Writes <out-dir>/resources.csv (one row per second), server.log,
 # summary.json (from connload), and resources.json (peaks, idle levels,
 # CPU time, shutdown time and exit status).
@@ -56,6 +60,12 @@ image=${IMAGE:-debian:bookworm-slim}
 net=rel18-net-$$
 server=rel18-server-$$
 load=rel18-load-$$
+
+# Milliseconds on CLOCK_MONOTONIC, which is never set or stepped, so the
+# difference of two readings is a true duration. Time::HiRes ships with
+# Perl on Linux and in Git Bash.
+mono_ms() { perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%d\n", clock_gettime(CLOCK_MONOTONIC) * 1000'; }
+mono_ms >/dev/null || { echo "transport-soak.sh needs perl with Time::HiRes (monotonic clock)" >&2; exit 2; }
 
 cleanup() {
   docker rm -f "$server" "$load" >/dev/null 2>&1 || true
@@ -97,7 +107,7 @@ sample() {
   local start=$1
   while docker exec "$server" true 2>/dev/null; do
     row=$(docker exec "$server" sh -c "$probe" 2>/dev/null) || break
-    echo "$(( $(date +%s%3N) - start )),$row" >> "$out/resources.csv"
+    echo "$(( $(mono_ms) - start )),$row" >> "$out/resources.csv"
     sleep 1
   done
 }
@@ -119,7 +129,7 @@ mount_out=$out
 if command -v cygpath >/dev/null 2>&1; then mount_out=$(cygpath -m "$out"); fi
 
 echo "elapsedMs,rssKb,hwmKb,threads,fds,sockets,utimeTicks,stimeTicks,listenBacklog,established,cgroupKb,socketBuffersKb,listenOverflows,segmentFds" > "$out/resources.csv"
-start=$(date +%s%3N)
+start=$(mono_ms)
 sleep 5 # idle level before load
 sample "$start" &
 sampler=$!
@@ -130,12 +140,12 @@ docker run --name "$load" --network "$net" --cpus "${LOAD_CPUS:-2}" --ulimit nof
   -v "$volume:/target:ro" -v "$mount_out:/out" -e VYRTEL_AUTH_ADMIN_PASSWORD "$image" \
   /target/release/connload --target "http://$server:8080" --out /out $ingest_flag "$@" \
   > "$out/connload.log" 2>&1 || load_status=$?
-load_end=$(( $(date +%s%3N) - start ))
+load_end=$(( $(mono_ms) - start ))
 
 sleep "${IDLE_AFTER:-30}"
-stop_begin=$(date +%s%3N)
+stop_begin=$(mono_ms)
 docker stop -t 30 "$server" >/dev/null
-stop_ms=$(( $(date +%s%3N) - stop_begin ))
+stop_ms=$(( $(mono_ms) - stop_begin ))
 exit_code=$(docker inspect -f '{{.State.ExitCode}}' "$server")
 wait "$sampler" 2>/dev/null || true
 docker logs "$server" > "$out/server.log" 2>&1

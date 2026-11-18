@@ -59,6 +59,16 @@ attempt whatever `--wave-patience` was, as the wave rows above require).
 Throughput is over `loadWindowS`, the
 steady load's own window, not the time spent counting afterwards.
 
+**Measurement fix 2026-11-18** (no limit changed). 0.1.2-rc.5's
+constrained flood run recorded a shutdown of -447 ms: `transport-soak.sh`
+timed `docker stop` with two wall-clock readings, and the clock moved back
+between them. Every elapsed time the script records (`elapsedMs`,
+`loadEndedAtMs`, `shutdownMs`) now comes from `CLOCK_MONOTONIC`. The
+regression comparison below is run by `transport-regression.sh` and
+checked by `transport-regression-report.mjs`, which applies the rules
+below as written and reports INCOMPLETE, not a verdict, when a build has
+fewer than three usable runs.
+
 Configurations:
 
 * **normal**: defaults (`max_memory = 512MB`, `max_connections = 256`,

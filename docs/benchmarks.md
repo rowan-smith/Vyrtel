@@ -26,12 +26,13 @@ comparison below to the newest version and add a row to the history table.
 | Build | 0.1.2-rc.5: the published release asset `vyrtel-linux-x86_64` (smoke tests on the published image). 0.1.1: the published release asset. See each version's page for hashes | not run |
 | Network | Loopback only | not run |
 | Configuration | Baseline: `baseline.toml` without three keys 0.1.1 rejects, the same file for both versions. Transport: defaults, and the constrained configuration for one flood run | |
-| Workload | Baseline: seed 42; 100,000 logs, 1,000 traces, 100 metric points; 13 queries cold and warm; 20 s mixed load with 4 workers; 5 runs per version. Transport: 60 s steady, 180 s flood (normal and constrained), 30 min with waves; 1 run each, and the 30 min run 3 more times (two 0.1.2-rc.5, one 0.1.2-rc.4). Sign-in memory: `signin-memory.sh`, 1 run | |
+| Workload | Baseline: seed 42; 100,000 logs, 1,000 traces, 100 metric points; 13 queries cold and warm; 20 s mixed load with 4 workers; 5 runs per version. Transport: 60 s steady, 180 s flood (normal and constrained), 30 min with waves; 1 run each, and the 30 min run 3 more times (two 0.1.2-rc.5, one 0.1.2-rc.4). Transport regression: 60 s steady, 3 runs each of 0.1.2-rc.5 and the declared baseline build (0.1.1 + REL-17), interleaved. Sign-in memory: `signin-memory.sh`, 1 run | |
 
 ## Results: 0.1.2-rc.5 against 0.1.1
 
 Both versions were measured in the same session on 2026-11-15, with the same harness and
-configuration. The 30 minute transport run was repeated on 2026-11-16. Local results are measured
+configuration. The 30 minute transport run was repeated on 2026-11-16, and the transport regression
+comparison was run on 2026-11-18. Local results are measured
 on the primary alone; remote results have load sent from the secondary. They are never mixed.
 
 | Test | Metric | 0.1.1 | 0.1.2-rc.5 | Change | Verdict |
@@ -52,17 +53,18 @@ on the primary alone; remote results have load sent from the secondary. They are
 | Same-host transport | Flood wave: accept to end / end to end / establishment p99 | not run | 60.0 s / 60.0 s / 77.2 ms | | PASS (82 s / 82 s / 5 s) |
 | Same-host transport | Acknowledged vs stored events (4 runs, 16.2 million events) | not run | equal | | PASS |
 | Same-host transport | RSS growth, last 20 min of the 30 min run | not run | 1.09 MiB/min | | **FAIL** (budget 1.0); repeats 0.69 and 0.50 |
-| Same-host transport | Shutdown after load | not run | 152–194 ms; one invalid reading | | INCOMPLETE |
+| Same-host transport | Shutdown after load | not run | 152–194 ms; one invalid reading; 163–180 ms in the regression runs | | INCOMPLETE |
 | Same-host transport | Peak admitted / waiting connections, sampled | not run | 256 / 64 (constrained 64 / 64) | | PASS (`max_connections` / 64) |
 | Same-host transport | Transport heap, retained heap and runtime tasks (`tests/overload`, release workflow) | not run | assertions held, values not recorded | | PASS |
-| Same-host transport | Regression budgets, three steady runs against the baseline build | not run | not run | | INCOMPLETE |
+| Same-host transport | Regression budgets, three steady runs each (baseline: 0.1.1 + REL-17): events/s, ack p95 / p99 (ms), query p95 (ms), peak RSS (MiB), CPU (s) | 14,877, 2.59 / 3.05, 79.2, 170, 14.5 | 14,973, 2.17 / 2.92, 77.6, 126, 13.0 | +0.6%, −16% / −4%, −2.0%, −26%, −11% | PASS (all 6; 0 unexpected failures) |
 | Remote | Ingest throughput, p95 / p99 | not run | not run | | INCOMPLETE |
 | Soak | 48–72 hours, data loss, memory trend | not run | not run | | INCOMPLETE |
 
 **Verdict for 0.1.2-rc.5: FAIL on the 30 minute run's RSS growth, which did not reproduce.**
 Peak memory is back within its budget, and the sign-in memory budgets declared for this change
 pass. Every other measured budget passes except one shutdown reading, which is invalid. The
-transport regression comparison, remote load and the sustained soak remain unvalidated.
+transport regression comparison passes (2026-11-18). Remote load and the sustained soak remain
+unvalidated.
 
 - **Peak memory, −4.4% (82.4 → 78.8 MiB).** 0.1.2-rc.4's +32.8% was Argon2id work areas kept by
   glibc's allocator, one per arena. Since 0.1.2-rc.5 each password check maps its 19 MiB work area
@@ -75,26 +77,31 @@ transport regression comparison, remote load and the sustained soak remain unval
   run had measured 0.26. The metric varies by about 0.5 MiB/min between runs of one build, and
   all runs end between 158 and 173 MiB. The verdict stays as measured; whether the repeats are
   enough to release is open.
-- **Shutdown, one invalid reading (−447 ms, constrained flood run).** `transport-soak.sh` times
-  `docker stop` with the wall clock; the other readings, repeats included, were 152–208 ms.
+- **Shutdown, one invalid reading (−447 ms, constrained flood run).** `transport-soak.sh` timed
+  `docker stop` with the wall clock; the other readings, repeats included, were 152–208 ms. It
+  reads the monotonic clock since 2026-11-18; the flood run was not repeated with it.
+- **Transport regression comparison, PASS.** Three interleaved 60 s steady runs each of 0.1.2-rc.5
+  and the declared baseline build (0.1.1 + REL-17), on 2026-11-18: throughput +0.6%, ack p95
+  −16%, query p95 −2.0%, peak RSS −26%, CPU −11%, all within budget, with no unexpected failures
+  and every acknowledged event stored. The baseline ran with sign-in turned on, which 0.1.1 does
+  not do by default, so both builds served the same authenticated load.
 
 Details, and the full metric tables, are on the [0.1.2-rc.5 page](benchmarks/0.1.2-rc.5.md).
 
 **Integrity:** in every one of the 10 baseline runs, the seeded dataset was offered, acknowledged
 and stored exactly, and every mixed-load request was accepted; mixed-load ingest is counted, not
 reconciled against storage. In transport, the stored count of `connload`'s events equalled the
-acknowledged count in all four runs and in the three repeats. Unexplained errors or data loss:
+acknowledged count in all four runs, the three repeats and the six regression runs. Unexplained errors or data loss:
 none found.
-**Limitations and untested areas:** no secondary machine, so no remote load or soak. The
-transport regression budgets need three steady runs of the baseline build, which were not run, so
-query latency under transport load is recorded without a verdict. The baseline's data directories
+**Limitations and untested areas:** no secondary machine, so no remote load or soak. Peak RSS
+in a single 60 s transport run varies by up to 17% between runs of one build. The baseline's data directories
 were on tmpfs. 0.1.1 had no smoke, sign-in or transport run.
 
 ## History
 
 | Version | Date | Verdict | Local ingest | Remote ingest | Local query p95 | Notes |
 |---|---|---|---|---|---|---|
-| [0.1.2-rc.5](benchmarks/0.1.2-rc.5.md) | 2026-11-15 | FAIL: 30 min RSS growth 1.09 MiB/min (not reproduced), validation incomplete | 17,111 events/s | not run | 71.0 ms | Peak memory back within budget (−4.4%): Argon2id work areas returned after each check, at most 16 sign-ins at once; AUTH-PERF-04 passes; repeats on 2026-11-16 measured 0.69 and 0.50 MiB/min (0.1.2-rc.4: 0.73); one invalid shutdown reading |
+| [0.1.2-rc.5](benchmarks/0.1.2-rc.5.md) | 2026-11-15 | FAIL: 30 min RSS growth 1.09 MiB/min (not reproduced), validation incomplete | 17,111 events/s | not run | 71.0 ms | Peak memory back within budget (−4.4%): Argon2id work areas returned after each check, at most 16 sign-ins at once; AUTH-PERF-04 passes; repeats on 2026-11-16 measured 0.69 and 0.50 MiB/min (0.1.2-rc.4: 0.73); one invalid shutdown reading; transport regression budgets pass (2026-11-18) |
 | [0.1.2-rc.4](benchmarks/0.1.2-rc.4.md) | 2026-11-15 | FAIL: peak memory open, validation incomplete | 17,054 events/s | not run | 72.5 ms | Flood waves end in 60.1 s (listen backlog 2,048, no dropped handshakes); stored events reconciled in transport; constrained configuration passes; peak memory +32.8% (budget 15%) |
 | [0.1.2-rc.3](benchmarks/0.1.2-rc.3.md) | 2026-11-15 | FAIL: peak memory open, flood deadline failed, validation incomplete | 17,064 events/s | not run | 72.0 ms | Published asset fixed (glibc 2.34, no AVX2 needed); file descriptors bounded; peak memory +44% (budget 30%); longest flood wave 91.1 s (budget 82 s) |
 | [0.1.2-rc.2](benchmarks/0.1.2-rc.2.md) | 2026-11-11 | FAIL (transport); baseline PASS with one accepted regression | 17,073 events/s | not run | 72.0 ms | Published asset fixed (glibc 2.34, no AVX2 needed). Peak memory +30.2% (budget 40%) after password checks were limited to one at a time; restart to healthy +97.2%, **accepted** (below); file-descriptor budgets and one 503 missed in transport. Measured while it was prepared: baseline of its exact code, smoke and transport of `bd25064` |

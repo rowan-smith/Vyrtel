@@ -39,3 +39,15 @@ test('the password is never echoed or written to an output file', () => {
         }
     }
 });
+
+test('elapsed times use the monotonic clock, never the wall clock', () => {
+    const code = script
+        .split(/\r?\n/)
+        .filter((l) => !l.trimStart().startsWith('#'))
+        .join('\n');
+    assert.match(code, /mono_ms\(\) \{ perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC /);
+    assert.doesNotMatch(code, /\bdate \+%s/, 'a wall-clock reading');
+    const lines = code.split('\n');
+    for (const v of ['start', 'stop_begin']) assert.ok(lines.includes(`${v}=$(mono_ms)`), v);
+    assert.match(code, /^stop_ms=\$\(\( \$\(mono_ms\) - stop_begin \)\)$/m);
+});
