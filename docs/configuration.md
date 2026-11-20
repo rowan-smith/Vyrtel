@@ -518,6 +518,20 @@ clients that fall further behind are told how many batches they missed.
 Connections are budgeted outside `max_memory`, by their own limits; see
 [connections and transport limits](#connections-and-transport-limits).
 
+### Allocator arenas (Linux)
+
+The Linux builds use glibc's allocator, which by default gives each thread
+that allocates its own arena (up to eight per CPU of the host, whatever a
+container's CPU limit) and keeps what a thread freed for that thread's
+later use. Ingest parsing, queries and metadata work run on a pool of
+blocking threads that grows when every thread in it is busy, so how much
+memory stayed resident depended on how many pool threads a run happened to
+reach: each new one settled at 10 to 30 MiB. Since 0.1.3 Vyrtel caps the
+arenas at startup at two per CPU it may use (a container's CPU limit
+counts), at least two, and threads beyond that share them. Setting
+`MALLOC_ARENA_MAX` in the environment overrides the cap; with
+`--log-level debug` the startup log says which applies.
+
 ## Connections and transport limits
 
 Vyrtel bounds what clients can make it hold before any request is routed,

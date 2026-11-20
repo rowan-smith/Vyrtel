@@ -9,6 +9,7 @@ pub mod config;
 pub mod datadir;
 pub mod error;
 pub mod limits;
+pub mod malloc;
 pub mod password;
 pub mod routes;
 pub mod state;
