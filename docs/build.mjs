@@ -190,6 +190,7 @@ const DOCS = [
   { slug: 'storage-format', file: 'docs/storage-format.md', group: 'How it works' },
   { slug: 'benchmarks', file: 'docs/benchmarks.md', title: 'Benchmarks', group: 'Project' },
   // One page per measured version, newest first, listed under Benchmarks.
+  { slug: 'benchmarks-0.1.2', file: 'docs/benchmarks/0.1.2.md', title: 'Benchmarks: 0.1.2', label: '0.1.2', group: 'Project', parent: 'benchmarks' },
   { slug: 'benchmarks-0.1.2-rc.5', file: 'docs/benchmarks/0.1.2-rc.5.md', title: 'Benchmarks: 0.1.2-rc.5', label: '0.1.2-rc.5', group: 'Project', parent: 'benchmarks' },
   { slug: 'benchmarks-0.1.2-rc.4', file: 'docs/benchmarks/0.1.2-rc.4.md', title: 'Benchmarks: 0.1.2-rc.4', label: '0.1.2-rc.4', group: 'Project', parent: 'benchmarks' },
   { slug: 'benchmarks-0.1.2-rc.3', file: 'docs/benchmarks/0.1.2-rc.3.md', title: 'Benchmarks: 0.1.2-rc.3', label: '0.1.2-rc.3', group: 'Project', parent: 'benchmarks' },
