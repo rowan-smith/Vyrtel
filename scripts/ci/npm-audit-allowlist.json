@@ -1,9 +1,1 @@
-[
-  {
-    "id": "GHSA-fc5q-39xc-vjpf",
-    "package": "picomatch",
-    "reason": "ReDoS through repeated extglobs; every version up to 4.0.7, the latest, is affected and no fixed version exists. picomatch is a dev dependency only (vite, vitest, tinyglobby), so it is in the build and test tooling, not in the shipped web UI. Remove when picomatch publishes a fix.",
-    "added": "2026-11-18",
-    "expires": "2026-12-31"
-  }
-]
+[]
