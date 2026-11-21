@@ -56,7 +56,7 @@ for i in $(seq 1 "$runs"); do
     [ ! -e "$dir" ] || { echo "$dir exists; use a fresh OUT" >&2; exit 2; }
     echo "$(date -u +%FT%TZ) $b-$i ${vol[$b]} server env:${env[$b]} connload:${extra[$b]}" | tee -a "$out/runs.txt"
     # A failed run is kept and reported by the report, not retried here.
-    SERVER_VOLUME=${vol[$b]} SERVER_ENV=${env[$b]} "$soak" "$dir" --no-waves --duration "$duration" ${extra[$b]} >/dev/null || \
+    SERVER_VOLUME=${vol[$b]} SERVER_ENV=${env[$b]} bash "$soak" "$dir" --no-waves --duration "$duration" ${extra[$b]} >/dev/null || \
       echo "$b-$i: transport-soak.sh exited $?" | tee -a "$out/runs.txt"
   done
 done
