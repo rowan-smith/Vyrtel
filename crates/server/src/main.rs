@@ -206,6 +206,8 @@ async fn stop_requests(mut count: watch::Receiver<u32>, n: u32) {
 }
 
 fn main() -> ExitCode {
+    // Before any thread is started: arenas that exist already stay (see server::malloc).
+    let arenas = server::malloc::cap_arenas();
     let cli = Cli::parse();
     let config = match load_config(&cli) {
         Ok(c) => c,
@@ -241,6 +243,7 @@ fn main() -> ExitCode {
         Some(Command::Serve) | None => {}
     }
     init_logging(&config);
+    server::malloc::report(arenas);
     // Before storage opens anything, so the WAL and segment files count against the raised limit.
     server::limits::report(server::limits::raise(), config.server.max_connections);
     let data_dir = config.storage.path.clone();
