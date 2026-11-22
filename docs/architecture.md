@@ -323,7 +323,15 @@ cache of sessions found valid:
   password therefore wins: the insert matches nothing and the login is
   refused. The hashes it ended are invalidated in the cache after the
   commit. The expiry is fixed at issue time from the current
-  `auth.session_ttl`.
+  `auth.session_ttl`. The presented session is deleted whichever account
+  owns it, so switching accounts in one browser ends the previous
+  account's session there; this happens only after the password check
+  succeeds.
+* **Revocation is not cancellation.** Every way of ending a session stops
+  it from admitting new requests. Handlers already admitted, such as a
+  running query or an open live-tail stream, are not cancelled and finish
+  as admitted; reauthorizing open streams is
+  [#128](https://github.com/rowan-smith/Vyrtel/issues/128).
 * **What does not change.** Sessions are created only by login and ended
   by logout, rotation, the per-account bound, expiry, a password change or
   deactivation. The cache is per process and starts empty, so a restart

@@ -108,8 +108,10 @@ Always on for the UI and API. Ingestion follows the ingestion mode
   back to the API key, if any. A session is accepted until its expiry
   (`auth.session_ttl` when it was issued) and refused as soon as logout
   returns. Each login issues a new session token; the session whose
-  cookie the login request carried, if any, ends with it, while sessions
-  on other devices are unaffected. An account keeps at most 32 sessions:
+  cookie the login request carried, if any, ends with it, even when it
+  belongs to another account, while sessions on other devices are
+  unaffected. Ending a session refuses its later requests; requests and
+  live-tail streams it already opened are not cancelled. An account keeps at most 32 sessions:
   a login beyond that ends its oldest. Changing or resetting an account's
   password, or deactivating it, ends every session of that account at
   once; reactivating it restores none. Starting the

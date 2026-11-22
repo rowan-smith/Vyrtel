@@ -459,17 +459,28 @@ moment. Sessions live in the metadata database, so they survive restarts.
 
 | Event | Sessions that end |
 |---|---|
-| Login | The one whose cookie the request carried (rotation); a failed login ends none |
+| Login | The one whose cookie the request carried (rotation), whichever account it belongs to; a failed login ends none |
 | Logout | The current one |
 | Expiry | That one, from its stored expiry on, also after a restart |
 | Password change or reset | Every session of that account |
 | Deactivation | Every session of that account; reactivating restores none |
 | A 33rd session of one account | Its expired sessions, then its oldest (at most 32 per account) |
 
-Sessions of other accounts and other devices are never affected. Each
-change takes effect before its call returns, for sessions held in the
+Signing in as another account in the same browser therefore ends the
+session that browser had, for example signing in as `ops` while holding an
+`admin` cookie ends that `admin` session. Only a successful login does
+this, so a wrong password cannot be used to end someone's session.
+Otherwise, sessions of other accounts and other devices are never
+affected.
+
+Each change takes effect before its call returns, for sessions held in the
 server's in-memory cache too, and a login racing a password change or
-deactivation cannot leave a working session behind. If a change cannot be
+deactivation cannot leave a working session behind. Ending a session stops
+it from authenticating new requests; it does not cancel work already
+running. A request admitted before the change, such as a long query,
+finishes as admitted, and a live-tail stream opened with the session stays
+open until it closes (reauthorizing open streams is tracked in
+[#128](https://github.com/rowan-smith/Vyrtel/issues/128)). If a change cannot be
 written, it fails with an error and nothing ends: logout then answers `500`
 and keeps the cookie. A changed `auth.session_ttl` applies only to sessions
 issued afterwards.
