@@ -106,9 +106,20 @@ Always on for the UI and API. Ingestion follows the ingestion mode
   cookie (from `/api/v1/auth/login`) or an API key with scope `admin`.
   A valid session is used first; a missing, empty or unknown cookie falls
   back to the API key, if any. A session is accepted until its expiry
-  (`auth.session_ttl`) and refused as soon as logout returns. Starting the
+  (`auth.session_ttl` when it was issued) and refused as soon as logout
+  returns. Each login issues a new session token; the session whose
+  cookie the login request carried, if any, ends with it, even when it
+  belongs to another account, while sessions on other devices are
+  unaffected. Ending a session refuses its later requests; requests and
+  live-tail streams it already opened are not cancelled. An account keeps at most 32 sessions:
+  a login beyond that ends its oldest. Changing or resetting an account's
+  password, or deactivating it, ends every session of that account at
+  once; reactivating it restores none. Starting the
   server with a different `auth.admin_password` ends every existing
-  session of the admin user; restarting with the same one keeps them. Valid
+  session of the admin user; restarting with the same one keeps them.
+  Logout answers `500` (and does not clear the cookie) if the session
+  could not be deleted, so it never reports a logout that did not happen
+  ([sessions](configuration.md#sessions)). Valid
   sessions are cached in memory after their first request
   ([design](architecture.md#session-authentication)); this changes no
   outcome. If an uncached session cannot be looked up (a database error)

@@ -1136,6 +1136,23 @@ pub async fn set_account_active(state: &SharedState, id: i64, active: bool) -> A
         .await
 }
 
+/// Set account `id`'s password (a reset or a change; `password_hash` from
+/// [`hash_password`]): the only way to change an account's password while
+/// the server runs. Every session of the account ends in SQLite in the same
+/// transaction, then is dropped from [`Sessions`] before returning, as
+/// [`set_account_active`] does. A failed write returns the error and ends
+/// nothing. Returns how many sessions were ended.
+pub async fn set_account_password(state: &SharedState, id: i64, password_hash: String) -> ApiResult<usize> {
+    let st = state.clone();
+    state
+        .blocking(move || {
+            let (username, ended) = st.metadata.set_user_password(id, &password_hash)?;
+            st.sessions.invalidate_user(&username);
+            Ok(ended)
+        })
+        .await
+}
+
 /// Create/refresh the admin user at startup. Returns a generated password
 /// when none was configured and no user exists yet.
 ///

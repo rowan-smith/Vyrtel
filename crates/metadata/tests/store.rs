@@ -676,3 +676,137 @@ fn saved_queries() {
     m.delete_saved_query(q.id).unwrap();
     assert!(m.list_saved_queries().unwrap().is_empty());
 }
+
+// ---- IAM-01A (#121): session rotation, revocation and bounds -------------
+
+fn issue<'a>(token: &'a str, user: &User, replaces: Option<&'a str>) -> NewSession<'a> {
+    NewSession { token_hash: token, user_id: user.id, verified_hash: None, ttl_ms: 60_000, replaces }
+}
+
+// AC1: a login replaces the session it was sent with; sessions on other
+// devices stay; the replaced one is refused and reported for the cache.
+#[test]
+fn issuing_a_session_rotates_only_the_presented_one() {
+    let m = Metadata::open_in_memory().unwrap();
+    let u = m.create_user("ops", None, &h("ops")).unwrap();
+    assert!(m.issue_session(&issue("laptop-1", &u, None)).unwrap().is_empty());
+    assert!(m.issue_session(&issue("phone-1", &u, None)).unwrap().is_empty());
+    let ended = m.issue_session(&issue("laptop-2", &u, Some("laptop-1"))).unwrap();
+    assert_eq!(ended, vec!["laptop-1".to_string()]);
+    assert!(m.find_session("laptop-1").unwrap().is_none(), "the replaced credential is refused");
+    assert!(m.find_session("laptop-2").unwrap().is_some());
+    assert!(m.find_session("phone-1").unwrap().is_some(), "the other device is independent");
+    // Presenting an unknown or already ended credential replaces nothing.
+    assert!(m.issue_session(&issue("laptop-3", &u, Some("laptop-1"))).unwrap().is_empty());
+    assert_eq!(m.count_sessions(u.id).unwrap(), 3);
+}
+
+// AC3: a login that verified a password the account no longer has, or for
+// an account deactivated since, starts nothing and ends nothing.
+#[test]
+fn a_session_is_issued_only_for_the_verified_password_of_an_active_account() {
+    let m = Metadata::open_in_memory().unwrap();
+    let u = m.create_user("ops", None, &h("old")).unwrap();
+    m.create_session("before", u.id, 60_000).unwrap();
+    fn login<'a>(token: &'a str, user: &User, verified: &'a str) -> NewSession<'a> {
+        NewSession { verified_hash: Some(verified), ..issue(token, user, Some("before")) }
+    }
+    let (stale, current) = (h("old"), h("new"));
+    m.set_user_password(u.id, &current).unwrap();
+    assert!(matches!(m.issue_session(&login("stale", &u, &stale)), Err(MetadataError::NotFound)));
+    assert!(m.find_session("stale").unwrap().is_none());
+    assert_eq!(m.count_sessions(u.id).unwrap(), 0, "the password change ended `before`; nothing came back");
+
+    m.create_session("before", u.id, 60_000).unwrap();
+    m.set_user_active(u.id, false).unwrap();
+    assert!(matches!(m.issue_session(&login("inactive", &u, &current)), Err(MetadataError::NotFound)));
+    m.set_user_active(u.id, true).unwrap();
+    assert!(m.find_session("before").unwrap().is_none(), "reactivating restores nothing");
+    m.issue_session(&login("fresh", &u, &current)).unwrap();
+    assert!(m.find_session("fresh").unwrap().is_some());
+}
+
+// AC2: a password reset or change ends every session of that account only;
+// an unknown account or a value that is not a hash changes nothing.
+#[test]
+fn setting_a_password_ends_every_session_of_that_account() {
+    let m = Metadata::open_in_memory().unwrap();
+    let (a, b) = (m.create_user("alice", None, &h("a")).unwrap(), m.create_user("bob", None, &h("b")).unwrap());
+    for t in ["a-laptop", "a-phone"] {
+        m.create_session(t, a.id, 60_000).unwrap();
+    }
+    m.create_session("b-laptop", b.id, 60_000).unwrap();
+    assert!(matches!(m.set_user_password(a.id, "hunter2"), Err(MetadataError::Invalid(_))));
+    assert!(matches!(m.set_user_password(9_999, &h("x")), Err(MetadataError::NotFound)));
+    assert_eq!(m.count_sessions(a.id).unwrap(), 2, "a refused change ends nothing");
+    assert_eq!(m.set_user_password(a.id, &h("a2")).unwrap(), ("alice".to_string(), 2));
+    assert_eq!(m.find_user("alice").unwrap().unwrap().password_hash, h("a2"));
+    assert!(m.find_session("a-laptop").unwrap().is_none() && m.find_session("a-phone").unwrap().is_none());
+    assert_eq!(m.find_session("b-laptop").unwrap().unwrap().username, "bob");
+}
+
+// AC4: an account keeps at most MAX_SESSIONS_PER_USER sessions; expired
+// ones go first, then the oldest; other accounts are not affected.
+#[test]
+fn session_storage_is_bounded_per_account() {
+    let m = Metadata::open_in_memory().unwrap();
+    let (u, other) = (m.create_user("ops", None, &h("o")).unwrap(), m.create_user("other", None, &h("x")).unwrap());
+    m.create_session("other", other.id, 60_000).unwrap();
+    m.create_session("expired", u.id, -1).unwrap();
+    let mut ended = Vec::new();
+    for i in 0..MAX_SESSIONS_PER_USER + 3 {
+        ended.extend(m.issue_session(&issue(&format!("s{i:02}"), &u, None)).unwrap());
+    }
+    assert_eq!(m.count_sessions(u.id).unwrap(), MAX_SESSIONS_PER_USER);
+    assert_eq!(ended, ["expired", "s00", "s01", "s02"].map(String::from), "expired first, then the oldest");
+    for gone in &ended {
+        assert!(m.find_session(gone).unwrap().is_none());
+    }
+    assert!(m.find_session(&format!("s{:02}", MAX_SESSIONS_PER_USER + 2)).unwrap().is_some());
+    assert_eq!(m.count_sessions(other.id).unwrap(), 1);
+}
+
+// AC5: a session's expiry is fixed when it is issued; sessions issued with
+// another lifetime later keep their own; both persist across a reopen.
+#[test]
+fn sessions_keep_the_expiry_they_were_issued_with() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("metadata.db");
+    let before = now_ms();
+    {
+        let m = Metadata::open(&path).unwrap();
+        let u = m.create_user("ops", None, &h("o")).unwrap();
+        m.create_session("week", u.id, 7 * 86_400_000).unwrap();
+        m.create_session("hour", u.id, 3_600_000).unwrap();
+    }
+    let m = Metadata::open(&path).unwrap();
+    let expiry = |t: &str| m.find_session_timed(t).unwrap().0.unwrap().1;
+    let after = now_ms();
+    assert!((before + 7 * 86_400_000..=after + 7 * 86_400_000).contains(&expiry("week")));
+    assert!((before + 3_600_000..=after + 3_600_000).contains(&expiry("hour")));
+}
+
+// AC4: a write that fails (here a trigger refusing it) returns the error
+// and ends nothing: no revocation is reported that did not happen.
+#[test]
+fn a_failed_revocation_is_an_error_and_ends_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("metadata.db");
+    let m = Metadata::open(&path).unwrap();
+    let u = m.create_user("ops", None, &h("old")).unwrap();
+    m.create_session("s", u.id, 60_000).unwrap();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER no_revoke BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .unwrap();
+    assert!(m.set_user_password(u.id, &h("new")).is_err());
+    assert_eq!(m.find_user("ops").unwrap().unwrap().password_hash, h("old"), "rolled back whole");
+    assert!(m.set_user_active(u.id, false).is_err());
+    assert!(m.find_user("ops").unwrap().unwrap().active);
+    assert!(m.delete_session("s").is_err());
+    assert!(m.issue_session(&issue("t", &u, Some("s"))).is_err(), "rotation cannot drop the old one");
+    assert!(m.find_session("t").unwrap().is_none());
+    assert!(m.find_session("s").unwrap().is_some());
+}

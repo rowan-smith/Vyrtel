@@ -206,6 +206,26 @@ impl std::fmt::Debug for User {
 }
 
 /// Characters a username or display name may have at most.
+/// Most sessions one account keeps. Starting another ends its oldest
+/// ([`Metadata::issue_session`]), so session storage is bounded by the
+/// number of accounts whatever clients do.
+pub const MAX_SESSIONS_PER_USER: usize = 32;
+
+/// A session to start ([`Metadata::issue_session`]).
+#[derive(Clone, Copy)]
+pub struct NewSession<'a> {
+    /// The SHA-256 of the session token; the token itself is never stored.
+    pub token_hash: &'a str,
+    pub user_id: i64,
+    /// The password hash a login verified, required to still be the
+    /// account's; `None` checks only that the account is active.
+    pub verified_hash: Option<&'a str>,
+    /// The session's lifetime from now.
+    pub ttl_ms: i64,
+    /// The session the client presented, which this one replaces.
+    pub replaces: Option<&'a str>,
+}
+
 pub const MAX_USERNAME_CHARS: usize = 64;
 pub const MAX_DISPLAY_NAME_CHARS: usize = 128;
 
@@ -891,23 +911,91 @@ impl Metadata {
         Ok(c.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?)
     }
 
-    /// Start a session of an active user. An unknown or inactive user is
-    /// [`MetadataError::NotFound`], checked in the same statement as the
-    /// insert, so a session is never issued to an account deactivated in
-    /// the meantime.
-    pub fn create_session(&self, token_hash: &str, user_id: i64, ttl_ms: i64) -> Result<()> {
-        let c = self.conn.lock().unwrap();
+    /// Start a session of an active user, as [`Metadata::issue_session`]
+    /// does without a password check or a replaced session.
+    pub fn create_session(&self, token_hash: &str, user_id: i64, ttl_ms: i64) -> Result<Vec<String>> {
+        self.issue_session(&NewSession { token_hash, user_id, verified_hash: None, ttl_ms, replaces: None })
+    }
+
+    /// Start a session in one transaction, so nothing committed before it
+    /// can be undone by it:
+    ///
+    /// * the session `replaces` (the credential the client presented, by its
+    ///   token's SHA-256) ends, whoever it belonged to: a login rotates it;
+    /// * the session is created only if the user is active and, when
+    ///   `verified_hash` is given, still has that password hash. Otherwise
+    ///   nothing changes and it is [`MetadataError::NotFound`], so a login
+    ///   that checked the password before a deactivation or password change
+    ///   committed cannot start a session after it;
+    /// * the user keeps at most [`MAX_SESSIONS_PER_USER`]: its expired
+    ///   sessions end (not this one), then its oldest.
+    ///
+    /// The expiry is `ttl_ms` from now and never changes afterwards. Returns
+    /// the hashes of every session it ended, for the server's session cache.
+    pub fn issue_session(&self, s: &NewSession) -> Result<Vec<String>> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
         let now = now_ms();
-        let created = c
+        let mut ended: Vec<String> = Vec::new();
+        if let Some(old) = s.replaces {
+            let gone: Option<String> = tx
+                .prepare_cached("DELETE FROM sessions WHERE token_hash = ?1 RETURNING token_hash")?
+                .query_row([old], |r| r.get(0))
+                .optional()?;
+            ended.extend(gone);
+        }
+        let created = tx
             .prepare_cached(
                 "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) \
-                 SELECT ?1, id, ?3, ?4 FROM users WHERE id = ?2 AND active = 1",
+                 SELECT ?1, id, ?3, ?4 FROM users WHERE id = ?2 AND active = 1 \
+                 AND (?5 IS NULL OR password_hash = ?5)",
             )?
-            .execute(params![token_hash, user_id, now, now + ttl_ms])?;
+            .execute(params![s.token_hash, s.user_id, now, now.saturating_add(s.ttl_ms), s.verified_hash])?;
         if created == 0 {
             return Err(MetadataError::NotFound);
         }
-        Ok(())
+        {
+            let mut over = tx.prepare_cached(
+                "DELETE FROM sessions WHERE user_id = ?1 AND token_hash <> ?4 \
+                 AND (expires_at <= ?2 OR token_hash IN ( \
+                 SELECT token_hash FROM sessions WHERE user_id = ?1 \
+                 ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?3)) RETURNING token_hash",
+            )?;
+            let rows =
+                over.query_map(params![s.user_id, now, MAX_SESSIONS_PER_USER as i64, s.token_hash], |r| r.get(0))?;
+            for hash in rows {
+                ended.push(hash?);
+            }
+        }
+        tx.commit()?;
+        Ok(ended)
+    }
+
+    /// Set account `id`'s password hash (a reset or a change) and end all of
+    /// its sessions, in one transaction. Returns its username and how many
+    /// sessions were ended.
+    ///
+    /// This does not reach the server's session cache: call
+    /// `server::auth::set_account_password` instead.
+    pub fn set_user_password(&self, id: i64, password_hash: &str) -> Result<(String, usize)> {
+        check_password_hash(password_hash)?;
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let username: Option<String> = tx
+            .prepare_cached("UPDATE users SET password_hash = ?2, updated_at = ?3 WHERE id = ?1 RETURNING username")?
+            .query_row(params![id, password_hash, now_ms()], |r| r.get(0))
+            .optional()?;
+        let Some(username) = username else { return Err(MetadataError::NotFound) };
+        let ended = tx.prepare_cached("DELETE FROM sessions WHERE user_id = ?1")?.execute([id])?;
+        tx.commit()?;
+        Ok((username, ended))
+    }
+
+    /// How many sessions account `id` has, expired ones included.
+    pub fn count_sessions(&self, user_id: i64) -> Result<usize> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.prepare_cached("SELECT COUNT(*) FROM sessions WHERE user_id = ?1")?
+            .query_row([user_id], |r| r.get::<_, i64>(0))? as usize)
     }
 
     pub fn find_session(&self, token_hash: &str) -> Result<Option<User>> {

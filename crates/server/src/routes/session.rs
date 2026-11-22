@@ -24,7 +24,11 @@ fn cookie(value: &str, max_age: u64) -> HeaderValue {
         .expect("cookie header is ASCII")
 }
 
-pub async fn login(State(state): State<SharedState>, ApiJson(b): ApiJson<LoginBody>) -> ApiResult<Response> {
+pub async fn login(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    ApiJson(b): ApiJson<LoginBody>,
+) -> ApiResult<Response> {
     // Before the lookup, so under load unknown and known usernames get the
     // same 429. Held until the response; each blocking step holds a clone,
     // so a client that disconnects mid-step frees its place only when that
@@ -53,18 +57,40 @@ pub async fn login(State(state): State<SharedState>, ApiJson(b): ApiJson<LoginBo
         drop(sign_in);
         return Err(ApiError::unauthorized("invalid username or password"));
     };
+    // A fresh credential every time. The one the client presented, if any,
+    // is replaced: it ends with this login, whichever account it was for.
+    // Sessions of other clients are untouched.
     let token = auth::random_token(32);
     let ttl = state.config.auth.session_ttl;
     let hash = auth::sha256_hex(&token);
-    let uid = user.id;
-    let held = sign_in.clone();
+    let replaces = auth::session_from(&headers).map(|t| auth::sha256_hex(&t));
+    let (uid, verified) = (user.id, user.password_hash.clone());
+    let (held, st) = (sign_in.clone(), state.clone());
     let created = state
-        .db(move |m| {
+        .blocking(move || {
             let _held = held;
-            match m.create_session(&hash, uid, ttl.as_millis() as i64) {
-                // Deactivated or removed since the lookup above.
+            let issued = st.metadata.issue_session(&metadata::NewSession {
+                token_hash: &hash,
+                user_id: uid,
+                // The account must still have the password just checked:
+                // a password change or deactivation that committed since
+                // wins, and no session is created.
+                verified_hash: Some(&verified),
+                ttl_ms: ttl.as_millis().min(i64::MAX as u128) as i64,
+                replaces: replaces.as_deref(),
+            });
+            match issued {
+                Ok(ended) => {
+                    // After the commit, in the same blocking task (as
+                    // logout does): the replaced session and any the
+                    // per-account bound ended are refused from now on.
+                    for h in &ended {
+                        st.sessions.invalidate(h);
+                    }
+                    Ok(true)
+                }
                 Err(metadata::MetadataError::NotFound) => Ok(false),
-                other => other.map(|()| true),
+                Err(e) => Err(e.into()),
             }
         })
         .await?;

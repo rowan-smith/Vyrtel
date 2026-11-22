@@ -49,6 +49,7 @@ CREATE TABLE sessions (
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
 );
+CREATE INDEX sessions_user ON sessions(user_id, created_at);
 
 CREATE TABLE dashboards (
     id          INTEGER PRIMARY KEY,
