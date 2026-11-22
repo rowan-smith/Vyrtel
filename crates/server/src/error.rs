@@ -183,6 +183,7 @@ impl From<metadata::MetadataError> for ApiError {
         match e {
             metadata::MetadataError::NotFound => ApiError::not_found("resource"),
             metadata::MetadataError::Invalid(m) => ApiError::bad_request(m),
+            metadata::MetadataError::Conflict(m) => ApiError::new(StatusCode::CONFLICT, "conflict", m),
             other => ApiError::internal(other),
         }
     }

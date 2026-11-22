@@ -424,12 +424,18 @@ fn the_ingest_auth_mode_is_stored_and_read_strictly() {
     }
 }
 
+/// A stand-in Argon2id PHC string: the store keeps hashes, never
+/// passwords, and refuses anything that is not one.
+fn h(tag: &str) -> String {
+    format!("$argon2id$v=19$m=19456,t=2,p=1$c2FsdA${tag}")
+}
+
 #[test]
 fn users_and_sessions() {
     let m = Metadata::open_in_memory().unwrap();
-    let uid = m.upsert_user("admin", "hash").unwrap();
-    assert_eq!(m.upsert_user("admin", "hash2").unwrap(), uid);
-    assert_eq!(m.find_user("admin").unwrap().unwrap().password_hash, "hash2");
+    let uid = m.upsert_user("admin", &h("one")).unwrap();
+    assert_eq!(m.upsert_user("admin", &h("two")).unwrap(), uid);
+    assert_eq!(m.find_user("admin").unwrap().unwrap().password_hash, h("two"));
     m.create_session("s1", uid, 60_000).unwrap();
     m.create_session("s2", uid, -1).unwrap();
     assert_eq!(m.find_session("s1").unwrap().unwrap().username, "admin");
@@ -442,18 +448,149 @@ fn users_and_sessions() {
 #[test]
 fn rotating_a_password_ends_only_that_users_sessions() {
     let m = Metadata::open_in_memory().unwrap();
-    let admin = m.upsert_user("admin", "old").unwrap();
-    let other = m.upsert_user("ops", "hash").unwrap();
+    let admin = m.upsert_user("admin", &h("old")).unwrap();
+    let other = m.upsert_user("ops", &h("ops")).unwrap();
     m.create_session("a1", admin, 60_000).unwrap();
     m.create_session("a2", admin, 60_000).unwrap();
     m.create_session("o1", other, 60_000).unwrap();
-    assert_eq!(m.rotate_password("admin", "new").unwrap(), (admin, 2));
-    assert_eq!(m.find_user("admin").unwrap().unwrap().password_hash, "new");
+    assert_eq!(m.rotate_password("admin", &h("new")).unwrap(), (admin, 2));
+    assert_eq!(m.find_user("admin").unwrap().unwrap().password_hash, h("new"));
     assert!(m.find_session("a1").unwrap().is_none() && m.find_session("a2").unwrap().is_none());
     assert_eq!(m.find_session("o1").unwrap().unwrap().username, "ops", "other users keep theirs");
     // A user that does not exist yet is created, with nothing to end.
-    let (id, ended) = m.rotate_password("new-admin", "h").unwrap();
+    let (id, ended) = m.rotate_password("new-admin", &h("h")).unwrap();
     assert_eq!((m.find_user("new-admin").unwrap().unwrap().id, ended), (id, 0));
+}
+
+// IAM-01 (#76) AC1: an account's id, case-normalized username, display
+// name, active state and password hash survive a restart (a reopen of the
+// metadata database), and nothing about the account changes on the way.
+#[test]
+fn accounts_persist_across_restart() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("metadata").join("metadata.db");
+    let (alice, bob) = {
+        let m = Metadata::open(&path).unwrap();
+        let alice = m.create_user("  Alice.Ops ", Some("Alice Ops"), &h("alice")).unwrap();
+        let bob = m.create_user("bob", None, &h("bob")).unwrap();
+        assert_eq!(m.set_user_active(bob.id, false).unwrap(), 0);
+        (alice, m.find_user_by_id(bob.id).unwrap().unwrap())
+    };
+    assert_eq!((alice.username.as_str(), alice.display_name.as_str(), alice.active), ("alice.ops", "Alice Ops", true));
+    assert_eq!((bob.display_name.as_str(), bob.active), ("bob", false));
+
+    let m = Metadata::open(&path).unwrap();
+    assert_eq!(m.find_user("ALICE.OPS").unwrap().as_ref(), Some(&alice), "found in any case, unchanged");
+    assert_eq!(m.find_user_by_id(alice.id).unwrap().as_ref(), Some(&alice));
+    assert_eq!(m.find_user("bob").unwrap().as_ref(), Some(&bob), "still inactive");
+    assert_eq!(m.count_users().unwrap(), 2);
+}
+
+#[test]
+fn usernames_are_unique_whatever_their_case() {
+    let m = Metadata::open_in_memory().unwrap();
+    let admin = m.create_user("Admin", None, &h("a")).unwrap();
+    assert_eq!((admin.username.as_str(), admin.display_name.as_str()), ("admin", "Admin"));
+    for taken in ["admin", "ADMIN", " aDmIn "] {
+        match m.create_user(taken, None, &h("b")) {
+            Err(MetadataError::Conflict(msg)) => assert_eq!(msg, "username admin is already taken"),
+            other => panic!("{taken:?}: expected a conflict, got {other:?}"),
+        }
+    }
+    // Unicode lowercase, not just ASCII.
+    let osten = m.create_user("\u{d6}STEN", None, &h("c")).unwrap();
+    assert_eq!(osten.username, "\u{f6}sten");
+    assert_eq!(m.find_user("\u{f6}sten").unwrap().unwrap().id, osten.id);
+    // The configured-admin path normalizes the same way and keeps the id.
+    assert_eq!(m.upsert_user("ADMIN", &h("d")).unwrap(), admin.id);
+    let after = m.find_user("admin").unwrap().unwrap();
+    assert_eq!((after.display_name.as_str(), after.password_hash.as_str()), ("Admin", h("d").as_str()));
+    assert_eq!(m.count_users().unwrap(), 2);
+}
+
+#[test]
+fn ids_are_never_changed_or_reused() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("m.db");
+    let (first, second) = {
+        let m = Metadata::open(&path).unwrap();
+        (m.create_user("x", None, &h("x")).unwrap(), m.create_user("y", None, &h("y")).unwrap())
+    };
+    assert!(second.id > first.id);
+    // The schema refuses an id change, whoever attempts it.
+    let c = rusqlite::Connection::open(&path).unwrap();
+    let err = c.execute("UPDATE users SET id = id + 100 WHERE id = ?1", [first.id]).unwrap_err();
+    assert!(err.to_string().contains("a user id never changes"), "{err}");
+    // A removed account's id is not handed to the next one.
+    c.execute("DELETE FROM users WHERE id = ?1", [second.id]).unwrap();
+    drop(c);
+    let next = Metadata::open(&path).unwrap().create_user("z", None, &h("z")).unwrap();
+    assert!(next.id > second.id, "{} reused", next.id);
+}
+
+#[test]
+fn invalid_accounts_are_refused_and_nothing_is_stored() {
+    let m = Metadata::open_in_memory().unwrap();
+    let long = "x".repeat(MAX_USERNAME_CHARS + 1);
+    let cases: [(&str, Option<&str>, String, &str); 7] = [
+        ("", None, h("a"), "username is required"),
+        ("   ", None, h("a"), "username is required"),
+        (&long, None, h("a"), "username must be at most 64 characters"),
+        ("two words", None, h("a"), "username must not contain spaces or control characters"),
+        ("tab\tbed", None, h("a"), "username must not contain spaces or control characters"),
+        ("ok", Some(" "), h("a"), "display name is required"),
+        ("ok", None, "correct horse".into(), "a password must be stored as an Argon2id hash"),
+    ];
+    for (username, display, hash, want) in cases {
+        match m.create_user(username, display, &hash) {
+            Err(MetadataError::Invalid(msg)) => assert_eq!(msg, want, "{username:?}"),
+            other => panic!("{username:?}: expected Invalid, got {other:?}"),
+        }
+    }
+    assert!(matches!(m.upsert_user("admin", "plaintext"), Err(MetadataError::Invalid(_))));
+    assert!(matches!(m.rotate_password("admin", "$argon2i$v=19$x"), Err(MetadataError::Invalid(_))));
+    assert_eq!(m.count_users().unwrap(), 0);
+    // A lookup by a username that could never be stored finds nothing.
+    assert!(m.find_user("two words").unwrap().is_none());
+}
+
+#[test]
+fn inactive_accounts_have_no_sessions() {
+    let m = Metadata::open_in_memory().unwrap();
+    let u = m.create_user("ops", None, &h("ops")).unwrap();
+    let other = m.create_user("other", None, &h("other")).unwrap();
+    m.create_session("u1", u.id, 60_000).unwrap();
+    m.create_session("u2", u.id, 60_000).unwrap();
+    m.create_session("o1", other.id, 60_000).unwrap();
+    assert_eq!(m.set_user_active(u.id, false).unwrap(), 2, "deactivating ends its sessions");
+    assert!(m.find_session("u1").unwrap().is_none());
+    assert!(matches!(m.create_session("u3", u.id, 60_000), Err(MetadataError::NotFound)), "no new ones");
+    assert!(m.find_session("u3").unwrap().is_none());
+    assert_eq!(m.find_session("o1").unwrap().unwrap().username, "other", "other users keep theirs");
+    // Reactivating allows sessions again; it brings none back.
+    assert_eq!(m.set_user_active(u.id, true).unwrap(), 0);
+    assert!(m.find_session("u1").unwrap().is_none());
+    m.create_session("u4", u.id, 60_000).unwrap();
+    assert!(m.find_session("u4").unwrap().unwrap().active);
+    assert!(matches!(m.set_user_active(9_999, false), Err(MetadataError::NotFound)));
+    assert!(matches!(m.create_session("x", 9_999, 60_000), Err(MetadataError::NotFound)));
+}
+
+// IAM-01 (#76) AC2: the hash is never serialized and never printed.
+#[test]
+fn password_hashes_are_neither_serialized_nor_printed() {
+    let m = Metadata::open_in_memory().unwrap();
+    let u = m.create_user("admin", Some("The Admin"), &h("secret-verifier")).unwrap();
+    let json = serde_json::to_value(&u).unwrap();
+    assert_eq!(
+        json,
+        json!({"id": u.id, "username": "admin", "displayName": "The Admin", "active": true,
+               "createdAt": u.created_at, "updatedAt": u.updated_at})
+    );
+    for printed in [format!("{u:?}"), format!("{u:#?}")] {
+        assert!(!printed.contains("secret-verifier") && !printed.contains("$argon2id$"), "{printed}");
+        assert!(printed.contains("<redacted>"), "{printed}");
+    }
 }
 
 #[test]
