@@ -22,4 +22,5 @@ Vyrtel is a small, fast, self-hosted observability platform: one process, one da
 - Add or update tests for behaviour and failure cases. Document user-visible changes.
 - Read `docs/development.md`, `docs/testing.md` and relevant design docs rather than repeating them here.
 - For feature work, follow `.agents/skills/feature-implementation/SKILL.md` when supported.
+- Branch, name and merge changes as described in `.agents/skills/branching-strategy/SKILL.md`.
 - Before finishing, run relevant checks and state what ran, what failed and what was not verified.
