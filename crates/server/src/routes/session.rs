@@ -44,7 +44,9 @@ pub async fn login(State(state): State<SharedState>, ApiJson(b): ApiJson<LoginBo
         Some(u) => auth::check_password(&state, sign_in.clone(), b.password.clone(), u.password_hash.clone()).await?,
         None => false,
     };
-    let Some(user) = user.filter(|_| ok) else {
+    // An inactive account is refused like a wrong password, after the
+    // same check, so the response does not tell which it was.
+    let Some(user) = user.filter(|u| ok && u.active) else {
         // Slow down guessing; the response is identical for unknown users.
         // The place stays taken through the delay.
         tokio::time::sleep(Duration::from_millis(400)).await;
@@ -56,12 +58,20 @@ pub async fn login(State(state): State<SharedState>, ApiJson(b): ApiJson<LoginBo
     let hash = auth::sha256_hex(&token);
     let uid = user.id;
     let held = sign_in.clone();
-    state
+    let created = state
         .db(move |m| {
             let _held = held;
-            m.create_session(&hash, uid, ttl.as_millis() as i64)
+            match m.create_session(&hash, uid, ttl.as_millis() as i64) {
+                // Deactivated or removed since the lookup above.
+                Err(metadata::MetadataError::NotFound) => Ok(false),
+                other => other.map(|()| true),
+            }
         })
         .await?;
+    if !created {
+        drop(sign_in);
+        return Err(ApiError::unauthorized("invalid username or password"));
+    }
     let mut resp = Json(json!({ "authEnabled": true, "user": user.username })).into_response();
     resp.headers_mut().insert(header::SET_COOKIE, cookie(&token, ttl.as_secs()));
     drop(sign_in);

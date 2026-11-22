@@ -8,11 +8,14 @@ description: Choose, name and land a Vyrtel branch using the trunk-based workflo
 Vyrtel is trunk-based. `main` is the only long-lived branch; it is always releasable and every
 change reaches it through a pull request with CI passing.
 
-1. Start from an up-to-date `main`: `git fetch origin && git switch -c <type>/<topic> origin/main`.
+1. Start from an up-to-date `main` without tracking it:
+   `git fetch origin && git switch --no-track -c <type>/<topic> origin/main`. A branch that
+   tracks `origin/main` pushes to `main` from a plain `git push` or an IDE push.
 2. Name the branch `<type>/<short-kebab-topic>` (see below). One focused change per branch.
 3. Keep the branch short-lived. Rebase on `origin/main` rather than merging `main` into it, and
    only force-push (`--force-with-lease`) branches you own.
-4. Open a pull request into `main`. CI (`.github/workflows/ci.yml`) runs on every pull request;
+4. Push the branch to its own name the first time (`git push -u origin <type>/<topic>`), then
+   open a pull request into `main`. CI (`.github/workflows/ci.yml`) runs on every pull request;
    do not merge with required checks failing or skipped.
 5. Land it with **squash merge**, so `main` gets one commit titled `<Imperative summary> (#N)`.
    Delete the branch after merging.

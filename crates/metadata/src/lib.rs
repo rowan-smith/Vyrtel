@@ -31,6 +31,9 @@ pub enum MetadataError {
     NotFound,
     #[error("{0}")]
     Invalid(String),
+    /// The write would break a uniqueness rule (an existing username).
+    #[error("{0}")]
+    Conflict(String),
     /// The database is not of this build's layout: another identity, or
     /// none. Opening it is refused before anything is written.
     #[error(
@@ -169,13 +172,99 @@ pub struct ApiKey {
     pub last_used_at: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+/// A local account.
+///
+/// `id` never changes and is never reused. `username` is case-normalized
+/// ([`normalize_username`]) and unique. The password hash is never
+/// serialized and `Debug` redacts it, so neither an API response nor a log
+/// line built from a `User` can carry it.
+#[derive(Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct User {
     pub id: i64,
     pub username: String,
+    pub display_name: String,
+    pub active: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
     #[serde(skip)]
     pub password_hash: String,
+}
+
+impl std::fmt::Debug for User {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("User")
+            .field("id", &self.id)
+            .field("username", &self.username)
+            .field("display_name", &self.display_name)
+            .field("active", &self.active)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .field("password_hash", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Characters a username or display name may have at most.
+pub const MAX_USERNAME_CHARS: usize = 64;
+pub const MAX_DISPLAY_NAME_CHARS: usize = 128;
+
+/// The stored form of a username: trimmed and lowercased (Unicode simple
+/// lowercase), so `Admin`, ` admin ` and `ADMIN` are one account. It must
+/// be 1 to [`MAX_USERNAME_CHARS`] characters once lowercased (some
+/// characters lowercase to two: `İ` is `i` and a combining dot), with no
+/// whitespace or control characters inside.
+pub fn normalize_username(username: &str) -> Result<String> {
+    let u = username.trim();
+    if u.is_empty() {
+        return Err(MetadataError::Invalid("username is required".into()));
+    }
+    if u.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(MetadataError::Invalid("username must not contain spaces or control characters".into()));
+    }
+    // Counted before lowercasing too, so a huge input is refused without
+    // building its lowercase copy.
+    let too_long = || MetadataError::Invalid(format!("username must be at most {MAX_USERNAME_CHARS} characters"));
+    if u.chars().count() > MAX_USERNAME_CHARS {
+        return Err(too_long());
+    }
+    let lower = u.to_lowercase();
+    if lower.chars().count() > MAX_USERNAME_CHARS {
+        return Err(too_long());
+    }
+    Ok(lower)
+}
+
+/// A display name as stored: trimmed, 1 to [`MAX_DISPLAY_NAME_CHARS`]
+/// characters, no control characters. Its casing is kept.
+fn normalize_display_name(name: &str) -> Result<String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err(MetadataError::Invalid("display name is required".into()));
+    }
+    if n.chars().count() > MAX_DISPLAY_NAME_CHARS {
+        return Err(MetadataError::Invalid(format!(
+            "display name must be at most {MAX_DISPLAY_NAME_CHARS} characters"
+        )));
+    }
+    if n.chars().any(char::is_control) {
+        return Err(MetadataError::Invalid("display name must not contain control characters".into()));
+    }
+    Ok(n.to_string())
+}
+
+const USER_COLUMNS: &str = "id, username, display_name, active, created_at, updated_at, password_hash";
+
+fn user_from_row(r: &Row) -> rusqlite::Result<User> {
+    Ok(User {
+        id: r.get("id")?,
+        username: r.get("username")?,
+        display_name: r.get("display_name")?,
+        active: r.get("active")?,
+        created_at: r.get("created_at")?,
+        updated_at: r.get("updated_at")?,
+        password_hash: r.get("password_hash")?,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -700,14 +789,50 @@ impl Metadata {
 
     // ---- users & sessions ---------------------------------------------
 
-    pub fn upsert_user(&self, username: &str, password_hash: &str) -> Result<i64> {
-        let c = self.conn.lock().unwrap();
-        c.prepare_cached(
-            "INSERT INTO users (username, password_hash, created_at) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash",
+    /// Create a local account. The username is stored case-normalized
+    /// ([`normalize_username`]); one that exists in any case is a
+    /// [`MetadataError::Conflict`]. `display_name` defaults to the username
+    /// as given. `password_hash` must be an Argon2id PHC string, never a
+    /// password.
+    pub fn create_user(&self, username: &str, display_name: Option<&str>, password_hash: &str) -> Result<User> {
+        let key = normalize_username(username)?;
+        let display = normalize_display_name(display_name.unwrap_or(username))?;
+        check_password_hash(password_hash)?;
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let taken: bool =
+            tx.query_row("SELECT EXISTS (SELECT 1 FROM users WHERE username = ?1)", [&key], |r| r.get(0))?;
+        if taken {
+            return Err(MetadataError::Conflict(format!("username {key} is already taken")));
+        }
+        let now = now_ms();
+        tx.prepare_cached(
+            "INSERT INTO users (username, display_name, active, password_hash, created_at, updated_at) \
+             VALUES (?1, ?2, 1, ?3, ?4, ?4)",
         )?
-        .execute(params![username, password_hash, now_ms()])?;
-        Ok(c.query_row("SELECT id FROM users WHERE username = ?1", [username], |r| r.get(0))?)
+        .execute(params![key, display, password_hash, now])?;
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(User {
+            id,
+            username: key,
+            display_name: display,
+            active: true,
+            created_at: now,
+            updated_at: now,
+            password_hash: password_hash.to_string(),
+        })
+    }
+
+    /// Set the password hash of `username`, creating the account (active,
+    /// display name as given) if there is none. An existing account keeps
+    /// its id, display name, active state and sessions.
+    pub fn upsert_user(&self, username: &str, password_hash: &str) -> Result<i64> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let id = set_password(&tx, username, password_hash)?;
+        tx.commit()?;
+        Ok(id)
     }
 
     /// Set the password hash of `username` (creating the user if needed)
@@ -717,22 +842,48 @@ impl Metadata {
     pub fn rotate_password(&self, username: &str, password_hash: &str) -> Result<(i64, usize)> {
         let mut c = self.conn.lock().unwrap();
         let tx = c.transaction()?;
-        tx.prepare_cached(
-            "INSERT INTO users (username, password_hash, created_at) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash",
-        )?
-        .execute(params![username, password_hash, now_ms()])?;
-        let id: i64 = tx.query_row("SELECT id FROM users WHERE username = ?1", [username], |r| r.get(0))?;
+        let id = set_password(&tx, username, password_hash)?;
         let ended = tx.prepare_cached("DELETE FROM sessions WHERE user_id = ?1")?.execute([id])?;
         tx.commit()?;
         Ok((id, ended))
     }
 
+    /// The account `username` names, in any case. A username that could
+    /// not be stored names none.
     pub fn find_user(&self, username: &str) -> Result<Option<User>> {
+        let Ok(key) = normalize_username(username) else { return Ok(None) };
         let c = self.conn.lock().unwrap();
-        Ok(c.prepare_cached("SELECT id, username, password_hash FROM users WHERE username = ?1")?
-            .query_row([username], |r| Ok(User { id: r.get(0)?, username: r.get(1)?, password_hash: r.get(2)? }))
+        Ok(c.prepare_cached(&format!("SELECT {USER_COLUMNS} FROM users WHERE username = ?1"))?
+            .query_row([key], user_from_row)
             .optional()?)
+    }
+
+    pub fn find_user_by_id(&self, id: i64) -> Result<Option<User>> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.prepare_cached(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = ?1"))?
+            .query_row([id], user_from_row)
+            .optional()?)
+    }
+
+    /// Activate or deactivate an account in SQLite. Deactivating ends its
+    /// sessions in the same transaction. Returns the account's username and
+    /// how many sessions were ended.
+    ///
+    /// This does not reach the server's session cache: call
+    /// `server::auth::set_account_active` instead, which also drops the
+    /// user's cached sessions so revocation is immediate.
+    pub fn set_user_active(&self, id: i64, active: bool) -> Result<(String, usize)> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let username: Option<String> = tx
+            .prepare_cached("UPDATE users SET active = ?2, updated_at = ?3 WHERE id = ?1 RETURNING username")?
+            .query_row(params![id, active, now_ms()], |r| r.get(0))
+            .optional()?;
+        let Some(username) = username else { return Err(MetadataError::NotFound) };
+        let ended =
+            if active { 0 } else { tx.prepare_cached("DELETE FROM sessions WHERE user_id = ?1")?.execute([id])? };
+        tx.commit()?;
+        Ok((username, ended))
     }
 
     pub fn count_users(&self) -> Result<i64> {
@@ -740,11 +891,22 @@ impl Metadata {
         Ok(c.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?)
     }
 
+    /// Start a session of an active user. An unknown or inactive user is
+    /// [`MetadataError::NotFound`], checked in the same statement as the
+    /// insert, so a session is never issued to an account deactivated in
+    /// the meantime.
     pub fn create_session(&self, token_hash: &str, user_id: i64, ttl_ms: i64) -> Result<()> {
         let c = self.conn.lock().unwrap();
         let now = now_ms();
-        c.prepare_cached("INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?1, ?2, ?3, ?4)")?
+        let created = c
+            .prepare_cached(
+                "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) \
+                 SELECT ?1, id, ?3, ?4 FROM users WHERE id = ?2 AND active = 1",
+            )?
             .execute(params![token_hash, user_id, now, now + ttl_ms])?;
+        if created == 0 {
+            return Err(MetadataError::NotFound);
+        }
         Ok(())
     }
 
@@ -763,12 +925,11 @@ impl Metadata {
         let lock_wait = waiting.elapsed();
         let found = c
             .prepare_cached(
-                "SELECT u.id, u.username, u.password_hash, s.expires_at FROM sessions s \
-                 JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?1 AND s.expires_at > ?2",
+                "SELECT u.id, u.username, u.display_name, u.active, u.created_at, u.updated_at, u.password_hash, \
+                 s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id \
+                 WHERE s.token_hash = ?1 AND s.expires_at > ?2 AND u.active = 1",
             )?
-            .query_row(params![token_hash, now_ms()], |r| {
-                Ok((User { id: r.get(0)?, username: r.get(1)?, password_hash: r.get(2)? }, r.get(3)?))
-            })
+            .query_row(params![token_hash, now_ms()], |r| Ok((user_from_row(r)?, r.get("expires_at")?)))
             .optional()?;
         Ok((found, lock_wait))
     }
@@ -1174,6 +1335,43 @@ impl Metadata {
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
+}
+
+/// Refuse anything but a well-formed Argon2id PHC string (a known version,
+/// valid parameters, a salt and an output), so neither a plaintext password
+/// nor a malformed verifier that could never match is stored.
+fn check_password_hash(hash: &str) -> Result<()> {
+    use argon2::password_hash::phc::PasswordHash;
+    let well_formed = || -> Option<()> {
+        let parsed = PasswordHash::new(hash).ok()?;
+        if parsed.algorithm != argon2::Algorithm::Argon2id.ident() {
+            return None;
+        }
+        parsed.salt.as_ref()?;
+        parsed.hash.as_ref()?;
+        if let Some(v) = parsed.version {
+            argon2::Version::try_from(v).ok()?;
+        }
+        argon2::Params::try_from(&parsed).ok()?;
+        Some(())
+    };
+    well_formed().ok_or_else(|| MetadataError::Invalid("a password must be stored as an Argon2id hash".into()))
+}
+
+/// Set `username`'s password hash in `tx`, creating the account if there is
+/// none. Returns its id.
+fn set_password(tx: &rusqlite::Transaction, username: &str, password_hash: &str) -> Result<i64> {
+    let key = normalize_username(username)?;
+    let display = normalize_display_name(username)?;
+    check_password_hash(password_hash)?;
+    let now = now_ms();
+    tx.prepare_cached(
+        "INSERT INTO users (username, display_name, active, password_hash, created_at, updated_at) \
+         VALUES (?1, ?2, 1, ?3, ?4, ?4) \
+         ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash, updated_at = excluded.updated_at",
+    )?
+    .execute(params![key, display, password_hash, now])?;
+    Ok(tx.query_row("SELECT id FROM users WHERE username = ?1", [key], |r| r.get(0))?)
 }
 
 fn validate_name(name: &str, what: &str) -> Result<()> {

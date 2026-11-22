@@ -1,0 +1,111 @@
+---
+name: ticket-workflow
+description: Work a Vyrtel GitHub issue end to end — move it from Ready to In progress on Project 2 when starting, implement it, hand over a commit message, PR title and description without attribution, move it to In review when the PR opens, and refresh the PR description after review.
+---
+
+# Ticket workflow
+
+Use this when asked to implement, pick up or "do" an issue. It wraps the
+`feature-implementation` and `branching-strategy` skills with the ticket bookkeeping on
+[Project 2](https://github.com/users/rowan-smith/projects/2) (see `docs/ticketing.md`).
+
+Status flow: **Ready → In progress** (work starts) **→ In review** (PR opened) **→ Done**
+(the Project's closed-issue workflow sets it when the PR merges and closes the issue; do not
+set Done by hand).
+
+## 1. Start
+
+1. Read the issue, its comments, acceptance criteria, dependencies and out-of-scope notes:
+   `gh issue view <N> --repo rowan-smith/Vyrtel --comments`.
+2. Check its Project status (commands below). Tickets are picked up from **Ready**:
+   - **Ready**: continue.
+   - **Backlog**: it has not met the Definition of Ready; ask before starting.
+   - **In progress** or **In review**: someone may already own it; ask before starting.
+   - Not on the Project: add it (below), then treat it as Ready only if the user confirms.
+3. Move it to **In progress** before writing code.
+4. Branch from `origin/main` as `branching-strategy` describes.
+
+## 2. Implement
+
+Follow `feature-implementation`: smallest complete change, tests for behaviour and failure
+cases, docs for user-visible changes, and the checks in `docs/testing.md`. Record which
+check verifies each acceptance criterion; the PR description needs it.
+
+## 3. Hand over the commit message, PR title and description
+
+When the implementation is done, always give the user, ready to paste:
+
+- **Commit message**: an imperative subject line under ~70 characters (normally the PR
+  title), a blank line, then a short body wrapped at 72 columns saying what changed and why,
+  including any compatibility impact. End with `Closes #N` or `Part of #N`, matching the PR.
+  Give it in a fenced block so it can be pasted into `git commit` or the IDE as is.
+- **PR title**: imperative, under ~70 characters, no issue number or type prefix (the squash
+  merge adds ` (#PR)`), e.g. `Persist local account identities and password verifiers`.
+- **PR description** in Markdown, in the `feature-implementation` format: **Summary**,
+  **Changes**, **Validation** (what ran, what failed, what was not run), **Notes**
+  (compatibility, upgrade, risks) and **Issue** (`Closes #N` only when every acceptance
+  criterion is met, otherwise `Part of #N`). Link each acceptance criterion to its evidence.
+
+None of the three carries agent attribution: no `Co-Authored-By` trailers, "Generated with"
+lines or mentions of the agent. The same applies to commits the agent makes itself.
+
+## 4. Open the PR → In review
+
+Commit, push and open the PR only when the user asks. Then:
+
+1. Commit with the message from step 3, push the branch, then
+   `gh pr create --repo rowan-smith/Vyrtel --base main --title "<title>" --body-file <file>`
+   with the title and description from step 3.
+2. Move the issue to **In review**.
+3. Give the user the PR link.
+
+## 5. After review → update the description
+
+After a review round (a `code-review` pass, reviewer comments, or fixes pushed in response),
+refresh the PR description so it describes what the branch now does:
+
+1. Re-read the full diff (`gh pr diff <PR>`) and the review comments.
+2. Update **Changes**, **Validation** (rerun checks; list new tests) and **Notes** (risks
+   resolved or remaining). Keep the **Issue** line accurate.
+3. Apply it with `gh pr edit <PR> --repo rowan-smith/Vyrtel --body-file <file>` and tell
+   the user what changed in the description.
+
+The status stays **In review** until merge. If the review sends the work back for a large
+rework, ask whether to move it back to **In progress**.
+
+## Project status commands
+
+Project 2 belongs to `rowan-smith`. Look the IDs up rather than trusting this list blindly;
+as of writing: project `PVT_kwHOAIlL1c4BmJE9`, Status field `PVTSSF_lAHOAIlL1c4BmJE9zhkzQIU`,
+options Backlog `f75ad846`, Ready `e18bf179`, In progress `47fc9ee4`, In review `aba860b9`,
+Done `98236657`. Project writes need `gh auth refresh -s project`.
+
+```bash
+# Project and Status field/option IDs
+gh project view 2 --owner rowan-smith --format json --jq .id
+gh project field-list 2 --owner rowan-smith --format json \
+  --jq '.fields[] | select(.name=="Status") | {id, options}'
+
+# The issue's Project item and current status
+gh api graphql -F n=<N> -f query='query($n:Int!){repository(owner:"rowan-smith",name:"Vyrtel"){
+  issue(number:$n){projectItems(first:10){nodes{id project{number}
+  fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}' \
+  --jq '.data.repository.issue.projectItems.nodes[] | select(.project.number==2)'
+
+# Add an issue that is not on the Project yet (prints the item ID)
+gh project item-add 2 --owner rowan-smith \
+  --url https://github.com/rowan-smith/Vyrtel/issues/<N> --format json --jq .id
+
+# Set the status
+gh project item-edit --project-id <project-id> --id <item-id> \
+  --field-id <status-field-id> --single-select-option-id <option-id>
+```
+
+After each status change, read the status back with the item query and report it.
+
+## Do not
+
+- Start a ticket that is not Ready without asking, or take one someone else has in progress.
+- Set Done, close the issue or merge the PR yourself; merging closes the issue.
+- Change labels, priority, estimate, milestone or assignees as part of this workflow.
+- Leave a PR description that no longer matches the diff after review.

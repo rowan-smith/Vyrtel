@@ -410,7 +410,7 @@ since the process started.
 
 | Key              | Default | Env                            | Description                                                                                                                                       |
 |------------------|---------|--------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
-| `admin_username` | `admin` | `VYRTEL_AUTH_ADMIN_USERNAME` |                                                                                                                                                   |
+| `admin_username` | `admin` | `VYRTEL_AUTH_ADMIN_USERNAME` | The administrator account's username. Case-insensitive ([local accounts](#local-accounts)): `Admin` and `admin` are one account. 1 to 64 characters, no spaces or control characters; anything else stops startup. |
 | `admin_password` | –       | `VYRTEL_AUTH_ADMIN_PASSWORD` | Hashed (Argon2id) into the metadata store at startup. If unset on first start, a random password is generated and printed once. Starting with a different password signs out all existing admin sessions. |
 | `session_ttl`    | `7d`    | –                              | Login session lifetime.                                                                                                                           |
 
@@ -420,6 +420,59 @@ since the process started.
 > `required` there, before exposing Vyrtel beyond a trusted network: ingestion then requires a valid key for good, even after every
 > ingest key is revoked ([ingestion authentication](#ingestion-authentication)).
 > Put Vyrtel behind TLS (a reverse proxy) — it serves plain HTTP itself.
+
+#### Local accounts
+
+Accounts live in the metadata database (`metadata/metadata.db`, never in
+telemetry storage) and survive restarts unchanged. Each one has:
+
+* an **id** that never changes and is never reused, even after the account
+  is removed;
+* a **username**, stored trimmed and lowercased (Unicode lowercase) and
+  unique in that form: `Ops.Admin`, `ops.admin` and ` OPS.ADMIN ` sign in
+  to the same account, and a second account differing only in case is
+  refused (`409 conflict`). 1 to 64 characters once lowercased (a few
+  characters lowercase to two, such as `İ`), with no spaces or control
+  characters. Lowercasing is not full Unicode normalization: names that
+  look alike but use different code points are different accounts;
+* a **display name**, kept with the casing it was given (the administrator's
+  is `auth.admin_username` as written), up to 128 characters;
+* an **active** state. An inactive account cannot sign in (it gets the same
+  `401 invalid username or password` as a wrong password) and has no
+  sessions: deactivating one ends them all at once, including sessions a
+  client is using right now, without a restart;
+* a **password hash**: Argon2id with the default parameters and a random
+  salt per password, as a PHC string. The store refuses anything that is
+  not a well-formed Argon2id PHC string (a known version, valid parameters,
+  a salt and an output), so a plaintext password is never written. Neither the password nor the hash
+  appears in any API response or log line.
+
+Today the administrator from `[auth]` is the only account Vyrtel creates;
+managing other accounts from the UI or API is later work.
+
+**Recovering the administrator account.** Stop Vyrtel, set
+`auth.admin_password` (or `VYRTEL_AUTH_ADMIN_PASSWORD`) to a new password
+and start it again. The account keeps its id and display name, gets the new
+hash, and every one of its sessions ends. Then sign in with the new
+password, for example:
+
+```bash
+VYRTEL_AUTH_ADMIN_PASSWORD='correct horse' vyrtel --data-dir ./data &
+curl -s -X POST localhost:8080/api/v1/auth/login -H 'content-type: application/json' \
+  -d '{"username": "ADMIN", "password": "correct horse"}'
+# {"authEnabled":true,"user":"admin"}
+```
+
+#### Authentication changes in 0.1.3
+
+* Usernames are case-insensitive. `auth.admin_username = "Admin"` now
+  names the account `admin`, and sign-in accepts any case. An
+  `auth.admin_username` with spaces, control characters or more than 64
+  characters stops startup instead of being stored.
+* Accounts gain a display name and an active state
+  ([local accounts](#local-accounts)). This changes the metadata schema, so
+  0.1.3 has a new layout and does not start a 0.1.2 data directory
+  ([upgrading between pre-1.0 releases](#upgrading-between-pre-10-releases)).
 
 #### Authentication changes in 0.1.2
 
@@ -1446,6 +1499,7 @@ is reassessed before 1.0. The 0.1.2 audit that introduced it is in
 | 0.1.0 (Observer)  | Observer's own (no identity)      | 0.1.0                                                       |
 | 0.1.1             | none (no identity, no `vyrtel.json`) | 0.1.1 (it checks nothing: never start it on newer data)  |
 | 0.1.2             | `0.1.2`                           | layout `0.1.2` only; refuses every directory above unchanged |
+| 0.1.3             | `0.1.3`                           | layout `0.1.3` only; refuses every directory above unchanged |
 
 Builds of 0.1.2 made before its layout reset (a `vyrtel.json` with
 `"format": 1` or `2` and no `"layout"`) are not 0.1.2 releases and their

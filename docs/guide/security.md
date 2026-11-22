@@ -17,6 +17,9 @@ The UI and API always need a login or an admin API key.
 - On first start, Vyrtel creates the `admin` user and prints a random password once.
 - To choose the password yourself, set `VYRTEL_AUTH_ADMIN_PASSWORD` (or `auth.admin_password`).
   Starting with a different password signs out every existing session.
+  This is also how to recover the account if the password is lost.
+- Usernames are case-insensitive, and passwords are stored only as salted Argon2id hashes
+  ([local accounts](../configuration.md#local-accounts)).
 - Sessions last 7 days by default (`auth.session_ttl`).
 
 ## Protect ingestion

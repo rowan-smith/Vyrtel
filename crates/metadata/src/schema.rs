@@ -22,12 +22,26 @@ CREATE TABLE api_keys (
     revoked_at   INTEGER
 );
 
+-- Local accounts. `id` is the account's identity: AUTOINCREMENT never
+-- reuses one, and the trigger below refuses any change to it. `username`
+-- is stored case-normalized (crate::normalize_username), so it is unique
+-- whatever case a sign-in uses; `display_name` keeps the casing given.
+-- `password_hash` is an Argon2id PHC string with its own salt.
 CREATE TABLE users (
-    id            INTEGER PRIMARY KEY,
-    username      TEXT NOT NULL UNIQUE,
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE CHECK (username <> '' AND username = lower(username)),
+    display_name  TEXT NOT NULL CHECK (display_name <> ''),
+    active        INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
     password_hash TEXT NOT NULL,
-    created_at    INTEGER NOT NULL
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
 );
+
+CREATE TRIGGER users_id_is_immutable BEFORE UPDATE OF id ON users
+WHEN NEW.id IS NOT OLD.id
+BEGIN
+    SELECT RAISE(ABORT, 'a user id never changes');
+END;
 
 CREATE TABLE sessions (
     token_hash TEXT PRIMARY KEY,

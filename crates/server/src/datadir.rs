@@ -791,8 +791,8 @@ mod tests {
                 format!("vyrtel.json has no layout identity (format {format}, written by Vyrtel 0.1.1)")
             );
         }
-        write_raw_manifest(d.path(), r#"{"format": 1, "layout": "0.1.3", "writtenBy": "0.1.3"}"#);
-        assert_eq!(foreign(d.path()), "vyrtel.json has layout 0.1.3, written by Vyrtel 0.1.3");
+        write_raw_manifest(d.path(), r#"{"format": 1, "layout": "0.1.2", "writtenBy": "0.1.2"}"#);
+        assert_eq!(foreign(d.path()), "vyrtel.json has layout 0.1.2, written by Vyrtel 0.1.2");
         write_raw_manifest(d.path(), r#"{"layout": "0.1.0"}"#);
         assert_eq!(foreign(d.path()), "vyrtel.json has layout 0.1.0");
 

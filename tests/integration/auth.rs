@@ -198,6 +198,86 @@ async fn ui_api_requires_session_or_admin_key() {
     s.stop().await;
 }
 
+async fn sign_in(s: &TestServer, username: &str) -> reqwest::Response {
+    s.post("/api/v1/auth/login", json!({"username": username, "password": "correct horse"})).await
+}
+
+/// IAM-01 (#76): the account keeps its id, normalized username, display
+/// name, active state and Argon2id hash across restarts; sign-in takes the
+/// username in any case; an inactive account cannot sign in and its
+/// sessions end; no response carries the hash or the password.
+#[tokio::test(flavor = "multi_thread")]
+async fn local_accounts_persist_and_never_expose_their_verifier() {
+    let mut s = TestServer::start_with(|c| {
+        c.auth.admin_username = "Ops.Admin".into();
+        c.auth.admin_password = Some("correct horse".into());
+    })
+    .await;
+    s.client = reqwest::Client::new();
+    let account = s.state().metadata.find_user("ops.admin").unwrap().unwrap();
+    assert_eq!(
+        (account.username.as_str(), account.display_name.as_str(), account.active),
+        ("ops.admin", "Ops.Admin", true)
+    );
+    assert!(account.password_hash.starts_with("$argon2id$"));
+
+    let mut cookies = Vec::new();
+    for username in ["ops.admin", "OPS.ADMIN", " Ops.Admin "] {
+        let r = sign_in(&s, username).await;
+        assert_eq!(r.status(), 200, "{username:?}");
+        cookies.push(session_cookie(&r));
+        let body = r.text().await.unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), json!({"authEnabled": true, "user": "ops.admin"}));
+        assert!(!body.contains("argon2") && !body.contains("correct horse"), "{body}");
+    }
+    let me = s.client.get(s.u("/api/v1/auth/me")).header("cookie", &cookies[0]).send().await.unwrap();
+    let body = me.text().await.unwrap();
+    assert!(!body.contains("argon2") && body.contains("ops.admin"), "{body}");
+
+    // Restarting keeps the account exactly as it was.
+    let s = s.restart().await;
+    assert_eq!(s.state().metadata.find_user("OPS.ADMIN").unwrap().as_ref(), Some(&account));
+    assert_eq!(s.state().metadata.count_users().unwrap(), 1, "no second account for another case");
+
+    // Deactivated with every session warm in the cache: the very next
+    // request with each cookie is refused, without a restart; sign-in is
+    // refused like a wrong password; both still hold after a restart.
+    let config = "/api/v1/system/config";
+    let with = |s: &TestServer, cookie: &str| reqwest::Client::new().get(s.u(config)).header("cookie", cookie);
+    for cookie in &cookies {
+        assert_eq!(status(with(&s, cookie)).await, 200, "cached before the deactivation");
+    }
+    assert!(s.state().sessions.snapshot()["cached"].as_u64().unwrap() >= cookies.len() as u64);
+    let ended = server::auth::set_account_active(s.state(), account.id, false).await.unwrap();
+    assert_eq!(ended, cookies.len());
+    for cookie in &cookies {
+        assert_eq!(status(with(&s, cookie)).await, 401, "refused at once, cached or not");
+    }
+    let r = sign_in(&s, "ops.admin").await;
+    assert_eq!(r.status(), 401);
+    let refused: Value = r.json().await.unwrap();
+    assert_eq!(
+        refused,
+        s.post("/api/v1/auth/login", json!({"username": "ops.admin", "password": "wrong"}))
+            .await
+            .json::<Value>()
+            .await
+            .unwrap()
+    );
+    let s = s.restart().await;
+    assert!(!s.state().metadata.find_user("ops.admin").unwrap().unwrap().active);
+    assert_eq!(sign_in(&s, "ops.admin").await.status(), 401);
+    for cookie in &cookies {
+        assert_eq!(status(with(&s, cookie)).await, 401);
+    }
+
+    // Reactivated: signs in again; the ended sessions stay ended.
+    assert_eq!(server::auth::set_account_active(s.state(), account.id, true).await.unwrap(), 0);
+    assert_eq!(sign_in(&s, "ops.admin").await.status(), 200);
+    assert_eq!(status(with(&s, &cookies[0])).await, 401);
+    s.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn generated_admin_password_when_none_configured() {
     let dir = tempfile::tempdir().unwrap();

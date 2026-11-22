@@ -128,7 +128,11 @@ response, including the short delay before a `401`), another gets
 `429 rate_limited` with `Retry-After: 1` before its user is looked up or
 any password is checked, whatever the username; retry it. A request whose
 client disconnects keeps its place until the work it started has finished.
-A wrong username or password gets `401` after a short delay.
+A wrong username or password gets `401` after a short delay, and so does
+an inactive account. Usernames are case-insensitive: `user` in the
+response is the stored, lowercased username
+([local accounts](configuration.md#local-accounts)). No response carries
+a password or its hash.
 
 ### Ingestion mode
 

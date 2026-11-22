@@ -14,7 +14,7 @@
 
 /// The layout identity, as written in `vyrtel.json` and the metadata
 /// database.
-pub const LAYOUT: &str = "0.1.2";
+pub const LAYOUT: &str = "0.1.3";
 
 /// [`LAYOUT`] as stored in binary file headers: its ASCII bytes, padded
 /// with zeros to 8 bytes.

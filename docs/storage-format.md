@@ -696,6 +696,14 @@ another `application_id`, without `vyrtel_layout` (every database before
 to it, not even its journal mode (`MetadataError::ForeignLayout`). There
 is no migration chain.
 
+Local accounts are the `users` table: `id INTEGER PRIMARY KEY
+AUTOINCREMENT` (never reused; a trigger refuses any change to it),
+`username` (unique, stored lowercased), `display_name`, `active` (0 or 1),
+`password_hash` (an Argon2id PHC string), `created_at` and `updated_at`
+(ms since the epoch). Layout 0.1.3 introduced `display_name`, `active`,
+`updated_at` and the id rules; layout 0.1.2 had only `id`, `username`,
+`password_hash` and `created_at`.
+
 ### Layout changes
 
 A start changes a data directory in this order, after the read-only

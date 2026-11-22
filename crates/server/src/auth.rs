@@ -979,6 +979,21 @@ impl Sessions {
         c.remove(hash);
     }
 
+    /// Forget every cached session of `username`, and stop every lookup
+    /// already under way from caching what it read (for a deactivated
+    /// account, whose sessions SQLite no longer has). Other users' entries
+    /// stay. The cache is bounded, so this scans at most
+    /// [`SESSION_CACHE_ENTRIES`] entries.
+    pub fn invalidate_user(&self, username: &str) {
+        let mut c = self.cache.lock().unwrap();
+        c.epoch += 1;
+        let gone: Vec<String> =
+            c.by_hash.iter().filter(|(_, e)| e.username == username).map(|(h, _)| h.clone()).collect();
+        for hash in gone {
+            c.remove(&hash);
+        }
+    }
+
     /// Forget every session, as [`Sessions::invalidate`] does one (for a
     /// password change, which ends all of a user's sessions).
     pub fn clear(&self) {
@@ -1100,6 +1115,25 @@ pub async fn require_user(
         return Ok(next.run(req).await);
     }
     Err(ApiError::unauthorized("authentication required"))
+}
+
+/// Activate or deactivate account `id`: the only way to change an
+/// account's active state. Deactivating ends its sessions in SQLite, then
+/// drops them from [`Sessions`] before returning, in one blocking task (as
+/// logout does), so no request is admitted with them afterwards, cached or
+/// not, and no lookup already under way can cache them again. Returns how
+/// many sessions were ended.
+pub async fn set_account_active(state: &SharedState, id: i64, active: bool) -> ApiResult<usize> {
+    let st = state.clone();
+    state
+        .blocking(move || {
+            let (username, ended) = st.metadata.set_user_active(id, active)?;
+            if !active {
+                st.sessions.invalidate_user(&username);
+            }
+            Ok(ended)
+        })
+        .await
 }
 
 /// Create/refresh the admin user at startup. Returns a generated password
@@ -1862,6 +1896,46 @@ mod tests {
         assert_eq!(stat(&s, "cached"), 0, "the ended session was not put back");
         let none = |_: &str| -> Found { Ok((None, Duration::ZERO)) };
         assert_eq!(s.check(hash, none).await.unwrap(), None, "the next request reads SQLite and is refused");
+    }
+
+    /// A lookup that finds `user` valid for a minute.
+    fn valid_for(user: &str) -> impl FnOnce(&str) -> Found + Send + 'static {
+        let user = user.to_string();
+        move |_| Ok((Some((user, later(60_000))), Duration::ZERO))
+    }
+
+    // IAM-01 review: deactivating an account drops every cached session of
+    // that user at once, keeps other users' entries, and a lookup that read
+    // one of its sessions before the deactivation cannot cache it again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invalidating_a_user_drops_only_its_sessions_and_wins_over_a_fill() {
+        let s = Arc::new(Sessions::default());
+        let (ops1, ops2, other) = (sha256_hex("ops-1"), sha256_hex("ops-2"), sha256_hex("other"));
+        for (hash, user) in [(&ops1, "ops"), (&ops2, "ops"), (&other, "other")] {
+            s.check(hash.clone(), valid_for(user)).await.unwrap();
+        }
+        assert_eq!(stat(&s, "cached"), 3);
+        s.invalidate_user("ops");
+        assert_eq!(stat(&s, "cached"), 1, "only the other user's entry stays");
+        {
+            let c = s.cache.lock().unwrap();
+            assert!(c.by_hash.contains_key(&other));
+            assert_eq!(c.bytes, entry_bytes(&other, "other"));
+        }
+        let none = |_: &str| -> Found { Ok((None, Duration::ZERO)) };
+        assert_eq!(s.check(ops1.clone(), none).await.unwrap(), None, "the next request reads SQLite and is refused");
+
+        let (gate, started, release) = gated(Ok((Some(("ops".to_string(), later(60_000))), Duration::ZERO)));
+        let racing = tokio::spawn({
+            let (s, hash) = (s.clone(), ops2.clone());
+            async move { s.check(hash, move |_| gate()).await }
+        });
+        started.await.unwrap();
+        s.invalidate_user("ops");
+        release.send(()).unwrap();
+        assert_eq!(racing.await.unwrap().unwrap().as_deref(), Some("ops"), "ordered before the deactivation");
+        assert_eq!(stat(&s, "cached"), 1, "and not cached");
+        assert_eq!(s.check(ops2, none).await.unwrap(), None);
     }
 
     // AC4: the entry cap holds, expired entries go first, and a flood of

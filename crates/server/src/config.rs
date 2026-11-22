@@ -666,8 +666,8 @@ impl Config {
             return Err("server.shutdown_timeout must be positive (e.g. 8s)".into());
         }
         self.validate_transport()?;
-        if self.auth.admin_username.trim().is_empty() {
-            return Err("auth.admin_username must not be empty".into());
+        if let Err(e) = metadata::normalize_username(&self.auth.admin_username) {
+            return Err(format!("auth.admin_username: {e}"));
         }
         self.server
             .bind
@@ -1082,6 +1082,28 @@ shutdown_timeout = 0",
         let mut c = Config::default();
         let err = c.apply_env(|k| (k == "VYRTEL_SERVER_SHUTDOWN_TIMEOUT").then(|| "soon".to_string())).unwrap_err();
         assert!(err.contains("VYRTEL_SERVER_SHUTDOWN_TIMEOUT"), "{err}");
+    }
+
+    /// IAM-01 (#76): `auth.admin_username` follows the stored-username rule,
+    /// so a name the metadata store would refuse stops startup instead.
+    #[test]
+    fn admin_username_must_be_a_storable_username() {
+        for ok in ["admin", "Ops.Admin", "  padded  ", "\u{d6}sten"] {
+            let mut c = Config::default();
+            c.auth.admin_username = ok.into();
+            c.validate().unwrap_or_else(|e| panic!("{ok:?}: {e}"));
+        }
+        let long = "x".repeat(65);
+        for (bad, want) in [
+            ("", "auth.admin_username: username is required"),
+            ("   ", "auth.admin_username: username is required"),
+            ("two words", "auth.admin_username: username must not contain spaces or control characters"),
+            (long.as_str(), "auth.admin_username: username must be at most 64 characters"),
+        ] {
+            let mut c = Config::default();
+            c.auth.admin_username = bad.into();
+            assert_eq!(c.validate().unwrap_err(), want, "{bad:?}");
+        }
     }
 
     // REL-18 TC5: every transport limit has a finite default, is validated
