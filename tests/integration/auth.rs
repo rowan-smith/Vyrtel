@@ -239,9 +239,20 @@ async fn local_accounts_persist_and_never_expose_their_verifier() {
     assert_eq!(s.state().metadata.find_user("OPS.ADMIN").unwrap().as_ref(), Some(&account));
     assert_eq!(s.state().metadata.count_users().unwrap(), 1, "no second account for another case");
 
-    // Deactivated: refused like a wrong password, its sessions gone, and
-    // still so after a restart.
-    s.state().metadata.set_user_active(account.id, false).unwrap();
+    // Deactivated with every session warm in the cache: the very next
+    // request with each cookie is refused, without a restart; sign-in is
+    // refused like a wrong password; both still hold after a restart.
+    let config = "/api/v1/system/config";
+    let with = |s: &TestServer, cookie: &str| reqwest::Client::new().get(s.u(config)).header("cookie", cookie);
+    for cookie in &cookies {
+        assert_eq!(status(with(&s, cookie)).await, 200, "cached before the deactivation");
+    }
+    assert!(s.state().sessions.snapshot()["cached"].as_u64().unwrap() >= cookies.len() as u64);
+    let ended = server::auth::set_account_active(s.state(), account.id, false).await.unwrap();
+    assert_eq!(ended, cookies.len());
+    for cookie in &cookies {
+        assert_eq!(status(with(&s, cookie)).await, 401, "refused at once, cached or not");
+    }
     let r = sign_in(&s, "ops.admin").await;
     assert_eq!(r.status(), 401);
     let refused: Value = r.json().await.unwrap();
@@ -256,10 +267,14 @@ async fn local_accounts_persist_and_never_expose_their_verifier() {
     let s = s.restart().await;
     assert!(!s.state().metadata.find_user("ops.admin").unwrap().unwrap().active);
     assert_eq!(sign_in(&s, "ops.admin").await.status(), 401);
-    let config = "/api/v1/system/config";
     for cookie in &cookies {
-        assert_eq!(status(reqwest::Client::new().get(s.u(config)).header("cookie", cookie)).await, 401);
+        assert_eq!(status(with(&s, cookie)).await, 401);
     }
+
+    // Reactivated: signs in again; the ended sessions stay ended.
+    assert_eq!(server::auth::set_account_active(s.state(), account.id, true).await.unwrap(), 0);
+    assert_eq!(sign_in(&s, "ops.admin").await.status(), 200);
+    assert_eq!(status(with(&s, &cookies[0])).await, 401);
     s.stop().await;
 }
 

@@ -427,7 +427,20 @@ fn the_ingest_auth_mode_is_stored_and_read_strictly() {
 /// A stand-in Argon2id PHC string: the store keeps hashes, never
 /// passwords, and refuses anything that is not one.
 fn h(tag: &str) -> String {
-    format!("$argon2id$v=19$m=19456,t=2,p=1$c2FsdA${tag}")
+    use argon2::password_hash::phc::{Output, ParamsString, PasswordHash, Salt};
+    use argon2::{Algorithm, Params, Version};
+    // A well-formed verifier whose output is just `tag`, zero-padded: the
+    // store checks the format, never the password.
+    let mut out = [0u8; 32];
+    out[..tag.len()].copy_from_slice(tag.as_bytes());
+    PasswordHash {
+        algorithm: Algorithm::Argon2id.ident(),
+        version: Some(Version::V0x13.into()),
+        params: ParamsString::try_from(&Params::default()).unwrap(),
+        salt: Some(Salt::new(b"fixture-salt-16b").unwrap()),
+        hash: Some(Output::new(&out).unwrap()),
+    }
+    .to_string()
 }
 
 #[test]
@@ -473,7 +486,7 @@ fn accounts_persist_across_restart() {
         let m = Metadata::open(&path).unwrap();
         let alice = m.create_user("  Alice.Ops ", Some("Alice Ops"), &h("alice")).unwrap();
         let bob = m.create_user("bob", None, &h("bob")).unwrap();
-        assert_eq!(m.set_user_active(bob.id, false).unwrap(), 0);
+        assert_eq!(m.set_user_active(bob.id, false).unwrap(), ("bob".to_string(), 0));
         (alice, m.find_user_by_id(bob.id).unwrap().unwrap())
     };
     assert_eq!((alice.username.as_str(), alice.display_name.as_str(), alice.active), ("alice.ops", "Alice Ops", true));
@@ -548,8 +561,47 @@ fn invalid_accounts_are_refused_and_nothing_is_stored() {
         }
     }
     assert!(matches!(m.upsert_user("admin", "plaintext"), Err(MetadataError::Invalid(_))));
-    assert!(matches!(m.rotate_password("admin", "$argon2i$v=19$x"), Err(MetadataError::Invalid(_))));
+    // Anything but a well-formed Argon2id PHC string, including ones that
+    // merely start like one.
+    let good = h("a");
+    let (head, output) = good.rsplit_once('$').unwrap();
+    let argon2i = good.replacen("$argon2id$", "$argon2i$", 1);
+    let wrong_version = good.replacen("$v=19$", "$v=18$", 1);
+    let bad_params = good.replacen("m=19456", "m=1", 1);
+    let no_output = head.to_string();
+    let not_base64 = format!("{head}$!!{output}");
+    for bad in [
+        "$argon2id$",
+        "$argon2id$garbage",
+        "$argon2id$v=19$m=19456,t=2,p=1",
+        argon2i.as_str(),
+        wrong_version.as_str(),
+        bad_params.as_str(),
+        no_output.as_str(),
+        not_base64.as_str(),
+    ] {
+        for r in [m.upsert_user("admin", bad).map(|_| ()), m.rotate_password("admin", bad).map(|_| ())] {
+            match r {
+                Err(MetadataError::Invalid(msg)) => {
+                    assert_eq!(msg, "a password must be stored as an Argon2id hash", "{bad:?}")
+                }
+                other => panic!("{bad:?}: expected Invalid, got {other:?}"),
+            }
+        }
+    }
     assert_eq!(m.count_users().unwrap(), 0);
+    // The limit applies to the stored, lowercased form: U+0130 (capital I
+    // with dot above) lowercases to two characters, `i` and U+0307.
+    let dotted = "\u{130}";
+    assert_eq!(dotted.to_lowercase().chars().count(), 2);
+    match m.create_user(&dotted.repeat(MAX_USERNAME_CHARS), None, &h("a")) {
+        Err(MetadataError::Invalid(msg)) => assert_eq!(msg, "username must be at most 64 characters"),
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+    assert_eq!(m.count_users().unwrap(), 0);
+    let fits = m.create_user(&dotted.repeat(MAX_USERNAME_CHARS / 2), None, &h("a")).unwrap();
+    assert_eq!(fits.username.chars().count(), MAX_USERNAME_CHARS);
+    assert!(fits.username.chars().all(|c| c == 'i' || c == '\u{307}'));
     // A lookup by a username that could never be stored finds nothing.
     assert!(m.find_user("two words").unwrap().is_none());
 }
@@ -562,13 +614,13 @@ fn inactive_accounts_have_no_sessions() {
     m.create_session("u1", u.id, 60_000).unwrap();
     m.create_session("u2", u.id, 60_000).unwrap();
     m.create_session("o1", other.id, 60_000).unwrap();
-    assert_eq!(m.set_user_active(u.id, false).unwrap(), 2, "deactivating ends its sessions");
+    assert_eq!(m.set_user_active(u.id, false).unwrap(), ("ops".to_string(), 2), "deactivating ends its sessions");
     assert!(m.find_session("u1").unwrap().is_none());
     assert!(matches!(m.create_session("u3", u.id, 60_000), Err(MetadataError::NotFound)), "no new ones");
     assert!(m.find_session("u3").unwrap().is_none());
     assert_eq!(m.find_session("o1").unwrap().unwrap().username, "other", "other users keep theirs");
     // Reactivating allows sessions again; it brings none back.
-    assert_eq!(m.set_user_active(u.id, true).unwrap(), 0);
+    assert_eq!(m.set_user_active(u.id, true).unwrap(), ("ops".to_string(), 0));
     assert!(m.find_session("u1").unwrap().is_none());
     m.create_session("u4", u.id, 60_000).unwrap();
     assert!(m.find_session("u4").unwrap().unwrap().active);
@@ -580,7 +632,7 @@ fn inactive_accounts_have_no_sessions() {
 #[test]
 fn password_hashes_are_neither_serialized_nor_printed() {
     let m = Metadata::open_in_memory().unwrap();
-    let u = m.create_user("admin", Some("The Admin"), &h("secret-verifier")).unwrap();
+    let u = m.create_user("admin", Some("The Admin"), &h("secret")).unwrap();
     let json = serde_json::to_value(&u).unwrap();
     assert_eq!(
         json,
@@ -588,7 +640,7 @@ fn password_hashes_are_neither_serialized_nor_printed() {
                "createdAt": u.created_at, "updatedAt": u.updated_at})
     );
     for printed in [format!("{u:?}"), format!("{u:#?}")] {
-        assert!(!printed.contains("secret-verifier") && !printed.contains("$argon2id$"), "{printed}");
+        assert!(!printed.contains(&u.password_hash) && !printed.contains("$argon2id$"), "{printed}");
         assert!(printed.contains("<redacted>"), "{printed}");
     }
 }

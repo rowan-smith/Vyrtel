@@ -431,17 +431,20 @@ telemetry storage) and survive restarts unchanged. Each one has:
 * a **username**, stored trimmed and lowercased (Unicode lowercase) and
   unique in that form: `Ops.Admin`, `ops.admin` and ` OPS.ADMIN ` sign in
   to the same account, and a second account differing only in case is
-  refused (`409 conflict`). 1 to 64 characters, with no spaces or control
+  refused (`409 conflict`). 1 to 64 characters once lowercased (a few
+  characters lowercase to two, such as `İ`), with no spaces or control
   characters. Lowercasing is not full Unicode normalization: names that
   look alike but use different code points are different accounts;
 * a **display name**, kept with the casing it was given (the administrator's
   is `auth.admin_username` as written), up to 128 characters;
 * an **active** state. An inactive account cannot sign in (it gets the same
   `401 invalid username or password` as a wrong password) and has no
-  sessions: deactivating one ends them all;
+  sessions: deactivating one ends them all at once, including sessions a
+  client is using right now, without a restart;
 * a **password hash**: Argon2id with the default parameters and a random
-  salt per password, as a PHC string. The store refuses anything else, so a
-  plaintext password is never written. Neither the password nor the hash
+  salt per password, as a PHC string. The store refuses anything that is
+  not a well-formed Argon2id PHC string (a known version, valid parameters,
+  a salt and an output), so a plaintext password is never written. Neither the password nor the hash
   appears in any API response or log line.
 
 Today the administrator from `[auth]` is the only account Vyrtel creates;

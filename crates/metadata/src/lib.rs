@@ -211,20 +211,28 @@ pub const MAX_DISPLAY_NAME_CHARS: usize = 128;
 
 /// The stored form of a username: trimmed and lowercased (Unicode simple
 /// lowercase), so `Admin`, ` admin ` and `ADMIN` are one account. It must
-/// be 1 to [`MAX_USERNAME_CHARS`] characters, with no whitespace or control
-/// characters inside.
+/// be 1 to [`MAX_USERNAME_CHARS`] characters once lowercased (some
+/// characters lowercase to two: `İ` is `i` and a combining dot), with no
+/// whitespace or control characters inside.
 pub fn normalize_username(username: &str) -> Result<String> {
     let u = username.trim();
     if u.is_empty() {
         return Err(MetadataError::Invalid("username is required".into()));
     }
-    if u.chars().count() > MAX_USERNAME_CHARS {
-        return Err(MetadataError::Invalid(format!("username must be at most {MAX_USERNAME_CHARS} characters")));
-    }
     if u.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err(MetadataError::Invalid("username must not contain spaces or control characters".into()));
     }
-    Ok(u.to_lowercase())
+    // Counted before lowercasing too, so a huge input is refused without
+    // building its lowercase copy.
+    let too_long = || MetadataError::Invalid(format!("username must be at most {MAX_USERNAME_CHARS} characters"));
+    if u.chars().count() > MAX_USERNAME_CHARS {
+        return Err(too_long());
+    }
+    let lower = u.to_lowercase();
+    if lower.chars().count() > MAX_USERNAME_CHARS {
+        return Err(too_long());
+    }
+    Ok(lower)
 }
 
 /// A display name as stored: trimmed, 1 to [`MAX_DISPLAY_NAME_CHARS`]
@@ -857,22 +865,25 @@ impl Metadata {
             .optional()?)
     }
 
-    /// Activate or deactivate an account. Deactivating ends its sessions
-    /// in the same transaction; a server caching sessions must also drop
-    /// that user's cached ones. Returns how many sessions were ended.
-    pub fn set_user_active(&self, id: i64, active: bool) -> Result<usize> {
+    /// Activate or deactivate an account in SQLite. Deactivating ends its
+    /// sessions in the same transaction. Returns the account's username and
+    /// how many sessions were ended.
+    ///
+    /// This does not reach the server's session cache: call
+    /// `server::auth::set_account_active` instead, which also drops the
+    /// user's cached sessions so revocation is immediate.
+    pub fn set_user_active(&self, id: i64, active: bool) -> Result<(String, usize)> {
         let mut c = self.conn.lock().unwrap();
         let tx = c.transaction()?;
-        let changed = tx
-            .prepare_cached("UPDATE users SET active = ?2, updated_at = ?3 WHERE id = ?1")?
-            .execute(params![id, active, now_ms()])?;
-        if changed == 0 {
-            return Err(MetadataError::NotFound);
-        }
+        let username: Option<String> = tx
+            .prepare_cached("UPDATE users SET active = ?2, updated_at = ?3 WHERE id = ?1 RETURNING username")?
+            .query_row(params![id, active, now_ms()], |r| r.get(0))
+            .optional()?;
+        let Some(username) = username else { return Err(MetadataError::NotFound) };
         let ended =
             if active { 0 } else { tx.prepare_cached("DELETE FROM sessions WHERE user_id = ?1")?.execute([id])? };
         tx.commit()?;
-        Ok(ended)
+        Ok((username, ended))
     }
 
     pub fn count_users(&self) -> Result<i64> {
@@ -1326,13 +1337,25 @@ impl Metadata {
     }
 }
 
-/// Refuse anything but an Argon2id PHC string, so a plaintext password
-/// can never be stored by mistake.
+/// Refuse anything but a well-formed Argon2id PHC string (a known version,
+/// valid parameters, a salt and an output), so neither a plaintext password
+/// nor a malformed verifier that could never match is stored.
 fn check_password_hash(hash: &str) -> Result<()> {
-    if !hash.starts_with("$argon2id$") {
-        return Err(MetadataError::Invalid("a password must be stored as an Argon2id hash".into()));
-    }
-    Ok(())
+    use argon2::password_hash::phc::PasswordHash;
+    let well_formed = || -> Option<()> {
+        let parsed = PasswordHash::new(hash).ok()?;
+        if parsed.algorithm != argon2::Algorithm::Argon2id.ident() {
+            return None;
+        }
+        parsed.salt.as_ref()?;
+        parsed.hash.as_ref()?;
+        if let Some(v) = parsed.version {
+            argon2::Version::try_from(v).ok()?;
+        }
+        argon2::Params::try_from(&parsed).ok()?;
+        Some(())
+    };
+    well_formed().ok_or_else(|| MetadataError::Invalid("a password must be stored as an Argon2id hash".into()))
 }
 
 /// Set `username`'s password hash in `tx`, creating the account if there is
