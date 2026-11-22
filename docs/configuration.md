@@ -412,7 +412,7 @@ since the process started.
 |------------------|---------|--------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
 | `admin_username` | `admin` | `VYRTEL_AUTH_ADMIN_USERNAME` | The administrator account's username. Case-insensitive ([local accounts](#local-accounts)): `Admin` and `admin` are one account. 1 to 64 characters, no spaces or control characters; anything else stops startup. |
 | `admin_password` | –       | `VYRTEL_AUTH_ADMIN_PASSWORD` | Hashed (Argon2id) into the metadata store at startup. If unset on first start, a random password is generated and printed once. Starting with a different password signs out all existing admin sessions. |
-| `session_ttl`    | `7d`    | –                              | Login session lifetime.                                                                                                                           |
+| `session_ttl`    | `7d`    | –                              | Login session lifetime, fixed when a session is issued: a changed value applies to new logins only ([sessions](#sessions)).                       |
 
 > **Security note.** The UI and API always need a login, but until an
 > ingest-scoped API key exists anyone who can reach the port can write
@@ -450,6 +450,39 @@ telemetry storage) and survive restarts unchanged. Each one has:
 Today the administrator from `[auth]` is the only account Vyrtel creates;
 managing other accounts from the UI or API is later work.
 
+#### Sessions
+
+A login creates a session: a random 32-byte token sent as the
+`vyrtel_session` cookie (`HttpOnly`, `SameSite=Lax`, `Path=/`) and stored
+only as its SHA-256, with the expiry `auth.session_ttl` gave it at that
+moment. Sessions live in the metadata database, so they survive restarts.
+
+| Event | Sessions that end |
+|---|---|
+| Login | The one whose cookie the request carried (rotation); a failed login ends none |
+| Logout | The current one |
+| Expiry | That one, from its stored expiry on, also after a restart |
+| Password change or reset | Every session of that account |
+| Deactivation | Every session of that account; reactivating restores none |
+| A 33rd session of one account | Its expired sessions, then its oldest (at most 32 per account) |
+
+Sessions of other accounts and other devices are never affected. Each
+change takes effect before its call returns, for sessions held in the
+server's in-memory cache too, and a login racing a password change or
+deactivation cannot leave a working session behind. If a change cannot be
+written, it fails with an error and nothing ends: logout then answers `500`
+and keeps the cookie. A changed `auth.session_ttl` applies only to sessions
+issued afterwards.
+
+```bash
+curl -s -c jar -X POST localhost:8080/api/v1/auth/login -H 'content-type: application/json' \
+  -d '{"username": "admin", "password": "correct horse"}'      # session A
+curl -s -b jar -c jar -X POST localhost:8080/api/v1/auth/login -H 'content-type: application/json' \
+  -d '{"username": "admin", "password": "correct horse"}'      # session B; A ends
+curl -s -b jar -X POST localhost:8080/api/v1/auth/logout       # B ends
+# {"ok":true}
+```
+
 **Recovering the administrator account.** Stop Vyrtel, set
 `auth.admin_password` (or `VYRTEL_AUTH_ADMIN_PASSWORD`) to a new password
 and start it again. The account keeps its id and display name, gets the new
@@ -469,6 +502,10 @@ curl -s -X POST localhost:8080/api/v1/auth/login -H 'content-type: application/j
   names the account `admin`, and sign-in accepts any case. An
   `auth.admin_username` with spaces, control characters or more than 64
   characters stops startup instead of being stored.
+* Sessions rotate and are revoked predictably
+  ([sessions](#sessions)): each login issues a new token and ends the
+  session it was sent with, a password change or reset ends every session
+  of that account, and an account keeps at most 32 sessions.
 * Accounts gain a display name and an active state
   ([local accounts](#local-accounts)). This changes the metadata schema, so
   0.1.3 has a new layout and does not start a 0.1.2 data directory

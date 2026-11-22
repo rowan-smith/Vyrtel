@@ -20,7 +20,12 @@ The UI and API always need a login or an admin API key.
   This is also how to recover the account if the password is lost.
 - Usernames are case-insensitive, and passwords are stored only as salted Argon2id hashes
   ([local accounts](../configuration.md#local-accounts)).
-- Sessions last 7 days by default (`auth.session_ttl`).
+- Sessions last 7 days by default (`auth.session_ttl`). Changing it applies to new logins;
+  existing sessions keep the expiry they were issued with.
+- Every login issues a new session and ends the one the browser was using. Other devices stay
+  signed in until they sign out, the account's password is changed or reset, or the account is
+  deactivated. Each account keeps at most 32 sessions; a 33rd login ends the oldest
+  ([sessions](../configuration.md#sessions)).
 
 ## Protect ingestion
 

@@ -305,18 +305,30 @@ cache of sessions found valid:
   even when an API key is also sent, and caches nothing. A cache hit does
   not read SQLite, so a cached session keeps working while the metadata
   database is briefly unavailable, until its expiry or logout.
-* **Password changes.** There is no API to change a user or password
-  while the server runs; the admin password is set from
-  `auth.admin_password` at startup. When it differs from the stored one,
-  `Metadata::rotate_password` stores the new hash and deletes all of that
-  user's sessions in one transaction (and the cache is cleared, though it
-  is still empty then), so no session issued under the old password
-  survives the restart. Restarting with the same password keeps them.
+* **Password changes and deactivation.** `auth::set_account_password`
+  (a reset or a change) and `auth::set_account_active` update the account
+  and delete all of its sessions in one transaction, then
+  `Sessions::invalidate_user` drops that user's cached entries and advances
+  the epoch, in the same blocking task. No request is admitted with those
+  sessions after the call returns, and no lookup under way can cache one
+  again. At startup a changed `auth.admin_password` does the same through
+  `Metadata::rotate_password` (the cache is still empty then). Reactivating
+  an account restores nothing: the sessions were deleted.
+* **Issuing (IAM-01A).** Login calls `Metadata::issue_session`, one
+  transaction that deletes the session the client presented (rotation),
+  inserts the new one only if the account is active and still has the
+  password hash the login verified, and ends the account's expired and
+  then oldest sessions beyond `MAX_SESSIONS_PER_USER` (32). A password
+  change or deactivation that commits while a login is checking the
+  password therefore wins: the insert matches nothing and the login is
+  refused. The hashes it ended are invalidated in the cache after the
+  commit. The expiry is fixed at issue time from the current
+  `auth.session_ttl`.
 * **What does not change.** Sessions are created only by login and ended
-  by logout, expiry or a password change. The cache is per process and
-  starts empty, so a restart reads SQLite again. Session TTL, cookie
-  attributes and key fallback are unchanged; `/api/v1/auth/me` still
-  reads SQLite.
+  by logout, rotation, the per-account bound, expiry, a password change or
+  deactivation. The cache is per process and starts empty, so a restart
+  reads SQLite again. Cookie attributes and key fallback are unchanged;
+  `/api/v1/auth/me` still reads SQLite.
 
 `/api/v1/system/info` reports `sessionAuth`: cache hits and size, SQLite
 lookups, and their time waiting for a turn and thread (`queue`), for the

@@ -1211,3 +1211,268 @@ async fn a_disconnected_sign_in_keeps_its_place_until_its_lookup_ends() {
     drop(db);
     Arc::into_inner(s).unwrap().stop().await;
 }
+
+// ---- IAM-01A (#121): session rotation, expiry and revocation -----------
+
+const CONFIG: &str = "/api/v1/system/config";
+const SESSION_PREFIX: &str = "vyrtel_session=";
+
+/// A request with only `cookie` as its credential.
+fn as_cookie(s: &TestServer, cookie: &str) -> reqwest::RequestBuilder {
+    reqwest::Client::new().get(s.u(CONFIG)).header("cookie", cookie)
+}
+
+/// Sign in as `username` with `password`, sending `presented` (a
+/// `vyrtel_session=…` pair) as a client that already has a session would.
+async fn sign_in_as(s: &TestServer, username: &str, password: &str, presented: Option<&str>) -> reqwest::Response {
+    let mut r = reqwest::Client::new()
+        .post(s.u("/api/v1/auth/login"))
+        .json(&json!({"username": username, "password": password}));
+    if let Some(c) = presented {
+        r = r.header("cookie", c);
+    }
+    r.send().await.unwrap()
+}
+
+async fn logout(s: &TestServer, cookie: &str) -> reqwest::Response {
+    reqwest::Client::new().post(s.u("/api/v1/auth/logout")).header("cookie", cookie).send().await.unwrap()
+}
+
+/// Every cookie answers `want`, each tried twice so a cached session is
+/// covered too.
+async fn assert_all(s: &TestServer, cookies: &[String], want: u16, what: &str) {
+    for c in cookies {
+        for _ in 0..2 {
+            assert_eq!(status(as_cookie(s, c)).await, want, "{what}: {c}");
+        }
+    }
+}
+
+/// AC1, AC2, AC4: each login issues a fresh credential and ends the one it
+/// was sent with (cached or not); another device keeps its session until
+/// its own logout; the cookie keeps its protections and no response invites
+/// cross-origin reads.
+#[tokio::test(flavor = "multi_thread")]
+async fn logins_rotate_the_presented_session_and_leave_other_devices_alone() {
+    let s = start_secure().await;
+    let r = sign_in_as(&s, "admin", "correct horse", None).await;
+    let set_cookie = r.headers()["set-cookie"].to_str().unwrap().to_string();
+    for attr in ["HttpOnly", "SameSite=Lax", "Path=/", &format!("Max-Age={}", 7 * 86_400)] {
+        assert!(set_cookie.contains(attr), "{set_cookie} has {attr}");
+    }
+    let laptop = session_cookie(&r);
+    let phone = session_cookie(&sign_in_as(&s, "admin", "correct horse", None).await);
+    assert_ne!(laptop, phone);
+    assert_all(&s, &[laptop.clone(), phone.clone()], 200, "both devices, warm in the cache").await;
+
+    // The laptop signs in again: its old credential is refused at once.
+    let laptop2 = session_cookie(&sign_in_as(&s, "admin", "correct horse", Some(&laptop)).await);
+    assert_ne!(laptop2, laptop, "a fresh credential");
+    assert_all(&s, std::slice::from_ref(&laptop), 401, "replaced by rotation").await;
+    assert_all(&s, &[laptop2.clone(), phone.clone()], 200, "the new one and the other device").await;
+    let me = reqwest::Client::new().get(s.u("/api/v1/auth/me")).header("cookie", &laptop).send().await.unwrap();
+    assert_eq!(me.json::<Value>().await.unwrap()["user"], Value::Null);
+
+    // A failed login rotates nothing.
+    assert_eq!(sign_in_as(&s, "admin", "wrong", Some(&laptop2)).await.status(), 401);
+    assert_all(&s, std::slice::from_ref(&laptop2), 200, "kept after a failed login").await;
+
+    // Logout ends only the current session and clears the cookie.
+    let r = logout(&s, &laptop2).await;
+    assert_eq!(r.status(), 200);
+    assert!(r.headers()["set-cookie"].to_str().unwrap().contains("Max-Age=0"));
+    assert_all(&s, std::slice::from_ref(&laptop2), 401, "logged out").await;
+    assert_all(&s, std::slice::from_ref(&phone), 200, "the other device").await;
+
+    // No CORS: a page on another origin cannot read responses, and the
+    // SameSite=Lax cookie is not sent on its cross-site POSTs.
+    for path in ["/api/v1/auth/me", CONFIG] {
+        let r = reqwest::Client::new()
+            .get(s.u(path))
+            .header("cookie", &phone)
+            .header("origin", "https://elsewhere.example")
+            .send()
+            .await
+            .unwrap();
+        assert!(r.headers().get("access-control-allow-origin").is_none(), "{path}");
+        assert!(r.headers().get("access-control-allow-credentials").is_none(), "{path}");
+    }
+    s.stop().await;
+}
+
+/// AC2, AC3 (two accounts, two devices each): a password reset or change
+/// and a deactivation end every session of that account at once, cached or
+/// not, and after a restart; the other account keeps its sessions;
+/// reactivating restores none.
+#[tokio::test(flavor = "multi_thread")]
+async fn password_changes_and_deactivation_end_every_session_of_that_account_only() {
+    let mut s = start_secure().await;
+    let ops = s.state().metadata.create_user("ops", None, &server::auth::hash_password("ops pass").unwrap()).unwrap();
+    let admin = s.state().metadata.find_user("admin").unwrap().unwrap();
+    let (mut admins, mut opses) = (Vec::new(), Vec::new());
+    for _ in 0..2 {
+        admins.push(session_cookie(&sign_in_as(&s, "admin", "correct horse", None).await));
+        opses.push(session_cookie(&sign_in_as(&s, "ops", "ops pass", None).await));
+    }
+    assert_all(&s, &[admins.clone(), opses.clone()].concat(), 200, "all warm in the cache").await;
+
+    // A reset: every admin session ends; ops keeps its own.
+    let hash = server::auth::hash_password("battery staple").unwrap();
+    assert_eq!(server::auth::set_account_password(s.state(), admin.id, hash).await.unwrap(), 2);
+    assert_all(&s, &admins, 401, "ended by the reset").await;
+    assert_all(&s, &opses, 200, "the other account").await;
+    assert_eq!(sign_in_as(&s, "admin", "correct horse", None).await.status(), 401, "the old password");
+    let admin_new = session_cookie(&sign_in_as(&s, "admin", "battery staple", None).await);
+
+    // A change ends every ops session, the one it was made from included.
+    let hash = server::auth::hash_password("ops pass 2").unwrap();
+    assert_eq!(server::auth::set_account_password(s.state(), ops.id, hash).await.unwrap(), 2);
+    assert_all(&s, &opses, 401, "ended by the change").await;
+    let ops_new = session_cookie(&sign_in_as(&s, "ops", "ops pass 2", None).await);
+
+    // Deactivation ends ops's new session; admin's stays.
+    assert_eq!(server::auth::set_account_active(s.state(), ops.id, false).await.unwrap(), 1);
+    assert_all(&s, std::slice::from_ref(&ops_new), 401, "deactivated").await;
+    assert_all(&s, std::slice::from_ref(&admin_new), 200, "the other account").await;
+
+    // Across a restart. The configured admin password must be the reset
+    // one, or startup would set it back and end admin's sessions again.
+    let (mut config, dir) = s.stop().await;
+    config.auth.admin_password = Some("battery staple".into());
+    s = TestServer::launch(config, dir).await;
+    s.client = reqwest::Client::new();
+    let ended = [admins.clone(), opses.clone(), vec![ops_new.clone()]].concat();
+    assert_all(&s, &ended, 401, "after a restart").await;
+    assert_all(&s, std::slice::from_ref(&admin_new), 200, "kept across the restart").await;
+
+    // Reactivating lets ops sign in again but restores no ended session.
+    assert_eq!(server::auth::set_account_active(s.state(), ops.id, true).await.unwrap(), 0);
+    assert_all(&s, &[opses.clone(), vec![ops_new.clone()]].concat(), 401, "not restored").await;
+    assert_eq!(sign_in_as(&s, "ops", "ops pass 2", None).await.status(), 200);
+    let hash = server::auth::hash_password("x").unwrap();
+    assert!(server::auth::set_account_password(s.state(), 9_999, hash).await.is_err(), "no such account");
+    s.stop().await;
+}
+
+/// AC3: logins and requests racing a password change cannot keep or regain
+/// access: once the change has returned, every session issued under the
+/// old password is refused, cached or not, and logins with it fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn logins_and_requests_racing_a_password_change_cannot_outlive_it() {
+    let s = Arc::new(start_secure().await);
+    let admin = s.state().metadata.find_user("admin").unwrap().unwrap();
+    let warm = session_cookie(&sign_in_as(&s, "admin", "correct horse", None).await);
+    let stop = Arc::new(AtomicBool::new(false));
+    let succeeded = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut logins = Vec::new();
+    for _ in 0..4 {
+        let (s, stop, succeeded) = (s.clone(), stop.clone(), succeeded.clone());
+        logins.push(tokio::spawn(async move {
+            let mut issued = Vec::new();
+            while !stop.load(Ordering::Relaxed) {
+                let r = sign_in_as(&s, "admin", "correct horse", None).await;
+                if r.status() == 200 {
+                    issued.push(session_cookie(&r));
+                    succeeded.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            issued
+        }));
+    }
+    let requests = {
+        let (s, stop, warm) = (s.clone(), stop.clone(), warm.clone());
+        tokio::spawn(async move {
+            while !stop.load(Ordering::Relaxed) {
+                status(as_cookie(&s, &warm)).await;
+            }
+        })
+    };
+    wait_until("logins succeed", || succeeded.load(Ordering::Relaxed) >= 3).await;
+    let hash = server::auth::hash_password("battery staple").unwrap();
+    server::auth::set_account_password(s.state(), admin.id, hash).await.unwrap();
+    // Logins (now refused) and requests keep going after the commit.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    stop.store(true, Ordering::Relaxed);
+    requests.await.unwrap();
+    let mut issued = vec![warm];
+    for l in logins {
+        issued.extend(l.await.unwrap());
+    }
+    assert_all(&s, &issued, 401, "issued under the old password").await;
+    assert_eq!(s.state().metadata.count_sessions(admin.id).unwrap(), 0);
+    Arc::into_inner(s).unwrap().stop().await;
+}
+
+/// AC4: an account keeps at most MAX_SESSIONS_PER_USER sessions; one more
+/// ends the oldest, cached or not.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_storage_is_bounded_per_account() {
+    let s = start_secure().await;
+    let admin = s.state().metadata.find_user("admin").unwrap().unwrap();
+    let first = session_cookie(&sign_in_as(&s, "admin", "correct horse", None).await);
+    assert_all(&s, std::slice::from_ref(&first), 200, "cached").await;
+    let mut last = String::new();
+    for _ in 0..metadata::MAX_SESSIONS_PER_USER {
+        last = session_cookie(&sign_in_as(&s, "admin", "correct horse", None).await);
+    }
+    assert_eq!(s.state().metadata.count_sessions(admin.id).unwrap(), metadata::MAX_SESSIONS_PER_USER);
+    assert_all(&s, std::slice::from_ref(&first), 401, "the oldest ended").await;
+    assert_all(&s, std::slice::from_ref(&last), 200, "the newest").await;
+    s.stop().await;
+}
+
+/// AC4: a revocation whose write fails is an error and reports nothing as
+/// ended: logout answers 500 and clears no cookie, a password change or
+/// deactivation fails; the session stays exactly as valid as SQLite says.
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_revocation_writes_are_errors() {
+    let s = start_secure().await;
+    let admin = s.state().metadata.find_user("admin").unwrap().unwrap();
+    let cookie = session_cookie(&sign_in_as(&s, "admin", "correct horse", None).await);
+    let db = rusqlite::Connection::open(s.data_dir().join(server::datadir::METADATA_DB)).unwrap();
+    db.execute_batch("CREATE TRIGGER no_revoke BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'disk full'); END;")
+        .unwrap();
+
+    let r = logout(&s, &cookie).await;
+    assert_eq!(r.status(), 500);
+    assert!(r.headers().get("set-cookie").is_none(), "no signed-out cookie for a logout that did not happen");
+    let body = r.text().await.unwrap();
+    assert!(!body.contains(&cookie[SESSION_PREFIX.len()..]), "the token is not echoed: {body}");
+    let hash = server::auth::hash_password("battery staple").unwrap();
+    assert!(server::auth::set_account_password(s.state(), admin.id, hash).await.is_err());
+    assert!(server::auth::set_account_active(s.state(), admin.id, false).await.is_err());
+    assert_eq!(sign_in_as(&s, "admin", "correct horse", None).await.status(), 200, "nothing changed");
+    assert_all(&s, std::slice::from_ref(&cookie), 200, "still a valid session").await;
+
+    db.execute_batch("DROP TRIGGER no_revoke").unwrap();
+    assert_eq!(logout(&s, &cookie).await.status(), 200);
+    assert_all(&s, std::slice::from_ref(&cookie), 401, "logged out once the write succeeds").await;
+    drop(db);
+    s.stop().await;
+}
+
+/// AC5: a session's expiry is fixed when it is issued. Restarting with
+/// another `auth.session_ttl` gives new sessions the new lifetime and
+/// leaves existing ones with theirs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_session_lifetime_applies_to_new_sessions_only() {
+    let s = start_secure().await;
+    let expiry = |s: &TestServer, cookie: &str| {
+        let hash = server::auth::sha256_hex(&cookie[SESSION_PREFIX.len()..]);
+        s.state().metadata.find_session_timed(&hash).unwrap().0.unwrap().1
+    };
+    let old = session_cookie(&sign_in_as(&s, "admin", "correct horse", None).await);
+    let old_expiry = expiry(&s, &old);
+
+    let (mut config, dir) = s.stop().await;
+    config.auth.session_ttl = std::time::Duration::from_secs(3_600);
+    let s = TestServer::launch(config, dir).await;
+    let before = metadata::now_ms();
+    let r = sign_in_as(&s, "admin", "correct horse", None).await;
+    assert!(r.headers()["set-cookie"].to_str().unwrap().contains("Max-Age=3600"));
+    let new = session_cookie(&r);
+    assert!((before + 3_600_000..=metadata::now_ms() + 3_600_000).contains(&expiry(&s, &new)), "the current lifetime");
+    assert_eq!(expiry(&s, &old), old_expiry, "the existing session keeps its stored expiry");
+    assert_all(&s, &[old, new], 200, "both valid").await;
+    s.stop().await;
+}

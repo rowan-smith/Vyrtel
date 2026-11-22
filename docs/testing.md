@@ -37,6 +37,7 @@ Next to the code (`#[cfg(test)]` modules). Highlights:
 | Environment variables under a settings prefix that are not settings stop startup (TC2) | `crates/server/src/config.rs` |
 | API key registry (AUTH-PERF-01): key writes off the request path, bounded serialised changes, failure/cancellation ordering, one admission decision per request, parity with the stored keys across restarts ([details](#api-key-changes-and-authentication-auth-perf-01)) | `crates/server/src/auth.rs` |
 | Session cache and account deactivation (IAM-01): deactivating a user drops only that user's cached sessions at once, and a lookup that read one before the deactivation cannot cache it again | `crates/server/src/auth.rs`, `tests/integration/auth.rs` |
+| Session rotation and revocation (IAM-01A): login rotates the presented session and leaves other devices alone; logout, password change/reset and deactivation across two accounts, cached and after a restart; logins and requests racing a password change; the 32-session bound per account; failed writes are errors that end nothing; cookie attributes and no CORS headers; a changed session TTL applies to new sessions only | `crates/metadata/tests/store.rs`, `tests/integration/auth.rs` |
 | API key last-used bookkeeping (AUTH-PERF-03): the one-minute throttle on a fake clock, revoked keys reclaimed and never re-added, entry/queue/writer caps, failure, panic, shutdown and restart ([details](#api-key-last-used-tracking-auth-perf-03)) | `crates/server/src/auth.rs`, `crates/metadata/tests/store.rs` |
 
 ## Property tests (proptest)
