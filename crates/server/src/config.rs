@@ -669,6 +669,17 @@ impl Config {
         if let Err(e) = metadata::normalize_username(&self.auth.admin_username) {
             return Err(format!("auth.admin_username: {e}"));
         }
+        // IAM-02 (#77): an explicit password must not be blank or the
+        // username itself (the admin/admin default this never ships). The
+        // messages never repeat the value.
+        if let Some(pw) = &self.auth.admin_password {
+            if pw.trim().is_empty() {
+                return Err("auth.admin_password must not be empty; unset it to have one generated".into());
+            }
+            if pw.trim().to_lowercase() == self.auth.admin_username.trim().to_lowercase() {
+                return Err("auth.admin_password must not be the same as auth.admin_username".into());
+            }
+        }
         self.server
             .bind
             .parse::<std::net::SocketAddr>()
@@ -1104,6 +1115,36 @@ shutdown_timeout = 0",
             c.auth.admin_username = bad.into();
             assert_eq!(c.validate().unwrap_err(), want, "{bad:?}");
         }
+    }
+
+    /// IAM-02 (#77): an explicit admin password may be anything but blank or
+    /// the username (in any case or padding), and the refusal never repeats
+    /// it. Unset, it is generated at first start instead.
+    #[test]
+    fn admin_password_must_not_be_blank_or_the_username() {
+        for ok in [None, Some("correct horse"), Some("admin1"), Some(" x ")] {
+            let mut c = Config::default();
+            c.auth.admin_password = ok.map(Into::into);
+            c.validate().unwrap_or_else(|e| panic!("{ok:?}: {e}"));
+        }
+        let blank = "auth.admin_password must not be empty; unset it to have one generated";
+        let same = "auth.admin_password must not be the same as auth.admin_username";
+        for (user, pw, want) in [
+            ("admin", "", blank),
+            ("admin", " \t", blank),
+            ("admin", "admin", same),
+            ("admin", " ADMIN ", same),
+            ("Ops.Admin", "ops.admin", same),
+        ] {
+            let mut c = Config::default();
+            c.auth.admin_username = user.into();
+            c.auth.admin_password = Some(pw.into());
+            assert_eq!(c.validate().unwrap_err(), want, "{user:?} / {pw:?}");
+        }
+        // From the environment too, as Docker deployments set it.
+        let mut c = Config::default();
+        c.apply_env(|k| (k == "VYRTEL_AUTH_ADMIN_PASSWORD").then(|| "Admin".to_string())).unwrap();
+        assert_eq!(c.validate().unwrap_err(), same);
     }
 
     // REL-18 TC5: every transport limit has a finite default, is validated

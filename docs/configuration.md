@@ -411,7 +411,7 @@ since the process started.
 | Key              | Default | Env                            | Description                                                                                                                                       |
 |------------------|---------|--------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
 | `admin_username` | `admin` | `VYRTEL_AUTH_ADMIN_USERNAME` | The administrator account's username. Case-insensitive ([local accounts](#local-accounts)): `Admin` and `admin` are one account. 1 to 64 characters, no spaces or control characters; anything else stops startup. |
-| `admin_password` | –       | `VYRTEL_AUTH_ADMIN_PASSWORD` | Hashed (Argon2id) into the metadata store at startup. If unset on first start, a random password is generated and printed once. Starting with a different password signs out all existing admin sessions. |
+| `admin_password` | –       | `VYRTEL_AUTH_ADMIN_PASSWORD` | Hashed (Argon2id) into the metadata store at startup ([first start](#the-first-administrator)). If unset on first start, a random password is generated and printed once. Starting with a different password signs out all existing admin sessions. Empty, blank, or the same as `admin_username` (in any case) stops startup. |
 | `session_ttl`    | `7d`    | –                              | Login session lifetime, fixed when a session is issued: a changed value applies to new logins only ([sessions](#sessions)).                       |
 
 > **Security note.** The UI and API always need a login, but until an
@@ -498,7 +498,7 @@ curl -s -b jar -X POST localhost:8080/api/v1/auth/logout       # B ends
 `auth.admin_password` (or `VYRTEL_AUTH_ADMIN_PASSWORD`) to a new password
 and start it again. The account keeps its id and display name, gets the new
 hash, and every one of its sessions ends. Then sign in with the new
-password, for example:
+password (removing the setting again afterwards keeps it), for example:
 
 ```bash
 VYRTEL_AUTH_ADMIN_PASSWORD='correct horse' vyrtel --data-dir ./data &
@@ -507,12 +507,59 @@ curl -s -X POST localhost:8080/api/v1/auth/login -H 'content-type: application/j
 # {"authEnabled":true,"user":"admin"}
 ```
 
+#### The first administrator
+
+The first start of a new data directory creates the administrator account
+`auth.admin_username`:
+
+* **No `auth.admin_password`:** Vyrtel generates a random password (96
+  bits, 24 hex characters) and prints it once, on standard output, in the
+  startup banner:
+
+  ```text
+  Admin login         admin / 3f9c2a71d0b84e56a1c7e2d9
+                      (generated once; set auth.admin_password to choose your own)
+  ```
+
+  It is never logged, returned by the API or shown again. If that start
+  stops before the banner because it cannot listen on `server.bind` (for
+  example the port is taken), the same line is still printed before the
+  error, since the password is already stored. There is no `admin`/`admin`
+  or other default password.
+* **`auth.admin_password` set:** the account gets that password and
+  nothing is generated or printed. An empty or blank value, or one equal to
+  the username in any case, stops startup with a message that does not
+  repeat it.
+
+Later starts never create a second administrator or reset a password on
+their own:
+
+| Later start with...                      | Result                                                                                         |
+|------------------------------------------|------------------------------------------------------------------------------------------------|
+| no `auth.admin_password`                 | The stored password, whatever set it, stays. Nothing is generated or printed.                  |
+| the same `auth.admin_password`           | Nothing changes; existing sessions stay valid.                                                 |
+| a different `auth.admin_password`        | The account (same id) takes the new password, and every one of its sessions ends.              |
+| a different `auth.admin_username`        | With `auth.admin_password`, a further account of that name is created with it. Without, nothing is created and that name cannot sign in. The existing account is left as it is either way. |
+
+So `auth.admin_password` is an override applied at each start, not
+something the account depends on: removing it later keeps whatever password
+the account last had. Sign-in (`POST /api/v1/auth/login`) needs only the
+username and password, never an API key, also once ingestion requires keys.
+Changing the password while the server runs belongs to the account
+settings; until then, restart with a new `auth.admin_password`
+([recovering the administrator account](#sessions)).
+
 #### Authentication changes in 0.1.3
 
 * Usernames are case-insensitive. `auth.admin_username = "Admin"` now
   names the account `admin`, and sign-in accepts any case. An
   `auth.admin_username` with spaces, control characters or more than 64
   characters stops startup instead of being stored.
+* An empty or blank `auth.admin_password`, or one equal to
+  `auth.admin_username` in any case, stops startup instead of setting that
+  password ([the first administrator](#the-first-administrator)).
+* A first start that generates the admin password and then cannot listen
+  still prints it.
 * Sessions rotate and are revoked predictably
   ([sessions](#sessions)): each login issues a new token and ends the
   session it was sent with, a password change or reset ends every session

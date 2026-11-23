@@ -1476,3 +1476,200 @@ async fn a_changed_session_lifetime_applies_to_new_sessions_only() {
     assert_all(&s, &[old, new], 200, "both valid").await;
     s.stop().await;
 }
+
+/// A login as `username` from a client with no credentials at all: no API
+/// key, no cookie.
+async fn anonymous_login(s: &TestServer, username: &str, password: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(s.u("/api/v1/auth/login"))
+        .json(&json!({"username": username, "password": password}))
+        .send()
+        .await
+        .unwrap()
+}
+
+fn with_session(s: &TestServer, path: &str, cookie: &str) -> reqwest::RequestBuilder {
+    reqwest::Client::new().get(s.u(path)).header("cookie", cookie)
+}
+
+/// IAM-02 (#77): a fresh install with no `auth.admin_password` generates a
+/// strong random password, shown only by that start's banner. Restarts keep
+/// the account and its hash, generate nothing and show no password. Sign-in
+/// needs no API key, also once ingestion is protected; a failed one tells
+/// nothing and repeats nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_generated_admin_password_is_shown_once_and_kept_across_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = base_config(dir.path());
+    let app = server::App::build(config.clone()).unwrap();
+    let pw = app.generated_password.clone().expect("generated on first start");
+    // 96 random bits as hex: never a guessable default.
+    assert_eq!(pw.len(), 24, "{pw}");
+    assert!(pw.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)), "{pw}");
+    let notice = app.admin_login_notice().unwrap();
+    assert!(notice.starts_with(&format!("Admin login         admin / {pw}\n")), "{notice}");
+    assert!(app.banner("127.0.0.1:8080".parse().unwrap()).contains(&notice));
+    let account = app.state.metadata.find_user("admin").unwrap().unwrap();
+    app.shutdown().await.unwrap();
+
+    // Another fresh install gets another password.
+    let other = tempfile::tempdir().unwrap();
+    let app = server::App::build(base_config(other.path())).unwrap();
+    assert_ne!(app.generated_password.as_deref(), Some(pw.as_str()));
+    app.shutdown().await.unwrap();
+
+    // Restarted: nothing generated, nothing shown, the account unchanged.
+    let app = server::App::build(config.clone()).unwrap();
+    assert_eq!(app.generated_password, None);
+    assert_eq!(app.admin_login_notice(), None);
+    let banner = app.banner("127.0.0.1:8080".parse().unwrap());
+    assert!(!banner.contains("Admin login") && !banner.contains(&pw), "{banner}");
+    assert_eq!(app.state.metadata.find_user("admin").unwrap().as_ref(), Some(&account));
+    assert_eq!(app.state.metadata.count_users().unwrap(), 1, "no second admin");
+    app.shutdown().await.unwrap();
+
+    let s = TestServer::launch(config, Some(dir)).await;
+    // Ingestion protected (the latch set): sign-in still needs only the password.
+    create_key(&s, "producer", "ingest").await;
+    assert!(key_required(&s).await);
+    let wrong = anonymous_login(&s, "admin", "admin").await;
+    assert_eq!(wrong.status(), 401);
+    let body = wrong.text().await.unwrap();
+    assert!(!body.contains(&pw) && !body.contains("argon2"), "{body}");
+    let r = anonymous_login(&s, "admin", &pw).await;
+    assert_eq!(r.status(), 200);
+    let cookie = session_cookie(&r);
+    let body = r.text().await.unwrap();
+    assert!(!body.contains(&pw), "{body}");
+    assert_eq!(status(with_session(&s, "/api/v1/system/info", &cookie)).await, 200);
+    // The configuration the API returns never carries a password.
+    let shown = with_session(&s, "/api/v1/system/config", &cookie).send().await.unwrap().text().await.unwrap();
+    assert!(!shown.contains(&pw) && !shown.contains("admin_password"), "{shown}");
+
+    // After another restart the same password and session still work.
+    let s = s.restart().await;
+    assert_eq!(status(with_session(&s, "/api/v1/system/info", &cookie)).await, 200);
+    assert_eq!(anonymous_login(&s, "admin", &pw).await.status(), 200);
+    s.stop().await;
+}
+
+/// IAM-02 (#77): an explicit `auth.admin_password` on a fresh install
+/// provisions the configured admin with it, generating and showing nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_explicit_admin_password_provisions_a_fresh_install() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = base_config(dir.path());
+    config.auth.admin_username = "Ops".into();
+    config.auth.admin_password = Some("correct horse".into());
+    let app = server::App::build(config.clone()).unwrap();
+    assert_eq!(app.generated_password, None);
+    let banner = app.banner("127.0.0.1:8080".parse().unwrap());
+    assert!(!banner.contains("Admin login") && !banner.contains("correct horse"), "{banner}");
+    assert_eq!(app.state.metadata.count_users().unwrap(), 1);
+    app.shutdown().await.unwrap();
+
+    let s = TestServer::launch(config, Some(dir)).await;
+    assert_eq!(anonymous_login(&s, "ops", "correct horse").await.status(), 200);
+    assert_eq!(anonymous_login(&s, "ops", "ops").await.status(), 401);
+    assert!(s.state().metadata.find_user("admin").unwrap().is_none(), "no default admin account");
+    s.stop().await;
+}
+
+/// IAM-02 (#77): a lost generated password is recovered by starting with
+/// `auth.admin_password`: the same account takes the new password and its
+/// sessions end. Unset again later, the stored password stays (it is not
+/// reset or regenerated), and no second admin appears at any point.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lost_generated_password_is_recovered_with_an_explicit_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = base_config(dir.path());
+    let app = server::App::build(config.clone()).unwrap();
+    let generated = app.generated_password.clone().unwrap();
+    let id = app.state.metadata.find_user("admin").unwrap().unwrap().id;
+    app.shutdown().await.unwrap();
+
+    let s = TestServer::launch(config, Some(dir)).await;
+    let old = session_cookie(&anonymous_login(&s, "admin", &generated).await);
+    let (mut config, dir) = s.stop().await;
+
+    config.auth.admin_password = Some("battery staple".into());
+    let s = TestServer::launch(config, dir).await;
+    assert_eq!(anonymous_login(&s, "admin", &generated).await.status(), 401, "the lost password no longer works");
+    assert_eq!(status(with_session(&s, "/api/v1/system/info", &old)).await, 401, "its sessions ended");
+    assert_eq!(anonymous_login(&s, "admin", "battery staple").await.status(), 200);
+    assert_eq!(s.state().metadata.find_user("admin").unwrap().unwrap().id, id, "the same account");
+    assert_eq!(s.state().metadata.count_users().unwrap(), 1);
+    let (mut config, dir) = s.stop().await;
+
+    // Unset again: the recovered password is kept, nothing is generated.
+    config.auth.admin_password = None;
+    let app = server::App::build(config.clone()).unwrap();
+    assert_eq!(app.generated_password, None);
+    app.shutdown().await.unwrap();
+    let s = TestServer::launch(config, dir).await;
+    assert_eq!(anonymous_login(&s, "admin", "battery staple").await.status(), 200);
+    assert_eq!(s.state().metadata.count_users().unwrap(), 1);
+    s.stop().await;
+}
+
+/// IAM-02 (#77): a blank admin password, or the username as its password,
+/// stops startup before the data directory is set up, without repeating
+/// the value.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blank_or_default_admin_password_refuses_to_start() {
+    // A username the messages' own wording does not contain, so a repeated
+    // value would show.
+    for pw in ["", "  ", "operator", "OPERATOR"] {
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_vyrtel"))
+            .args(["--data-dir", dir.path().to_str().unwrap(), "--bind", "127.0.0.1:0", "--log-level", "info"])
+            .env("VYRTEL_AUTH_ADMIN_USERNAME", "operator")
+            .env("VYRTEL_AUTH_ADMIN_PASSWORD", pw)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{pw:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("auth.admin_password must not be"), "{pw:?}: {stderr}");
+        if !pw.trim().is_empty() {
+            assert!(!stderr.to_lowercase().contains("operator"), "{pw:?} repeated: {stderr}");
+        }
+        assert!(!dir.path().join(server::datadir::METADATA_DB).exists(), "{pw:?}: nothing created");
+    }
+}
+
+/// IAM-02 (#77): a first start that generates the password and then cannot
+/// listen still shows it once on stdout, and nowhere else, so it is not
+/// lost; the next start signs in with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_first_start_that_cannot_listen_still_shows_its_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_vyrtel"))
+        .args(["--data-dir", dir.path().to_str().unwrap(), "--bind", &format!("127.0.0.1:{port}")])
+        .args(["--log-level", "debug"])
+        .env_remove("VYRTEL_AUTH_ADMIN_PASSWORD")
+        .output()
+        .unwrap();
+    drop(taken);
+    assert!(!out.status.success());
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(stderr.contains("cannot listen on"), "{stderr}");
+    let line = stdout.lines().find(|l| l.starts_with("Admin login")).unwrap_or_else(|| panic!("{stdout}"));
+    let pw = line.rsplit(" / ").next().unwrap().trim().to_string();
+    assert_eq!(pw.len(), 24, "{line}");
+    assert_eq!(stdout.matches(pw.as_str()).count(), 1, "shown once: {stdout}");
+    assert!(!stderr.contains(pw.as_str()), "never logged: {stderr}");
+
+    let p = Process::start_binary(std::path::Path::new(env!("CARGO_BIN_EXE_vyrtel")), dir.path(), &[]).await;
+    let r = p
+        .client
+        .post(format!("{}/api/v1/auth/login", p.url))
+        .json(&json!({"username": "admin", "password": pw}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(!p.stderr().contains(pw.as_str()));
+    p.kill();
+}
