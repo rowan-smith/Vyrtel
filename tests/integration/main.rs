@@ -17,6 +17,7 @@ mod live;
 mod live_auth;
 mod query_budgets;
 mod recovery_health;
+mod settings;
 mod shutdown;
 mod signals;
 mod storage_flows;

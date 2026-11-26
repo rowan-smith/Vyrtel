@@ -1,6 +1,12 @@
 # Example Vyrtel configuration. Copy to vyrtel.toml (picked up
 # automatically from the working directory) or pass --config <file>.
 # Every key is optional; see docs/configuration.md.
+#
+# Apart from server.bind, server.listen_backlog, storage.path and the
+# auth.admin_* first-start inputs, every key here can instead be saved by an
+# administrator in Settings (or `vyrtel settings`). A key set in this file
+# wins and cannot be changed there, so leave out what you want to manage in
+# Settings.
 
 [server]
 bind = "0.0.0.0:8080"

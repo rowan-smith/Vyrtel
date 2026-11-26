@@ -6,6 +6,7 @@ pub mod live;
 pub mod manage;
 pub mod query;
 pub mod session;
+pub mod settings;
 pub mod system;
 
 use axum::Router;
@@ -68,6 +69,11 @@ pub const OPERATIONS: &[Operation] = {
         op("GET", "/api/v1/system/storage", Admin),
         op("GET", "/api/v1/system/query-stats", Admin),
         op("GET", "/api/v1/system/config", Admin),
+        op("GET", "/api/v1/settings", Admin),
+        op("GET", "/api/v1/settings/export", Admin),
+        op("POST", "/api/v1/settings/import", Admin),
+        op("PUT", "/api/v1/settings/{group}", Admin),
+        op("POST", "/api/v1/settings/{group}/cancel", Admin),
         op("GET", "/api/v1/dashboards", Admin),
         op("POST", "/api/v1/dashboards", Admin),
         op("GET", "/api/v1/dashboards/{id}", Admin),
@@ -124,6 +130,11 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/v1/system/storage", get(system::storage_stats))
         .route("/api/v1/system/query-stats", get(system::query_stats))
         .route("/api/v1/system/config", get(system::config))
+        .route("/api/v1/settings", get(settings::show))
+        .route("/api/v1/settings/export", get(settings::export))
+        .route("/api/v1/settings/import", post(settings::import))
+        .route("/api/v1/settings/{group}", axum::routing::put(settings::save))
+        .route("/api/v1/settings/{group}/cancel", post(settings::cancel))
         .route("/api/v1/dashboards", get(manage::list_dashboards).post(manage::create_dashboard))
         .route(
             "/api/v1/dashboards/{id}",

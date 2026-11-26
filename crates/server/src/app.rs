@@ -101,8 +101,7 @@ impl App {
     /// [`App::build`] with one-off start options.
     pub fn build_with(config: Config, options: StartOptions) -> anyhow::Result<App> {
         config.validate().map_err(anyhow::Error::msg)?;
-        let budgets = config.budgets();
-        let dir = &config.storage.path;
+        let dir = &config.storage.path.clone();
         let accept = options.accept_incomplete_restore;
         // Read-only: a directory that fails is left exactly as it was, not
         // even locked.
@@ -132,6 +131,23 @@ impl App {
             Metadata::open(&dir.join(crate::datadir::METADATA_DB))
                 .map_err(|e| anyhow::anyhow!("opening metadata store: {e}"))?,
         );
+        // Saved settings, before anything that uses them is built
+        // (SET-04, #253). Unreadable or invalid ones stop the start.
+        let rows = metadata.config_settings().map_err(|e| anyhow::anyhow!("reading saved settings: {e}"))?;
+        let started = config.clone();
+        let (config, stored) = crate::settings::load(&rows, &config).map_err(anyhow::Error::msg)?;
+        for (key, source) in stored.overridden(&crate::settings::deployment_base(&started)) {
+            tracing::warn!(
+                setting = %key,
+                source = ?source,
+                "a saved setting is overridden by the deployment, which wins; remove it from the deployment to use                  the saved value"
+            );
+        }
+        if (started.log.level.as_str(), started.log.format) != (config.log.level.as_str(), config.log.format) {
+            tracing::warn!("the saved log settings changed after logging started; they apply at the next restart");
+        }
+        let settings = crate::settings::Settings::new(&started, stored);
+        let budgets = config.budgets();
         let api_keys = crate::auth::ApiKeys::load(&metadata).map_err(|e| anyhow::anyhow!("loading API keys: {e}"))?;
         let keys = api_keys.snapshot();
         if let Some(warning) = keys.startup_warning() {
@@ -216,6 +232,7 @@ impl App {
             api_keys: Arc::new(api_keys),
             shutdown: rx.clone(),
             config,
+            settings,
         });
 
         let generated_password = crate::auth::bootstrap_admin(&state).context("initialising admin user")?;

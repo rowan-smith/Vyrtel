@@ -153,6 +153,22 @@ fn latch_ingest(tx: &rusqlite::Transaction, now: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The `settings` keys of admin-managed configuration (the server's typed
+/// settings, their revisions and change records) all start with this. It
+/// shares no key with the ingestion mode or the protection latch.
+pub const CONFIG_PREFIX: &str = "config.";
+
+fn is_config_key(key: &str) -> bool {
+    key.len() > CONFIG_PREFIX.len() && key.starts_with(CONFIG_PREFIX)
+}
+
+fn read_config_settings(c: &Connection) -> Result<Vec<(String, String)>> {
+    // `config.` .. `config/` ('/' follows '.'): the prefix, using the key index.
+    let mut st = c.prepare_cached("SELECT key, value FROM settings WHERE key > ?1 AND key < ?2 ORDER BY key")?;
+    let rows = st.query_map(params![CONFIG_PREFIX, "config/"], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
@@ -741,6 +757,78 @@ impl Metadata {
         )?
         .execute(params![key, value, now_ms()])?;
         Ok(())
+    }
+
+    // ---- admin-managed configuration ---------------------------------
+
+    /// Every `settings` row under [`CONFIG_PREFIX`], by key.
+    pub fn config_settings(&self) -> Result<Vec<(String, String)>> {
+        let c = self.conn.lock().unwrap();
+        read_config_settings(&c)
+    }
+
+    /// Change admin-managed configuration rows in one transaction, only if
+    /// every `checks` key still has its expected value (`None`: absent);
+    /// otherwise [`MetadataError::Conflict`] and nothing is written. A
+    /// `writes` value of `None` deletes the row. Every key must be under
+    /// [`CONFIG_PREFIX`], so this can never touch the ingestion mode, the
+    /// protection latch or any other product state
+    /// ([`MetadataError::Invalid`] otherwise, before anything is read).
+    pub fn commit_config_settings(
+        &self,
+        checks: &[(String, Option<String>)],
+        writes: &[(String, Option<String>)],
+    ) -> Result<()> {
+        if let Some(key) = checks.iter().chain(writes).map(|(k, _)| k).find(|k| !is_config_key(k)) {
+            return Err(MetadataError::Invalid(format!("{key:?} is not an admin-managed configuration key")));
+        }
+        let mut c = self.conn.lock().unwrap();
+        // Immediate: the checks and the writes are one write, which waits for
+        // the write lock instead of failing on another writer.
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for (key, expected) in checks {
+            let found: Option<String> = tx
+                .prepare_cached("SELECT value FROM settings WHERE key = ?1")?
+                .query_row([key], |r| r.get(0))
+                .optional()?;
+            if &found != expected {
+                return Err(MetadataError::Conflict(format!("{key} changed")));
+            }
+        }
+        let now = now_ms();
+        for (key, value) in writes {
+            match value {
+                Some(v) => tx
+                    .prepare_cached(
+                        "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3) \
+                         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                    )?
+                    .execute(params![key, v, now])?,
+                None => tx.prepare_cached("DELETE FROM settings WHERE key = ?1")?.execute([key])?,
+            };
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// [`Metadata::config_settings`] of the database at `path`, read without
+    /// changing anything (as [`Metadata::inspect`] does). `None` when there
+    /// is no database there, or it has no schema or another layout: opening
+    /// it properly reports that.
+    pub fn read_config_settings_at(path: &Path) -> Result<Option<Vec<(String, String)>>> {
+        use rusqlite::OpenFlags;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let mut wal = path.as_os_str().to_owned();
+        wal.push("-wal");
+        let immutable = !Path::new(&wal).exists();
+        let conn = Connection::open_with_flags(sqlite_uri(path, immutable), flags)?;
+        if identify(&conn)? != Identity::Current {
+            return Ok(None);
+        }
+        read_config_settings(&conn).map(Some)
     }
 
     // ---- API keys -------------------------------------------------------
@@ -1649,6 +1737,69 @@ mod tests {
         assert_eq!(app_id, APPLICATION_ID);
         let layout: String = c.query_row("SELECT layout FROM vyrtel_layout", [], |r| r.get(0)).unwrap();
         assert_eq!(layout, telemetry::LAYOUT);
+    }
+
+    fn kv(k: &str, v: Option<&str>) -> (String, Option<String>) {
+        (k.to_string(), v.map(str::to_string))
+    }
+
+    /// SET-04 (#253): configuration rows change together or not at all,
+    /// only while the expected revision is still there.
+    #[test]
+    fn config_settings_commit_atomically_and_conflict_when_stale() {
+        let m = Metadata::open_in_memory().unwrap();
+        assert!(m.config_settings().unwrap().is_empty());
+        let first = [kv("config.query.timeout", Some("\"5s\"")), kv("config.revision.query", Some("1"))];
+        m.commit_config_settings(&[kv("config.revision.query", None)], &first).unwrap();
+        assert_eq!(m.config_settings().unwrap().len(), 2);
+
+        // A stale revision writes nothing at all.
+        let stale = [kv("config.query.timeout", Some("\"9s\"")), kv("config.revision.query", Some("2"))];
+        let e = m.commit_config_settings(&[kv("config.revision.query", None)], &stale).unwrap_err();
+        assert!(matches!(e, MetadataError::Conflict(_)), "{e}");
+        assert_eq!(m.get_setting("config.query.timeout").unwrap().as_deref(), Some("\"5s\""));
+
+        // The current one applies every write, deletions included.
+        let next = [kv("config.query.timeout", None), kv("config.revision.query", Some("2"))];
+        m.commit_config_settings(&[kv("config.revision.query", Some("1"))], &next).unwrap();
+        assert_eq!(m.config_settings().unwrap(), vec![("config.revision.query".to_string(), "2".to_string())]);
+    }
+
+    /// The configuration writer cannot reach the ingestion mode, the latch
+    /// or anything else outside its prefix, and never lists them.
+    #[test]
+    fn config_settings_never_touch_other_settings() {
+        let m = Metadata::open_in_memory().unwrap();
+        m.set_ingest_auth_mode(IngestAuthMode::Required).unwrap();
+        m.set_setting("configx", "1").unwrap();
+        m.set_setting("config", "1").unwrap();
+        for key in [INGEST_PROTECTION, INGEST_AUTH_MODE, "config.", "configx", "config"] {
+            let e = m.commit_config_settings(&[], &[kv(key, None)]).unwrap_err();
+            assert!(matches!(e, MetadataError::Invalid(_)), "{key}: {e}");
+            let e = m.commit_config_settings(&[kv(key, None)], &[]).unwrap_err();
+            assert!(matches!(e, MetadataError::Invalid(_)), "{key}: {e}");
+        }
+        assert_eq!(m.ingest_auth_mode().unwrap(), IngestAuthMode::Required);
+        assert!(m.config_settings().unwrap().is_empty());
+    }
+
+    /// Read-only: a missing file stays missing, and a database is read
+    /// without being changed.
+    #[test]
+    fn config_settings_read_at_a_path_change_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("metadata.db");
+        assert_eq!(Metadata::read_config_settings_at(&path).unwrap(), None);
+        assert!(!path.exists());
+        let m = Metadata::open(&path).unwrap();
+        m.commit_config_settings(&[], &[kv("config.log.level", Some("\"debug\""))]).unwrap();
+        let read = Metadata::read_config_settings_at(&path).unwrap().unwrap();
+        assert_eq!(read, vec![("config.log.level".to_string(), "\"debug\"".to_string())]);
+        drop(m);
+        let read = Metadata::read_config_settings_at(&path).unwrap().unwrap();
+        assert_eq!(read.len(), 1);
+        std::fs::write(d.path().join("empty.db"), b"").unwrap();
+        assert_eq!(Metadata::read_config_settings_at(&d.path().join("empty.db")).unwrap(), None);
     }
 
     // AUTH-250 review: an acknowledged write (the ingestion latch above

@@ -3,9 +3,11 @@
 Vyrtel runs with no configuration at all. When you need to change
 something, use any combination of:
 
-1. a TOML file (`--config vyrtel.toml`, or `./vyrtel.toml` if present),
-2. `VYRTEL_*` environment variables,
-3. command-line flags,
+1. [admin-managed settings](#admin-managed-settings), saved in the data
+   directory from Settings, `/api/v1/settings` or `vyrtel settings`,
+2. a TOML file (`--config vyrtel.toml`, or `./vyrtel.toml` if present),
+3. `VYRTEL_*` environment variables,
+4. command-line flags,
 
 in increasing order of precedence. `vyrtel config` prints the effective
 configuration; `GET /api/v1/system/config` returns it (without secrets).
@@ -611,6 +613,92 @@ settings; until then, restart with a new `auth.admin_password`
 | `level`  | `info`  | `VYRTEL_LOG_LEVEL`  | `tracing` filter, e.g. `debug` or `info,storage=debug`.                   |
 | `format` | `text`  | `VYRTEL_LOG_FORMAT` | `text` or `json`. Written to stderr; never ingested into Vyrtel itself. |
 
+## Admin-managed settings
+
+Every option in the tables above except the deployment inputs below is
+also an **admin-managed setting**: an administrator can save it in the
+data directory's metadata database, and the next start uses it. The
+deployment inputs stay in the file, the environment and flags only:
+
+| Input                                     | Why it is not a setting                                                                 |
+|-------------------------------------------|------------------------------------------------------------------------------------------|
+| `server.bind`, `server.listen_backlog`    | The listener, set up by whoever runs the process.                                       |
+| `storage.path`                            | Locates the data directory, which holds the settings themselves.                        |
+| `auth.admin_username`, `auth.admin_password` | [The first administrator](#the-first-administrator). Never shown, exported or imported. |
+
+Settings never hold the ingestion mode or the protection latch (they have
+their own endpoint, [`PUT /api/v1/ingest-auth`](api.md#ingestion-mode)),
+credentials or telemetry.
+
+**Precedence.** A value the configuration file, the environment or a flag
+sets wins over a saved one. While it does, the setting cannot be saved:
+the API refuses with `409 setting_managed_by_deployment`, and Settings
+shows it as managed by its source. A saved value that a deployment value
+overrides is reported (`overridden`, and a warning at startup). Remove the
+key from the deployment to manage it in Settings instead. Moving each
+group's keys out of the configuration file entirely is staged with its
+Settings form.
+
+**When a change applies.** Every setting currently applies **at the next
+restart**: the running process keeps the values it started with. A saved
+change is reported as `pending` (and `restartRequired` is `true`) until
+then, and can be cancelled back to the running values. Saved settings are
+read before logging, storage, queues and listeners are set up, so a saved
+`log.level` or `log.format` decides even the first log line.
+
+**Changes are checked whole and saved atomically.** Each change is
+validated against the complete configuration it would produce (the same
+rules as the file, plus a log filter that must parse), then saved in one
+SQLite transaction with its group's new revision and a change record. Each
+group (`server`, `storage`, `retention`, `ingest`, `query`, `auth`,
+`alerts`, `log`) has a revision; a change based on an older one is refused
+with `409 settings_conflict`, so two administrators cannot overwrite each
+other. A refused change saves nothing. Changes to `storage.durability`,
+`storage.fsync_interval`, `storage.compaction` and `retention.*` can lose
+data or weaken durability and must be confirmed.
+
+**Who.** Reading and changing settings needs an administrator: a session or
+an `admin` API key. A change made with a session cookie must come from
+Vyrtel's own pages (a cross-site request is refused with `403`).
+
+**Change records.** The last 50 changes are kept with who made them, the
+groups, revisions and field names (never values), and their outcome:
+committed, or why they were refused. Refused ones are kept in memory only.
+
+See [the API](api.md#settings) for the requests.
+
+### `vyrtel settings`: offline inspection and repair
+
+When the server cannot start, or the UI is unreachable, inspect and repair
+the saved settings from the command line, with the same `--data-dir`,
+`--config` and environment as the server. Reading works while the server
+runs; changing them needs it stopped (the data directory lock is held), and
+takes effect at its next start. Each change is checked and saved exactly as
+through the API.
+
+```bash
+vyrtel settings show                      # every setting: next-start value and source
+vyrtel settings diff                      # only those not at their defaults
+vyrtel settings export > settings.json    # saved values only, as JSON
+vyrtel settings import settings.json      # replace all saved values (- reads stdin)
+vyrtel settings set query.timeout 1m      # add --confirm for dangerous changes
+vyrtel settings reset query.timeout       # back to the default; or --all
+```
+
+Saved settings that are unreadable or no longer form a valid configuration
+(a hand edit, a damaged database, or a value another version wrote) stop
+the start with exit status 2 and say which setting to fix; they are never
+replaced by defaults:
+
+```text
+vyrtel: configuration error: saved setting query.max_results: invalid type: string "lots", expected usize; with the server stopped, run `vyrtel settings reset query.max_results` (or restore the metadata database from a backup); see docs/configuration.md#admin-managed-settings
+```
+
+`vyrtel settings reset` also removes a saved value that cannot be read.
+An export holds only saved values: no deployment inputs, credentials,
+ingestion protection or revisions. Importing replaces every saved value at
+once or, if any entry is invalid, none.
+
 ## Command line
 
 ```
@@ -619,10 +707,11 @@ vyrtel [OPTIONS] [COMMAND]
 Commands:
   serve           Run the server (default)
   healthcheck     Exit 0 if the server answers /health (used by Docker)
-  config          Print the effective configuration
+  config          Print the effective configuration (saved settings included)
   check-data-dir  Check, reading only, whether this version can start the
                   data directory and what starting it would change
                   (see Upgrading between pre-1.0 releases)
+  settings        Inspect or repair saved settings (see Admin-managed settings)
 
 Options:
   -c, --config <PATH>         TOML config file
