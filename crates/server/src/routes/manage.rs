@@ -170,8 +170,8 @@ pub async fn create_api_key(State(state): State<SharedState>, ApiJson(b): ApiJso
     key_created(created)
 }
 
-/// Create a replacement for key uid=197609(rowan) gid=197609 groups=197609 with the same name and scope. Both
-/// keys stay active until each is revoked; nothing is sent to clients.
+/// Create a replacement for active key `id` with the same name and scope.
+/// Both keys stay active until each is revoked; nothing is sent to clients.
 /// The plaintext key appears in this response only.
 pub async fn rotate_api_key(
     State(state): State<SharedState>,

@@ -606,6 +606,9 @@ async fn invalid_key_requests_store_nothing_and_expired_keys_are_refused() {
     assert!(r.text().await.unwrap().contains("API key expired"));
     let s = s.restart().await;
     assert_eq!(query_with(&s, &key).await, 401, "still expired after a restart");
+    let r = s.post(&format!("/api/v1/api-keys/{}/rotate", rotated["id"]), json!({})).await;
+    assert_eq!(r.status(), 409, "an expired key cannot be rotated into a usable one");
+    assert!(r.text().await.unwrap().contains("revoke it and create a new key"));
     let listed = list_keys(&s).await;
     assert!(listed.iter().any(|k| k["id"] == rotated["id"] && k["expiresAt"] == expires_at), "listed until revoked");
     s.stop().await;

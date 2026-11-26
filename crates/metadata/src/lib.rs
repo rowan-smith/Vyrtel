@@ -796,22 +796,29 @@ impl Metadata {
     /// Store a replacement for active key `id`: same name and scope, a new
     /// secret, and `expires_at` (ms since the epoch, or `None` for never;
     /// it must be in the future). Key `id` is left active: both are
-    /// accepted until each is revoked, so clients can move over. Fails with
-    /// [`MetadataError::NotFound`] if `id` is not an active key, storing
-    /// nothing.
+    /// accepted until each is revoked, so clients can move over. Fails,
+    /// storing nothing, with [`MetadataError::NotFound`] if `id` is not an
+    /// active key, and with [`MetadataError::Conflict`] if it has expired:
+    /// an expiry is final, so rotating cannot turn an expired key into a
+    /// usable one.
     pub fn rotate_api_key(&self, id: i64, prefix: &str, key_hash: &str, expires_at: Option<i64>) -> Result<ApiKey> {
         let now = now_ms();
         check_api_key_expiry(expires_at, now)?;
         let mut c = self.conn.lock().unwrap();
-        // Immediate: the name check and the insert are one write, which waits
-        // for the write lock instead of failing on another writer.
+        // Immediate: the check and the insert are one write, which waits for
+        // the write lock instead of failing on another writer.
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (name, scope): (String, String) = tx
-            .query_row("SELECT name, scope FROM api_keys WHERE id = ?1 AND revoked_at IS NULL", [id], |r| {
-                Ok((r.get(0)?, r.get(1)?))
+        let (name, scope, expired): (String, String, Option<i64>) = tx
+            .query_row("SELECT name, scope, expires_at FROM api_keys WHERE id = ?1 AND revoked_at IS NULL", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })
             .optional()?
             .ok_or(MetadataError::NotFound)?;
+        if expired.is_some_and(|at| at <= now) {
+            return Err(MetadataError::Conflict(format!(
+                "API key {id} has expired and cannot be rotated; revoke it and create a new key"
+            )));
+        }
         let new = NewKey { name: &name, prefix, key_hash, scope: &scope, expires_at, rotated_from: Some(id) };
         let key = insert_api_key(&tx, new, now)?;
         tx.commit()?;

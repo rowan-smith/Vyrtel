@@ -260,8 +260,10 @@ any other response:
   replaces. **Both keys stay active**: the old one keeps working until you
   revoke it, and nothing expires or revokes it automatically. Vyrtel does
   not hand the new key to clients; update each client, then revoke the old
-  key. Rotating a revoked or unknown key gets `404`; any field other than
-  `expiresAt` gets `422`. The body is required (`{}` for no expiry).
+  key. Rotating a revoked or unknown key gets `404`, and an expired one
+  `409` (an expiry is final: revoke it and create a new key); any field
+  other than `expiresAt` gets `422`. The body is required (`{}` for no
+  expiry). Expiry uses the server's clock.
 * **Revoke** stops a key at once and for good: a restart never accepts it
   again, and it cannot be rotated.
 * Refused requests (`400` for an invalid name, scope or expiry; `409`;
