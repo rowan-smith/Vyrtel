@@ -328,16 +328,56 @@ cache of sessions found valid:
   owns it, so switching accounts in one browser ends the previous
   account's session there; this happens only after the password check
   succeeds.
-* **Revocation is not cancellation.** Every way of ending a session stops
-  it from admitting new requests. Handlers already admitted, such as a
-  running query or an open live-tail stream, are not cancelled and finish
-  as admitted; reauthorizing open streams is
-  [#128](https://github.com/rowan-smith/Vyrtel/issues/128).
+* **Revocation ends streams, not requests.** Every way of ending a
+  session stops it from admitting new requests. A request already
+  admitted, such as a running query, finishes as admitted. The live tail,
+  the one long-lived stream, is reauthorized
+  ([below](#stream-reauthorization)).
 * **What does not change.** Sessions are created only by login and ended
   by logout, rotation, the per-account bound, expiry, a password change or
   deactivation. The cache is per process and starts empty, so a restart
   reads SQLite again. Cookie attributes and key fallback are unchanged;
   `/api/v1/auth/me` still reads SQLite.
+
+### Stream reauthorization
+
+The live tail (`GET /api/v1/live/logs`, Server-Sent Events) is the only
+long-lived stream in this release; every other operation is one request
+and one response. (OTLP/gRPC and node-to-node transports are not served
+yet; when they are, their streams should use the same recheck.) A stream
+keeps the credential that opened it as an `auth::Grant`: the session or
+API key, by its SHA-256, and the scope it was admitted for.
+
+* **When.** The grant subscribes to two in-memory change signals (a
+  `tokio::sync::watch` counter each): one bumped after every published API
+  key change (create, rotate, revoke, ingestion mode), one after every
+  session invalidation (logout, login rotation, the per-account bound, a
+  password change, deactivation, a changed `auth.admin_password`). It
+  subscribes *before* the admission check, so a change that lands while
+  the stream is being admitted is seen. A stream rechecks before it sends
+  anything further after a signal, and at least every
+  `auth::REAUTHORIZE_EVERY` (5 s), which bounds how long a key or session
+  that simply expires keeps streaming.
+* **How.** The same check as a request, with the same credential only: the
+  session from the cache, or SQLite on a miss (at most
+  `MAX_SESSION_FILLS` at once), or the key in the current key set with a
+  scope that still allows `query`. It never falls back to another
+  credential the request also carried. The ingestion mode and latch play
+  no part: query and administration always need credentials, so no key
+  transition opens or closes a stream.
+* **Admitted work.** On refusal the stream drops the events it matched but
+  has not sent, sends `unauthorized` (data: the error a request would get)
+  and ends. Nothing is sent once a change has been observed; at most the
+  one event already being written when the change returns can still
+  arrive. If the check cannot be decided (the session store is
+  unreadable) the stream fails closed the same way with `unavailable` and
+  `retry: 2000`; a reconnect is admitted only by a working check.
+* **Bounded.** Signals coalesce: a burst of changes wakes each stream once,
+  and nothing is queued per change or per stream beyond one receiver each.
+  The recheck costs a map lookup for a key and a cache lookup for a cached
+  session, and streams are capped by `query.max_live_streams`. Nothing is
+  persisted; a restart ends every stream and each reconnect is admitted
+  afresh.
 
 `/api/v1/system/info` reports `sessionAuth`: cache hits and size, SQLite
 lookups, and their time waiting for a turn and thread (`queue`), for the

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
+import { notifyUnauthorized } from './api';
 import type { TelemetryEvent } from './types';
 
 export type LiveStatus = 'off' | 'connecting' | 'live' | 'error';
@@ -17,6 +18,12 @@ export const RECONNECT_MAX_MS = 30_000;
  * EventSource then reconnects by itself. If a reconnect is answered with an
  * HTTP error (a restarting server or proxy returns 503), EventSource stops
  * for good, so a new one is opened with capped exponential backoff.
+ *
+ * The server rechecks the stream's sign-in or API key while it runs. When
+ * it is no longer valid the server sends `unauthorized` and ends the
+ * stream: the tail stops (no reconnect, which would only be refused) and
+ * the app is told the sign-in was lost. `unavailable` (the check could not
+ * be made) ends the stream like `shutdown`, and EventSource reconnects.
  */
 export function useLiveTail(opts: {
   enabled: boolean;
@@ -68,6 +75,12 @@ export function useLiveTail(opts: {
       es.addEventListener('lagged', skip);
       // The server is stopping; the stream ends and EventSource reconnects.
       es.addEventListener('shutdown', () => setStatus('connecting'));
+      es.addEventListener('unavailable', () => setStatus('connecting'));
+      es.addEventListener('unauthorized', () => {
+        es.close();
+        setStatus('error');
+        notifyUnauthorized();
+      });
       es.onerror = () => {
         if (es.readyState !== EventSource.CLOSED) {
           // EventSource reconnects by itself; reflect the state meanwhile.

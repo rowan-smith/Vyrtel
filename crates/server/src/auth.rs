@@ -25,7 +25,7 @@ use axum::response::Response;
 use metadata::{IngestAuthMode, Metadata};
 use rand::Rng;
 use sha2::{Digest, Sha256};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, watch};
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::{AppState, SharedState};
@@ -402,7 +402,12 @@ impl KeySet {
 
     /// The `(id, scope)` of an active key that has not expired.
     fn find(&self, key: &str) -> Result<(i64, String), ApiError> {
-        let k = self.by_hash.get(&sha256_hex(key)).ok_or_else(|| ApiError::unauthorized("invalid API key"))?;
+        self.find_hash(&sha256_hex(key))
+    }
+
+    /// [`KeySet::find`] by the key's SHA-256.
+    fn find_hash(&self, hash: &str) -> Result<(i64, String), ApiError> {
+        let k = self.by_hash.get(hash).ok_or_else(|| ApiError::unauthorized("invalid API key"))?;
         if k.expired(metadata::now_ms()) {
             return Err(ApiError::unauthorized("API key expired"));
         }
@@ -477,6 +482,8 @@ pub struct ApiKeys {
     touches: std::sync::Mutex<Touches>,
     touch_stats: TouchStats,
     write_touches: TouchWrite,
+    /// Bumped after every published change, for [`Grant`]s to recheck.
+    changed: watch::Sender<u64>,
 }
 
 impl ApiKeys {
@@ -495,6 +502,7 @@ impl ApiKeys {
             touches: Default::default(),
             touch_stats: Default::default(),
             write_touches: write,
+            changed: watch::Sender::new(0),
         }
     }
 
@@ -513,6 +521,11 @@ impl ApiKeys {
     /// needs it, so superseded sets are freed.
     pub fn snapshot(&self) -> Arc<KeySet> {
         self.current.read().unwrap().clone()
+    }
+
+    /// Notified after every published change (see [`Grant`]).
+    fn subscribe(&self) -> watch::Receiver<u64> {
+        self.changed.subscribe()
     }
 
     /// Whether ingestion needs an API key.
@@ -535,8 +548,9 @@ impl ApiKeys {
     /// it waits for its turn cancels the change; once the write has started
     /// it runs to the end and is published, and keeps its turn until then,
     /// so a later change can never be overtaken by it. Requests admitted
-    /// before a change are not affected by it, except that the last-used
-    /// bookkeeping of keys it removes is dropped in the same step.
+    /// before a change are not affected by it (open streams recheck: see
+    /// [`Grant`]), except that the last-used bookkeeping of keys it removes
+    /// is dropped in the same step.
     pub async fn change<T, W, A>(self: &Arc<Self>, write: W, apply: A) -> ApiResult<T>
     where
         T: Send + 'static,
@@ -560,6 +574,8 @@ impl ApiKeys {
             // After the swap: a touch that checks the current set from
             // here on finds a removed key gone (see `touch_at`).
             keys.forget_removed(&next);
+            // Last: a stream woken by this rechecks against the new set.
+            keys.changed.send_modify(|n| *n += 1);
             Ok(out)
         })
         .await?
@@ -919,9 +935,10 @@ pub async fn revoke_api_key(state: &AppState, id: i64) -> ApiResult<()> {
     state.api_keys.revoke(&state.metadata, id).await
 }
 
-fn check_api_key(state: &AppState, key: &str) -> Result<Principal, ApiError> {
+/// The principal of the active, unexpired key whose SHA-256 is `hash`.
+fn check_api_key(state: &AppState, hash: &str) -> Result<Principal, ApiError> {
     let keys = state.api_keys.snapshot();
-    let (id, scope) = keys.find(key)?;
+    let (id, scope) = keys.find_hash(hash)?;
     state.api_keys.touch(id, &keys);
     Ok(Principal::ApiKey { id, scope })
 }
@@ -1076,6 +1093,8 @@ pub struct Sessions {
     cache: std::sync::Mutex<Cache>,
     fills: Arc<Semaphore>,
     stats: SessionLookups,
+    /// Bumped after every invalidation, for [`Grant`]s to recheck.
+    changed: watch::Sender<u64>,
 }
 
 impl Default for Sessions {
@@ -1084,6 +1103,7 @@ impl Default for Sessions {
             cache: Default::default(),
             fills: Arc::new(Semaphore::new(MAX_SESSION_FILLS)),
             stats: Default::default(),
+            changed: watch::Sender::new(0),
         }
     }
 }
@@ -1122,9 +1142,17 @@ impl Sessions {
     /// Forget session `hash` (by its token's SHA-256), and stop every lookup
     /// already under way from caching what it read.
     pub fn invalidate(&self, hash: &str) {
-        let mut c = self.cache.lock().unwrap();
-        c.epoch += 1;
-        c.remove(hash);
+        {
+            let mut c = self.cache.lock().unwrap();
+            c.epoch += 1;
+            c.remove(hash);
+        }
+        self.changed.send_modify(|n| *n += 1);
+    }
+
+    /// Notified after every invalidation (see [`Grant`]).
+    fn subscribe(&self) -> watch::Receiver<u64> {
+        self.changed.subscribe()
     }
 
     /// Forget every cached session of `username`, and stop every lookup
@@ -1133,22 +1161,28 @@ impl Sessions {
     /// stay. The cache is bounded, so this scans at most
     /// [`SESSION_CACHE_ENTRIES`] entries.
     pub fn invalidate_user(&self, username: &str) {
-        let mut c = self.cache.lock().unwrap();
-        c.epoch += 1;
-        let gone: Vec<String> =
-            c.by_hash.iter().filter(|(_, e)| e.username == username).map(|(h, _)| h.clone()).collect();
-        for hash in gone {
-            c.remove(&hash);
+        {
+            let mut c = self.cache.lock().unwrap();
+            c.epoch += 1;
+            let gone: Vec<String> =
+                c.by_hash.iter().filter(|(_, e)| e.username == username).map(|(h, _)| h.clone()).collect();
+            for hash in gone {
+                c.remove(&hash);
+            }
         }
+        self.changed.send_modify(|n| *n += 1);
     }
 
     /// Forget every session, as [`Sessions::invalidate`] does one (for a
     /// password change, which ends all of a user's sessions).
     pub fn clear(&self) {
-        let mut c = self.cache.lock().unwrap();
-        c.epoch += 1;
-        c.by_hash.clear();
-        c.bytes = 0;
+        {
+            let mut c = self.cache.lock().unwrap();
+            c.epoch += 1;
+            c.by_hash.clear();
+            c.bytes = 0;
+        }
+        self.changed.send_modify(|n| *n += 1);
     }
 
     /// The user of session `hash`, from the cache or else from `lookup` (the
@@ -1210,13 +1244,96 @@ impl Sessions {
 /// The session's user, from [`Sessions`] or SQLite. A lookup reads through
 /// the metadata store's one connection, so it can wait behind any metadata
 /// write, a key change's included.
-async fn check_session(state: &SharedState, token: String) -> Result<Option<Principal>, ApiError> {
+async fn check_session(state: &AppState, hash: String) -> Result<Option<Principal>, ApiError> {
     let m = state.metadata.clone();
     let lookup = move |hash: &str| {
         let (found, lock) = m.find_session_timed(hash)?;
         Ok((found.map(|(user, expires_at)| (user.username, expires_at)), lock))
     };
-    Ok(state.sessions.check(sha256_hex(&token), lookup).await?.map(Principal::User))
+    Ok(state.sessions.check(hash, lookup).await?.map(Principal::User))
+}
+
+/// Longest a long-lived stream goes on without rechecking the credential
+/// that opened it. Logout, revocation, password changes, deactivation and
+/// other key or session changes are rechecked as soon as they return (see
+/// [`Grant`]); this bounds how long a session or key that simply expires
+/// keeps a stream open.
+pub const REAUTHORIZE_EVERY: Duration = Duration::from_secs(5);
+
+/// The credential a [`Grant`] was admitted with, by SHA-256 (the secret
+/// itself is not kept).
+#[derive(Clone)]
+enum Credential {
+    Session(String),
+    ApiKey(String),
+}
+
+/// How an [`Access::Query`] or [`Access::Admin`] request was admitted, for
+/// work that outlives the admission decision (the live tail) to recheck
+/// with [`Grant::reauthorize`]. [`require_user`] adds one to every such
+/// request. It subscribes to key and session changes before it checks the
+/// credential, so a change that lands while the request is being admitted
+/// is never missed: [`Grant::changed`] reports it.
+#[derive(Clone)]
+pub struct Grant {
+    access: Access,
+    credential: Credential,
+    keys: watch::Receiver<u64>,
+    sessions: watch::Receiver<u64>,
+    /// [`Grant::changes`] saw a change ([`watch::Receiver::changed`] marks
+    /// it seen), not yet rechecked.
+    woken: bool,
+}
+
+impl Grant {
+    /// Whether a key or session changed since admission or the last
+    /// [`Grant::reauthorize`].
+    pub fn changed(&self) -> bool {
+        // A closed signal (never, while the server runs) leaves the periodic recheck.
+        self.woken || self.keys.has_changed().unwrap_or(false) || self.sessions.has_changed().unwrap_or(false)
+    }
+
+    /// Wait until [`Grant::changed`] would be true. Any number of changes
+    /// coalesce into one wake-up; nothing is queued per change.
+    pub async fn changes(&mut self) {
+        let closed = tokio::select! {
+            r = self.keys.changed() => r.is_err(),
+            r = self.sessions.changed() => r.is_err(),
+        };
+        if closed {
+            // The registries live as long as the server; never spin.
+            std::future::pending::<()>().await;
+        }
+        self.woken = true;
+    }
+
+    /// Check the credential again exactly as [`require_user`] admitted it:
+    /// the same session (from the cache, or SQLite on a miss, bounded by
+    /// [`MAX_SESSION_FILLS`]), or the same key in the current [`KeySet`]
+    /// with a scope that still allows the operation. Never falls back to
+    /// another credential. `401` for an ended or expired session or a
+    /// revoked or expired key, `403` for a scope that no longer allows the
+    /// operation, and the lookup's own error (`500`) when it cannot be
+    /// decided.
+    pub async fn reauthorize(&mut self, state: &AppState) -> ApiResult<()> {
+        // Before the check: a change from here on is seen by the next one.
+        self.woken = false;
+        self.keys.borrow_and_update();
+        self.sessions.borrow_and_update();
+        match &self.credential {
+            Credential::Session(hash) => match check_session(state, hash.clone()).await? {
+                Some(_) => Ok(()),
+                None => Err(ApiError::unauthorized("the session has ended; sign in again")),
+            },
+            Credential::ApiKey(hash) => {
+                let p = check_api_key(state, hash)?;
+                if !p.allows(self.access) {
+                    return Err(ApiError::forbidden(p.refusal(self.access)));
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 /// The one authorization layer of every route: the matched route's scope
@@ -1255,19 +1372,28 @@ async fn require_ingest(state: SharedState, mut req: Request, next: Next) -> Res
 /// [`Access::Query`] and [`Access::Admin`] operations: a session, or a key
 /// whose scope [allows](Principal::allows) `access`. A valid key without
 /// that scope gets 403; a missing, invalid, expired or revoked one 401.
+///
+/// An admitted request also gets the [`Grant`] it was admitted with.
 async fn require_user(state: SharedState, access: Access, mut req: Request, next: Next) -> Result<Response, ApiError> {
-    if let Some(token) = session_from(req.headers())
-        && let Some(p) = check_session(&state, token).await?
-    {
-        req.extensions_mut().insert(p);
-        return Ok(next.run(req).await);
+    // Subscribed before the checks, so the grant sees any change after them.
+    let (keys, sessions) = (state.api_keys.subscribe(), state.sessions.subscribe());
+    let grant = |credential| Grant { access, credential, keys, sessions, woken: false };
+    if let Some(token) = session_from(req.headers()) {
+        let hash = sha256_hex(&token);
+        if let Some(p) = check_session(&state, hash.clone()).await? {
+            req.extensions_mut().insert(p);
+            req.extensions_mut().insert(grant(Credential::Session(hash)));
+            return Ok(next.run(req).await);
+        }
     }
     if let Some(key) = api_key_from(req.headers()) {
-        let p = check_api_key(&state, &key)?;
+        let hash = sha256_hex(&key);
+        let p = check_api_key(&state, &hash)?;
         if !p.allows(access) {
             return Err(ApiError::forbidden(p.refusal(access)));
         }
         req.extensions_mut().insert(p);
+        req.extensions_mut().insert(grant(Credential::ApiKey(hash)));
         return Ok(next.run(req).await);
     }
     Err(ApiError::unauthorized("authentication required"))
@@ -1352,6 +1478,44 @@ mod tests {
         assert!(verify_password("hunter2", &h));
         assert!(!verify_password("hunter3", &h));
         assert!(!verify_password("x", "not a hash"));
+    }
+
+    /// API-01A: a grant sees every key or session change made after it
+    /// subscribed (so one admitted while a change lands is rechecked), and
+    /// any number of changes wake it once: nothing is queued per change.
+    #[tokio::test]
+    async fn grants_see_changes_after_admission_and_coalesce_them() {
+        let keys = Arc::new(ApiKeys::new(KeySet::default()));
+        let sessions = Sessions::default();
+        let mut grant = Grant {
+            access: Access::Query,
+            credential: Credential::ApiKey(sha256_hex("k")),
+            keys: keys.subscribe(),
+            sessions: sessions.subscribe(),
+            woken: false,
+        };
+        let quiet = Duration::from_millis(50);
+        assert!(!grant.changed());
+        assert!(tokio::time::timeout(quiet, grant.changes()).await.is_err(), "nothing changed yet");
+
+        for i in 0..100 {
+            keys.change(|| Ok(()), |_, ()| {}).await.unwrap();
+            sessions.invalidate(&format!("{i}"));
+        }
+        assert!(grant.changed());
+        tokio::time::timeout(quiet, grant.changes()).await.expect("woken by the changes");
+        assert!(grant.changed(), "still due until it is rechecked");
+
+        // What `reauthorize` does before its check.
+        grant.woken = false;
+        grant.keys.borrow_and_update();
+        grant.sessions.borrow_and_update();
+        assert!(!grant.changed());
+        assert!(tokio::time::timeout(quiet, grant.changes()).await.is_err(), "one wake for all 200 changes");
+        sessions.clear();
+        assert!(grant.changed());
+        sessions.invalidate_user("admin");
+        tokio::time::timeout(quiet, grant.changes()).await.expect("woken again");
     }
 
     #[tokio::test]

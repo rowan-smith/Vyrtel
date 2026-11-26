@@ -119,8 +119,9 @@ Always on for the UI and API. Ingestion follows the ingestion mode
   returns. Each login issues a new session token; the session whose
   cookie the login request carried, if any, ends with it, even when it
   belongs to another account, while sessions on other devices are
-  unaffected. Ending a session refuses its later requests; requests and
-  live-tail streams it already opened are not cancelled. An account keeps at most 32 sessions:
+  unaffected. Ending a session refuses its later requests; requests it
+  already made finish, and its live-tail streams end
+  ([live tail](#live-tail)). An account keeps at most 32 sessions:
   a login beyond that ends its oldest. Changing or resetting an account's
   password, or deactivating it, ends every session of that account at
   once; reactivating it restores none. Starting the
@@ -680,6 +681,30 @@ each new matching event. `dropped` (data: count) when more than 200 events
 matched in one batch, `lagged` (data: skipped batches) when the client fell
 behind — the server never buffers unboundedly for a slow client. Use
 `?signal=traces` for spans.
+
+The live tail is the only long-lived stream in this release (OTLP/gRPC is
+not served). It needs a session or a `query` or `admin` key like any
+query, and keeps needing it while it is open. The server rechecks the
+credential that opened the stream, and only that one, as soon as any API
+key or session changes (logout, a password change or deactivation, a key
+created, rotated or revoked, the ingestion mode) and at least every 5
+seconds:
+
+* Still valid: nothing visible happens. Rotating a key leaves the old key
+  valid until it is revoked, so its streams carry on until then.
+  Ingestion-key changes never end a query stream or let a caller without
+  query credentials open one.
+* No longer valid (the session ended or expired, the key was revoked or
+  expired): the events matched but not yet sent are dropped, the stream
+  sends `unauthorized` with the error a request would get, e.g.
+  `{"error": {"code": "unauthorized", "message": "API key expired"}}`, and
+  ends. A reconnect is refused with `401`, so open a new stream with valid
+  credentials. Revocation and logout take effect at once, expiry within 5
+  seconds.
+* The check could not be made (the session store is unreadable): the
+  stream fails closed, sends `unavailable` (same data shape) with
+  `retry: 2000`, and ends; `EventSource` reconnects, and the reconnect is
+  admitted only once the check works again.
 
 When the server shuts down, each stream sends the events it has already
 matched, then `shutdown` (data: `{}`) with `retry: 2000`, and ends the
