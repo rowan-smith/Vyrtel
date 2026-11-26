@@ -186,9 +186,13 @@ Sign-in checks the username and password it is given; it never needs an
 API key, even while ingestion is protected. Any other path is a static
 web UI asset, public and outside the API. There are no other scopes or
 roles; `auth.enabled` and `auth.ingest_api_key` are refused at startup
-([configuration](configuration.md#ingestion-authentication)). The server
-keeps this table in code (`server::routes::OPERATIONS`) and its tests fail
-if a route is added without an entry.
+([configuration](configuration.md#ingestion-authentication)).
+
+This table is what the server enforces: one authorization layer looks up
+each request's route in it (`server::routes::OPERATIONS`). A method a path
+does not list is checked with that path's scope before it gets `405`, and
+`HEAD` is checked like `GET`. A route missing from the table is refused
+with `403` whatever the credentials, and its tests fail until it is listed.
 
 ### Ingestion mode
 

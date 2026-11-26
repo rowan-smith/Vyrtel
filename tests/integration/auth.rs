@@ -1769,5 +1769,53 @@ async fn every_operation_enforces_its_inventoried_scope() {
     let (_, ingest_key) = create_key(&s, "sender", "ingest").await;
     keys.extend([(Revoked, revoked_key), (IngestKey, ingest_key)]);
     check(true, &[Nothing, Invalid, Revoked, IngestKey, AdminKey, Session], &keys).await;
+
+    // Methods a path does not list are authorized by the path's scope
+    // before they get 405, and HEAD is checked like GET.
+    let client = reqwest::Client::new();
+    for op in ops.iter().filter(|o| o.access != Access::Public) {
+        let url = s.u(&op
+            .path
+            .replace("{signal}", "logs")
+            .replace("{trace_id}", "0")
+            .replace("{panel_id}", "1")
+            .replace("{id}", "1"));
+        let patch = client.patch(&url).send().await.unwrap().status();
+        assert_eq!(patch, 401, "PATCH {} without credentials", op.path);
+        let admin = client.patch(&url).bearer_auth(&s.api_key).send().await.unwrap().status();
+        assert_eq!(admin, 405, "PATCH {} with an admin key", op.path);
+        if op.method == "GET" {
+            assert_eq!(client.head(&url).send().await.unwrap().status(), 401, "HEAD {}", op.path);
+        }
+    }
+    s.stop().await;
+}
+
+/// API-01: the scope comes from the inventory, so a route missing from it
+/// is refused, with or without credentials, rather than served open.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_route_missing_from_the_inventory_is_refused() {
+    use axum::middleware::from_fn_with_state;
+    use tower::ServiceExt;
+
+    let s = TestServer::start().await;
+    let state = s.state().clone();
+    let app = axum::Router::new()
+        .route("/api/v1/unlisted", axum::routing::get(|| async { "served" }))
+        .route("/health", axum::routing::get(|| async { "listed" }))
+        .route_layer(from_fn_with_state(state.clone(), server::auth::authorize))
+        .with_state(state);
+    let get = |path: &str, key: Option<&str>| {
+        let mut r = axum::http::Request::get(path);
+        if let Some(k) = key {
+            r = r.header("authorization", format!("Bearer {k}"));
+        }
+        r.body(axum::body::Body::empty()).unwrap()
+    };
+    for key in [None, Some(s.api_key.as_str())] {
+        let r = app.clone().oneshot(get("/api/v1/unlisted", key)).await.unwrap();
+        assert_eq!(r.status(), 403, "unlisted route with {key:?}");
+    }
+    assert_eq!(app.oneshot(get("/health", None)).await.unwrap().status(), 200, "a listed public route");
     s.stop().await;
 }

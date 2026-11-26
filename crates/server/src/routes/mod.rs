@@ -28,15 +28,24 @@ pub struct Operation {
     pub access: Access,
 }
 
+/// The scope of route `path` (as declared, e.g. `/api/v1/alerts/{id}`),
+/// or `None` for a route that is not in [`OPERATIONS`].
+pub fn access_for(path: &str) -> Option<Access> {
+    OPERATIONS.iter().find(|o| o.path == path).map(|o| o.access)
+}
+
 const fn op(method: &'static str, path: &'static str, access: Access) -> Operation {
     Operation { method, path, access }
 }
 
 /// Every route [`router`] serves, with its scope (docs/api.md#operation-scopes).
-/// A route's group in [`router`] decides its middleware; a test keeps this
-/// list and the router identical, so no route is added without a scope.
-/// Anything else is a static UI asset ([`web::static_handler`]), public
-/// and separate from the API.
+/// This list is what enforces authorization: [`auth::authorize`] looks up
+/// the matched route here, and refuses one that is not listed. All methods
+/// of a path share one scope, so a method the path does not serve is
+/// authorized before it gets its 405, and `HEAD` is checked like `GET`.
+/// A test keeps this list and the router identical. Anything else is a
+/// static UI asset ([`web::static_handler`]), public and separate from the
+/// API.
 pub const OPERATIONS: &[Operation] = {
     use Access::{Admin, Ingest, Public};
     &[
@@ -88,16 +97,15 @@ pub const OPERATIONS: &[Operation] = {
     ]
 };
 
-/// The HTTP API. Each group's middleware enforces its [`Access`]: `ingest`
-/// is [`Access::Ingest`], `api` is [`Access::Admin`], `public` is
-/// [`Access::Public`]. Keep [`OPERATIONS`] in step.
+/// The HTTP API. One [`auth::authorize`] layer covers every route, with
+/// each route's scope from [`OPERATIONS`]; the groups below only decide
+/// request decompression. Keep [`OPERATIONS`] in step.
 pub fn router(state: SharedState) -> Router {
     let ingest = Router::new()
         .route("/api/v1/events", post(ingest::native_events))
         .route("/v1/logs", post(ingest::otlp_logs))
         .route("/v1/traces", post(ingest::otlp_traces))
-        .route("/v1/metrics", post(ingest::otlp_metrics))
-        .route_layer(from_fn_with_state(state.clone(), auth::require_ingest));
+        .route("/v1/metrics", post(ingest::otlp_metrics));
 
     let api = Router::new()
         .route("/api/v1/query/logs", post(query::logs))
@@ -132,8 +140,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/v1/ingest-auth", axum::routing::put(manage::set_ingest_auth))
         .route("/api/v1/alerts", get(alerts::list).post(alerts::create))
         .route("/api/v1/alerts/{id}", get(alerts::get).put(alerts::update).delete(alerts::delete))
-        .route("/api/v1/alerts/{id}/evaluate", post(alerts::evaluate))
-        .route_layer(from_fn_with_state(state.clone(), auth::require_user));
+        .route("/api/v1/alerts/{id}/evaluate", post(alerts::evaluate));
 
     let public = Router::new()
         .route("/health", get(system::health))
@@ -149,6 +156,8 @@ pub fn router(state: SharedState) -> Router {
     Router::new()
         .merge(ingest)
         .merge(rest)
+        // Outermost on every route, so nothing runs for a refused request.
+        .route_layer(from_fn_with_state(state.clone(), auth::authorize))
         .fallback(web::static_handler)
         .layer(SetResponseHeaderLayer::if_not_present(
             header::X_CONTENT_TYPE_OPTIONS,
@@ -159,31 +168,24 @@ pub fn router(state: SharedState) -> Router {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
 
-    /// The operations [`router`] declares, read from this file: each
-    /// `.route(...)` with the methods it chains, scoped by the group (and
-    /// so the middleware) it is declared in.
-    fn declared() -> BTreeSet<(String, String, &'static str)> {
+    /// The `(method, path)` pairs [`router`] declares, read from this
+    /// file: each `.route(...)` with the methods it chains.
+    fn declared() -> BTreeSet<(String, String)> {
         let source = include_str!("mod.rs");
         let body = &source[source.find("pub fn router(").unwrap()..source.find("#[cfg(test)]").unwrap()];
-        let groups = [("let ingest", Access::Ingest), ("let api", Access::Admin), ("let public", Access::Public)];
         let mut found = BTreeSet::new();
-        for (i, (start, access)) in groups.iter().enumerate() {
-            let from = body.find(start).unwrap();
-            let to =
-                groups.get(i + 1).map_or_else(|| body.find("let rest").unwrap(), |(next, _)| body.find(next).unwrap());
-            for route in body[from..to].split(".route(").skip(1) {
-                let route = route.trim_start().strip_prefix('"').expect("a route path literal");
-                let (path, rest) = route.split_once('"').unwrap();
-                let call = rest.split(".route_layer(").next().unwrap();
-                let chained = methods(call);
-                assert!(!chained.is_empty(), "no method found for {path}");
-                for method in chained {
-                    found.insert((method, path.to_string(), access.as_str()));
-                }
+        for route in body.split(".route(").skip(1) {
+            let route = route.trim_start().strip_prefix('"').expect("a route path literal");
+            let (path, rest) = route.split_once('"').unwrap();
+            let call = rest.split(".route").next().unwrap();
+            let chained = methods(call);
+            assert!(!chained.is_empty(), "no method found for {path}");
+            for method in chained {
+                found.insert((method, path.to_string()));
             }
         }
         found
@@ -206,9 +208,22 @@ mod tests {
 
     #[test]
     fn every_route_is_in_the_scope_inventory_and_nothing_else() {
-        let listed: BTreeSet<_> =
-            OPERATIONS.iter().map(|o| (o.method.to_string(), o.path.to_string(), o.access.as_str())).collect();
+        let listed: BTreeSet<_> = OPERATIONS.iter().map(|o| (o.method.to_string(), o.path.to_string())).collect();
         assert_eq!(listed.len(), OPERATIONS.len(), "duplicate operations");
         assert_eq!(declared(), listed);
+    }
+
+    /// [`access_for`] goes by path, so every method of a path must share
+    /// one scope.
+    #[test]
+    fn each_path_has_one_scope() {
+        let mut by_path = BTreeMap::new();
+        for o in OPERATIONS {
+            let first = *by_path.entry(o.path).or_insert(o.access);
+            assert_eq!(first, o.access, "{} {} differs from the path's other methods", o.method, o.path);
+            assert_eq!(access_for(o.path), Some(o.access));
+        }
+        assert_eq!(access_for("/api/v1/unlisted"), None);
+        assert_eq!(access_for("/api/v1/alerts/1"), None, "declared paths, not request paths");
     }
 }

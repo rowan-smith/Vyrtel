@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use axum::extract::{Request, State};
+use axum::extract::{MatchedPath, Request, State};
 use axum::http::{HeaderMap, header};
 use axum::middleware::Next;
 use axum::response::Response;
@@ -38,8 +38,8 @@ pub enum Principal {
 }
 
 /// What an operation needs from its caller. Every route has one, listed in
-/// [`crate::routes::OPERATIONS`] and docs/api.md#operation-scopes; the
-/// middleware for its route group checks it with [`Principal::allows`].
+/// [`crate::routes::OPERATIONS`] and docs/api.md#operation-scopes, and
+/// [`authorize`] enforces it with [`Principal::allows`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
     /// No credentials: health, readiness and the sign-in handshake (which
@@ -1118,13 +1118,25 @@ async fn check_session(state: &SharedState, token: String) -> Result<Option<Prin
     Ok(state.sessions.check(sha256_hex(&token), lookup).await?.map(Principal::User))
 }
 
+/// The one authorization layer of every route: the matched route's scope
+/// comes from [`crate::routes::OPERATIONS`]. A route missing from it is
+/// refused (fail closed) rather than served unauthenticated.
+pub async fn authorize(State(state): State<SharedState>, req: Request, next: Next) -> Result<Response, ApiError> {
+    let path = req.extensions().get::<MatchedPath>().map(|p| p.as_str());
+    match path.and_then(crate::routes::access_for) {
+        Some(Access::Public) => Ok(next.run(req).await),
+        Some(Access::Ingest) => require_ingest(state, req, next).await,
+        Some(Access::Admin) => require_user(state, req, next).await,
+        None => {
+            tracing::error!(route = path.unwrap_or("?"), "route has no operation scope; refused");
+            Err(ApiError::forbidden("this operation has no access scope"))
+        }
+    }
+}
+
 /// [`Access::Ingest`] operations: open, or any valid API key, as one
 /// [`KeySet`] decides; read from memory, never SQLite.
-pub async fn require_ingest(
-    State(state): State<SharedState>,
-    mut req: Request,
-    next: Next,
-) -> Result<Response, ApiError> {
+async fn require_ingest(state: SharedState, mut req: Request, next: Next) -> Result<Response, ApiError> {
     let admitted = {
         let keys = state.api_keys.snapshot();
         let admitted = keys.admit_ingest(req.headers())?;
@@ -1142,11 +1154,7 @@ pub async fn require_ingest(
 /// [`Access::Admin`] operations: an admin session or an admin-scoped key.
 /// A valid credential without that scope gets 403; a missing, invalid,
 /// expired or revoked one 401.
-pub async fn require_user(
-    State(state): State<SharedState>,
-    mut req: Request,
-    next: Next,
-) -> Result<Response, ApiError> {
+async fn require_user(state: SharedState, mut req: Request, next: Next) -> Result<Response, ApiError> {
     if let Some(token) = session_from(req.headers())
         && let Some(p) = check_session(&state, token).await?
     {
