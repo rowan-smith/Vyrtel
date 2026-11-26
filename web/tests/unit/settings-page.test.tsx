@@ -2,8 +2,17 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
 
-import type { ApiKey, IngestAuth } from '../../src/lib/types';
-import { ingestNotice, ingestSummary, modePrompt, revokePrompt, SettingsPage } from '../../src/pages/SettingsPage';
+import type { ApiKey, ApiKeyScope, IngestAuth } from '../../src/lib/types';
+import {
+  expiryFor,
+  ingestNotice,
+  ingestSummary,
+  keyExpired,
+  modePrompt,
+  revokePrompt,
+  rotatePrompt,
+  SettingsPage,
+} from '../../src/pages/SettingsPage';
 import { mockFetch, renderWithRouter } from './helpers';
 
 type Mode = IngestAuth['mode'];
@@ -43,13 +52,90 @@ function server(initialMode: Mode, initial: ApiKey[]) {
   };
 }
 
-const key = (id: number, name: string, scope: 'ingest' | 'admin'): ApiKey => ({
+const key = (id: number, name: string, scope: ApiKeyScope, over: Partial<ApiKey> = {}): ApiKey => ({
   id,
   name,
   prefix: `vyr_${String(id).repeat(8)}`,
   scope,
   createdAt: 0,
   lastUsedAt: null,
+  expiresAt: null,
+  rotatedFrom: null,
+  ...over,
+});
+
+it('rotates a key, showing the new secret once and explaining that the old key still works', async () => {
+  const s = server('automatic', [key(2, 'grafana', 'query')]);
+  const calls = mockFetch({
+    '/api/v1/api-keys': () => s.list(),
+    '/api/v1/api-keys/2/rotate': () => {
+      const k = key(3, 'grafana', 'query', { rotatedFrom: 2 });
+      s.add(k);
+      return { ...k, key: 'vyr_rotated_secret' };
+    },
+  });
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  renderWithRouter(<SettingsPage />, '/settings?tab=keys');
+
+  await userEvent.click(await screen.findByRole('button', { name: 'Rotate' }));
+  expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/keeps working until you revoke it/));
+  expect(calls.some((c) => c.url.endsWith('/rotate'))).toBe(false);
+
+  confirm.mockReturnValue(true);
+  await userEvent.click(screen.getByRole('button', { name: 'Rotate' }));
+  expect(await screen.findByText('vyr_rotated_secret')).toBeInTheDocument();
+  expect(screen.getByTestId('rotation-overlap')).toHaveTextContent(
+    /still works.*then revoke it.*does not update clients/,
+  );
+  await waitFor(() => expect(screen.getAllByText('grafana')).toHaveLength(2));
+  expect(screen.getByText(/replaces vyr_22222222… \(still active\)/)).toBeInTheDocument();
+  expect(calls.find((c) => c.url.endsWith('/rotate'))?.body).toEqual({ expiresAt: null });
+});
+
+it('creates query keys with an expiry and marks expired keys', async () => {
+  const s = server('automatic', [key(4, 'old', 'query', { expiresAt: 1 })]);
+  const calls = mockFetch({
+    '/api/v1/api-keys': (body) => {
+      if (!body) return s.list();
+      const k = key(5, 'grafana', 'query', { expiresAt: (body as { expiresAt: number }).expiresAt });
+      s.add(k);
+      return { ...k, key: 'vyr_query_secret' };
+    },
+  });
+  renderWithRouter(<SettingsPage />, '/settings?tab=keys');
+
+  expect(await screen.findByText('expired')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Rotate' })).toBeNull();
+  await userEvent.type(screen.getByLabelText('Key name'), 'grafana');
+  await userEvent.selectOptions(screen.getByLabelText('Scope'), 'query');
+  await userEvent.selectOptions(screen.getByLabelText('Expiry'), 'Expires in 30 days');
+  const before = Date.now();
+  await userEvent.click(screen.getByRole('button', { name: 'Create key' }));
+  expect(await screen.findByText('vyr_query_secret')).toBeInTheDocument();
+  expect(screen.queryByTestId('rotation-overlap')).toBeNull();
+  const sent = calls.find((c) => c.body !== undefined)?.body as { name: string; scope: string; expiresAt: number };
+  expect([sent.name, sent.scope]).toEqual(['grafana', 'query']);
+  expect(sent.expiresAt - before).toBeGreaterThanOrEqual(30 * 86_400_000 - 1000);
+  expect(sent.expiresAt - Date.now()).toBeLessThanOrEqual(30 * 86_400_000);
+});
+
+it('describes rotation and expiry', () => {
+  const k = key(7, 'collector', 'ingest');
+  expect(rotatePrompt(k)).toMatch(/same name and scope and is shown once/);
+  expect(rotatePrompt(k)).toMatch(/"collector" \(vyr_77777777…\) keeps working until you revoke it/);
+  expect(expiryFor(null)).toBeNull();
+  expect(expiryFor(1, 1000)).toBe(86_401_000);
+  expect(keyExpired(key(1, 'a', 'admin', { expiresAt: 10 }), 10)).toBe(true);
+  expect(keyExpired(key(1, 'a', 'admin', { expiresAt: 11 }), 10)).toBe(false);
+  expect(keyExpired(key(1, 'a', 'admin'), 10)).toBe(false);
+  const protectedOne: IngestAuth = {
+    mode: 'automatic',
+    effective: 'protected',
+    latched: true,
+    ingestKeys: 1,
+    protectedWithoutKeys: false,
+  };
+  expect(revokePrompt(key(1, 'stale', 'ingest', { expiresAt: 1 }), protectedOne)).toBe('Revoke key "stale"?');
 });
 
 it('shows ingestion protected for good once an ingest key exists, and warns before the last revoke', async () => {

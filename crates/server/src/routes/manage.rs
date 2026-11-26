@@ -131,10 +131,24 @@ pub async fn delete_saved_query(State(state): State<SharedState>, ApiPath(id): A
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApiKeyBody {
     pub name: String,
     #[serde(default = "ingest_scope")]
     pub scope: String,
+    /// When the key stops being accepted, in ms since the epoch; never if
+    /// absent or null.
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RotateApiKeyBody {
+    /// When the replacement stops being accepted, in ms since the epoch;
+    /// never if absent or null. The old key keeps its own expiry.
+    #[serde(default)]
+    pub expires_at: Option<i64>,
 }
 
 fn ingest_scope() -> String {
@@ -152,7 +166,23 @@ pub async fn list_api_keys(State(state): State<SharedState>) -> ApiResult<Json<V
 
 /// The plaintext key appears in this response only.
 pub async fn create_api_key(State(state): State<SharedState>, ApiJson(b): ApiJson<ApiKeyBody>) -> ApiResult<Response> {
-    let (rec, key) = auth::create_api_key(&state, &b.name, &b.scope).await?;
+    let created = auth::create_api_key(&state, &b.name, &b.scope, b.expires_at).await?;
+    key_created(created)
+}
+
+/// Create a replacement for key uid=197609(rowan) gid=197609 groups=197609 with the same name and scope. Both
+/// keys stay active until each is revoked; nothing is sent to clients.
+/// The plaintext key appears in this response only.
+pub async fn rotate_api_key(
+    State(state): State<SharedState>,
+    ApiPath(id): ApiPath<i64>,
+    ApiJson(b): ApiJson<RotateApiKeyBody>,
+) -> ApiResult<Response> {
+    let created = auth::rotate_api_key(&state, id, b.expires_at).await?;
+    key_created(created)
+}
+
+fn key_created((rec, key): (metadata::ApiKey, String)) -> ApiResult<Response> {
     let mut v = serde_json::to_value(rec).map_err(ApiError::internal)?;
     v["key"] = Value::String(key);
     Ok((StatusCode::CREATED, Json(v)).into_response())

@@ -950,7 +950,7 @@ async fn main() -> anyhow::Result<()> {
         let created = json_ok(
             client
                 .post(format!("{}/api/v1/api-keys", args.target))
-                .json(&json!({ "name": format!("connload-{}", args.label), "scope": "ingest" })),
+                .json(&json!({ "name": format!("connload-{}-{}", args.label, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())), "scope": "ingest" })),
             "creating the ingest key",
         )
         .await?;

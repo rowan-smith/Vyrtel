@@ -736,7 +736,7 @@ mod tests {
         config.storage.path = dir.path().to_path_buf();
         config.alerts.enabled = false;
         let app = App::build(config).unwrap();
-        let (_, key) = crate::auth::create_api_key(&app.state, "test", "admin").await.unwrap();
+        let (_, key) = crate::auth::create_api_key(&app.state, "test", "admin", None).await.unwrap();
         let bearer = format!("Bearer {key}");
         let request = |method: &str, uri: &str, body: &'static str| {
             Request::builder()

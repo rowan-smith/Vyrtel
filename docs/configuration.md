@@ -103,7 +103,8 @@ Status codes and retry behaviour are in the
 
 #### Ingestion authentication
 
-The UI and API always need a login or an admin key. Ingestion
+The UI and API always need a login or an admin key (or, to read
+telemetry, a query key: [API keys](api.md#api-keys)). Ingestion
 (`/api/v1/events` and OTLP/HTTP `/v1/logs`, `/v1/traces`, `/v1/metrics`)
 follows the **ingestion mode** and a **protection latch**, both kept in the
 metadata database. The mode is not a configuration setting: an admin sets it

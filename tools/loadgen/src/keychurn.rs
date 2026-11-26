@@ -266,7 +266,7 @@ async fn main() -> anyhow::Result<()> {
     let info: Value = admin.get(format!("{}/api/v1/system/info", args.target)).send().await?.json().await?;
     let created: Value = admin
         .post(format!("{}/api/v1/api-keys", args.target))
-        .json(&json!({ "name": format!("keychurn-producers-{}", args.label), "scope": "ingest" }))
+        .json(&json!({ "name": format!("keychurn-producers-{}-{}", args.label, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())), "scope": "ingest" }))
         .send()
         .await?
         .json()

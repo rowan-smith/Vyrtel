@@ -469,6 +469,148 @@ async fn ingest_protection_survives_restarts() {
     s.stop().await;
 }
 
+/// Query one log search with `key`; returns the status.
+async fn query_with(s: &TestServer, key: &str) -> u16 {
+    let r = reqwest::Client::new().post(s.u("/api/v1/query/logs")).bearer_auth(key).json(&json!({"query": ""}));
+    r.send().await.unwrap().status().as_u16()
+}
+
+/// The active keys as `GET /api/v1/api-keys` lists them.
+async fn list_keys(s: &TestServer) -> Vec<Value> {
+    s.get_ok("/api/v1/api-keys").await["apiKeys"].as_array().unwrap().clone()
+}
+
+/// API-02 TC-01: each scope's key is shown once, stored only as a hash,
+/// listed without its secret, and does what its scope allows across a
+/// restart. Rotating a key creates a replacement with the same name and
+/// scope; both are accepted until the old one is revoked, which a restart
+/// never undoes.
+#[tokio::test(flavor = "multi_thread")]
+async fn api_keys_are_created_rotated_and_revoked_for_good() {
+    let s = TestServer::start().await;
+    let (query_id, query_key) = create_key(&s, "grafana", "query").await;
+    let (_, ingest_key) = create_key(&s, "collector", "ingest").await;
+    let (_, admin_key) = create_key(&s, "terraform", "admin").await;
+    for k in [&query_key, &ingest_key, &admin_key] {
+        assert!(k.starts_with("vyr_") && k.len() == 68, "{k}");
+    }
+    let listed = list_keys(&s).await;
+    let text = serde_json::to_string(&listed).unwrap();
+    for k in [&query_key, &ingest_key, &admin_key] {
+        assert!(!text.contains(k.as_str()), "the list never carries a secret");
+        assert!(!text.contains(&server::auth::sha256_hex(k)), "nor its hash");
+    }
+    assert!(listed.iter().all(|k| k.get("key").is_none() && k["expiresAt"].is_null() && k["rotatedFrom"].is_null()));
+    let stored: Vec<String> = {
+        let c = rusqlite::Connection::open(s.data_dir().join("metadata/metadata.db")).unwrap();
+        let mut st = c.prepare("SELECT key_hash FROM api_keys").unwrap();
+        st.query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+    };
+    assert!(stored.contains(&server::auth::sha256_hex(&query_key)));
+    assert!(!stored.iter().any(|h| h.contains("vyr_")), "only hashes are stored");
+
+    // Scopes: a query key reads telemetry and does nothing else.
+    assert_eq!(query_with(&s, &query_key).await, 200);
+    assert_eq!(query_with(&s, &ingest_key).await, 403);
+    assert_eq!(query_with(&s, &admin_key).await, 200);
+    assert_eq!(ingest(&s, Some(&query_key)).await, 403, "a query key may not ingest");
+    assert_eq!(ingest(&s, Some(&ingest_key)).await, 200);
+    let keys_with = |k: &str| reqwest::Client::new().get(s.u("/api/v1/api-keys")).bearer_auth(k.to_string()).send();
+    assert_eq!(keys_with(&query_key).await.unwrap().status(), 403, "a query key may not administer");
+
+    // Rotate: a new secret, shown once; the old key keeps working.
+    let r = s.post(&format!("/api/v1/api-keys/{query_id}/rotate"), json!({})).await;
+    assert_eq!(r.status(), 201);
+    let rotated: Value = r.json().await.unwrap();
+    let new_key = rotated["key"].as_str().unwrap().to_string();
+    assert_ne!(new_key, query_key);
+    assert_eq!((rotated["name"].as_str(), rotated["scope"].as_str()), (Some("grafana"), Some("query")));
+    assert_eq!(rotated["rotatedFrom"], query_id);
+    assert_eq!(query_with(&s, &query_key).await, 200, "the old key stays active until revoked");
+    assert_eq!(query_with(&s, &new_key).await, 200);
+    let names: Vec<_> = list_keys(&s).await.iter().map(|k| k["name"].as_str().unwrap().to_string()).collect();
+    assert_eq!(names.iter().filter(|n| *n == "grafana").count(), 2, "both are listed: {names:?}");
+
+    // Revoke the old one: refused at once, and after a restart.
+    revoke_key(&s, query_id).await;
+    assert_eq!(query_with(&s, &query_key).await, 401);
+    let r = s.post(&format!("/api/v1/api-keys/{query_id}/rotate"), json!({})).await;
+    assert_eq!(r.status(), 404, "a revoked key cannot be rotated");
+    let s = s.restart().await;
+    assert_eq!(query_with(&s, &query_key).await, 401, "a restart does not resurrect a revoked key");
+    assert_eq!(query_with(&s, &new_key).await, 200);
+    assert_eq!(ingest(&s, Some(&ingest_key)).await, 200);
+    assert_eq!(list_keys(&s).await.len(), 5, "grafana (rotated), collector, terraform and one harness key per start");
+    s.stop().await;
+}
+
+/// API-02 TC-04: invalid names, scopes and expiries are refused with a
+/// useful error and store nothing; an expired key is refused, before and
+/// after a restart, until it is revoked.
+#[tokio::test(flavor = "multi_thread")]
+async fn invalid_key_requests_store_nothing_and_expired_keys_are_refused() {
+    let s = TestServer::start().await;
+    let before = list_keys(&s).await;
+    let now = metadata::now_ms();
+    let refused = [
+        (json!({"name": "", "scope": "query"}), 400, "key name is required"),
+        (json!({"name": "   ", "scope": "query"}), 400, "key name is required"),
+        (json!({"name": "x".repeat(101), "scope": "query"}), 400, "at most 100 characters"),
+        (json!({"name": "a\nb", "scope": "query"}), 400, "control characters"),
+        (json!({"name": "k", "scope": "root"}), 400, "scope must be"),
+        (json!({"name": "k", "scope": "query", "expiresAt": now - 1}), 400, "in the future"),
+        (json!({"name": "k", "scope": "query", "expiresAt": 0}), 400, "in the future"),
+        (json!({"name": "k", "scope": "query", "expiresAt": i64::MAX}), 400, "no later than"),
+        (json!({"name": "k", "scope": "query", "expiresAt": "tomorrow"}), 422, ""),
+        (json!({"name": "k", "scope": "query", "expiresAt": 1.5}), 422, ""),
+    ];
+    for (body, status, message) in refused {
+        let r = s.post("/api/v1/api-keys", body.clone()).await;
+        assert_eq!(r.status().as_u16(), status, "{body}");
+        let e: Value = r.json().await.unwrap_or(Value::Null);
+        assert!(e.to_string().contains(message), "{body}: {e}");
+    }
+
+    // Names are unique among active keys, ignoring case; a revoked key's
+    // name is free again.
+    let (id, _) = create_key(&s, "Exporter", "ingest").await;
+    let r = s.post("/api/v1/api-keys", json!({"name": " exporter ", "scope": "admin"})).await;
+    assert_eq!(r.status(), 409);
+    assert!(r.text().await.unwrap().contains("already named"));
+    revoke_key(&s, id).await;
+    create_key(&s, "exporter", "ingest").await;
+    assert_eq!(list_keys(&s).await.len(), before.len() + 1, "no refused request stored a key");
+
+    // Rotation: an unknown key, bad expiry or unknown field stores nothing.
+    let rotate = async |id: i64, body: Value| s.post(&format!("/api/v1/api-keys/{id}/rotate"), body).await;
+    assert_eq!(rotate(999_999, json!({})).await.status(), 404);
+    let (id, _) = create_key(&s, "short-lived", "query").await;
+    assert_eq!(rotate(id, json!({"expiresAt": now - 1})).await.status(), 400);
+    assert_eq!(rotate(id, json!({"expires_at": now + 60_000})).await.status(), 422, "unknown fields are refused");
+    assert_eq!(list_keys(&s).await.len(), before.len() + 2);
+
+    // Expiry: accepted until then, refused after, also after a restart.
+    let expires_at = metadata::now_ms() + 1_500;
+    let r = rotate(id, json!({"expiresAt": expires_at})).await;
+    assert_eq!(r.status(), 201);
+    let rotated: Value = r.json().await.unwrap();
+    assert_eq!(rotated["expiresAt"], expires_at);
+    let key = rotated["key"].as_str().unwrap().to_string();
+    assert_eq!(query_with(&s, &key).await, 200);
+    while metadata::now_ms() <= expires_at {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let r = reqwest::Client::new().post(s.u("/api/v1/query/logs")).bearer_auth(&key).json(&json!({"query": ""}));
+    let r = r.send().await.unwrap();
+    assert_eq!(r.status(), 401);
+    assert!(r.text().await.unwrap().contains("API key expired"));
+    let s = s.restart().await;
+    assert_eq!(query_with(&s, &key).await, 401, "still expired after a restart");
+    let listed = list_keys(&s).await;
+    assert!(listed.iter().any(|k| k["id"] == rotated["id"] && k["expiresAt"] == expires_at), "listed until revoked");
+    s.stop().await;
+}
+
 /// Set the ingestion mode with `client`; returns the status and body.
 async fn set_mode_with(client: &reqwest::Client, s: &TestServer, mode: Value) -> (u16, Value) {
     let r = client.put(s.u("/api/v1/ingest-auth")).json(&json!({ "mode": mode })).send().await.unwrap();
@@ -634,7 +776,7 @@ async fn banner_shows_the_ingestion_policy() {
     };
     let (app, l) = line();
     assert!(l.ends_with("ingestion open until an ingest API key is created"), "{l}");
-    server::auth::create_api_key(&app.state, "ci", "ingest").await.unwrap();
+    server::auth::create_api_key(&app.state, "ci", "ingest", None).await.unwrap();
     app.shutdown().await.unwrap();
     let (app, l) = line();
     assert!(l.ends_with("API keys for ingestion"), "{l}");
@@ -1681,7 +1823,10 @@ enum Credential {
     Nothing,
     Invalid,
     Revoked,
+    /// An admin key past its expiry.
+    Expired,
     IngestKey,
+    QueryKey,
     AdminKey,
     Session,
 }
@@ -1717,12 +1862,13 @@ async fn send_operation(
     r.send().await.unwrap().status().as_u16()
 }
 
-/// API-01: every operation in the published inventory, with every kind of
-/// credential, before and after ingestion is protected. Admin operations
-/// always need credentials: none, an invalid or a revoked key get 401, an
-/// ingest key 403. Protected ingestion takes any valid key and refuses the
-/// rest, a session included, with 401; open ingestion takes everything.
-/// Public operations need nothing, so sign-in works without an API key.
+/// API-01, API-02: every operation in the published inventory, with every
+/// kind of credential, before and after ingestion is protected. Query and
+/// admin operations always need credentials: none, an invalid, a revoked or
+/// an expired key get 401, a key of another scope 403. Protected ingestion
+/// takes ingest and admin keys, refuses a query key with 403 and the rest,
+/// a session included, with 401; open ingestion takes everything. Public
+/// operations need nothing, so sign-in works without an API key.
 #[tokio::test(flavor = "multi_thread")]
 async fn every_operation_enforces_its_inventoried_scope() {
     use Credential::*;
@@ -1732,16 +1878,34 @@ async fn every_operation_enforces_its_inventoried_scope() {
     let cookie = session_cookie(&login(&s, "correct horse").await);
     let mut keys = vec![(Invalid, "vyr_never_issued".to_string()), (AdminKey, s.api_key.clone()), (Session, cookie)];
     let ops = server::routes::OPERATIONS;
-    assert!(ops.iter().any(|o| o.access == Access::Ingest) && ops.iter().any(|o| o.access == Access::Public));
+    for access in [Access::Public, Access::Ingest, Access::Query, Access::Admin] {
+        assert!(ops.iter().any(|o| o.access == access), "no {} operation", access.as_str());
+    }
+
+    // Query and expiring admin keys never protect ingestion.
+    let (_, query_key) = create_key(&s, "dashboards", "query").await;
+    let expires_at = metadata::now_ms() + 1_000;
+    let r = s.post("/api/v1/api-keys", json!({"name": "short", "scope": "admin", "expiresAt": expires_at})).await;
+    assert_eq!(r.status(), 201);
+    let expired: Value = r.json().await.unwrap();
+    assert_eq!(expired["expiresAt"], expires_at);
+    keys.extend([(QueryKey, query_key), (Expired, expired["key"].as_str().unwrap().to_string())]);
+    while metadata::now_ms() <= expires_at {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 
     let expected = |access: Access, protected: bool, c: Credential| -> Option<u16> {
         match (access, c) {
             (Access::Public, _) => None,
             (Access::Ingest, _) if !protected => None,
             (Access::Ingest, IngestKey | AdminKey) => None,
+            (Access::Ingest, QueryKey) => Some(403),
             (Access::Ingest, _) => Some(401),
+            (Access::Query, QueryKey | AdminKey | Session) => None,
+            (Access::Query, IngestKey) => Some(403),
+            (Access::Query, _) => Some(401),
             (Access::Admin, AdminKey | Session) => None,
-            (Access::Admin, IngestKey) => Some(403),
+            (Access::Admin, IngestKey | QueryKey) => Some(403),
             (Access::Admin, _) => Some(401),
         }
     };
@@ -1761,14 +1925,14 @@ async fn every_operation_enforces_its_inventoried_scope() {
     };
 
     // Fresh install: ingestion open, everything else closed.
-    check(false, &[Nothing, Invalid, AdminKey, Session], &keys).await;
+    check(false, &[Nothing, Invalid, Expired, QueryKey, AdminKey, Session], &keys).await;
 
     // The first ingest key protects ingestion at once; a revoked one is refused.
     let (revoked, revoked_key) = create_key(&s, "gone", "ingest").await;
     revoke_key(&s, revoked).await;
     let (_, ingest_key) = create_key(&s, "sender", "ingest").await;
     keys.extend([(Revoked, revoked_key), (IngestKey, ingest_key)]);
-    check(true, &[Nothing, Invalid, Revoked, IngestKey, AdminKey, Session], &keys).await;
+    check(true, &[Nothing, Invalid, Revoked, Expired, IngestKey, QueryKey, AdminKey, Session], &keys).await;
 
     // Methods a path does not list are authorized by the path's scope
     // before they get 405, and HEAD is checked like GET.

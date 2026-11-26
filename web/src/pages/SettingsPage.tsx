@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { api } from '../lib/api';
-import type { ApiKey, IngestAuth, QueryFieldStats, StorageStats, SystemInfo } from '../lib/types';
+import type { ApiKey, ApiKeyScope, IngestAuth, QueryFieldStats, StorageStats, SystemInfo } from '../lib/types';
 import { formatBytes, formatCount, formatDateTime, formatDuration, formatUptime } from '../lib/format';
 import { useRouter } from '../lib/router';
 import { ErrorBanner, Spinner, Stat } from '../components/common';
@@ -182,14 +182,48 @@ export function ingestNotice(a: IngestAuth): string {
   return 'Ingestion requires an API key. It stays protected when keys are revoked, including the last ingest key.';
 }
 
-/** The revoke confirmation; the last ingest key gets the consequences spelt out. */
+/** Whether key `k` has passed its expiry at `now`. */
+export function keyExpired(k: ApiKey, now = Date.now()): boolean {
+  return k.expiresAt !== null && k.expiresAt <= now;
+}
+
+/** The revoke confirmation; the last usable ingest key gets the consequences spelt out. */
 export function revokePrompt(k: ApiKey, a: IngestAuth | null): string {
-  const last = k.scope === 'ingest' && a?.effective === 'protected' && a.ingestKeys === 1;
+  const last = k.scope === 'ingest' && !keyExpired(k) && a?.effective === 'protected' && a.ingestKeys === 1;
   if (!last) return `Revoke key "${k.name}"?`;
   return (
     `Revoke key "${k.name}"? It is the last ingest key. Ingestion stays protected, so senders using it ` +
     'will be refused until you create a replacement key (or switch the ingestion mode to "open").'
   );
+}
+
+/** The rotate confirmation: what a replacement is, and what it does not do. */
+export function rotatePrompt(k: ApiKey): string {
+  return (
+    `Create a replacement for key "${k.name}"? The new key has the same name and scope and is shown once. ` +
+    `"${k.name}" (${k.prefix}…) keeps working until you revoke it: update every client that uses it to the new ` +
+    'key, then revoke the old one. Vyrtel does not update clients for you.'
+  );
+}
+
+/** What each scope may do, for the selector. */
+export const KEY_SCOPES: { scope: ApiKeyScope; help: string }[] = [
+  { scope: 'ingest', help: 'send data only' },
+  { scope: 'query', help: 'search logs, traces and metrics only' },
+  { scope: 'admin', help: 'the whole API' },
+];
+
+/** Expiry choices: days from now, or never. */
+export const KEY_LIFETIMES: { days: number | null; label: string }[] = [
+  { days: null, label: 'Never expires' },
+  { days: 30, label: 'Expires in 30 days' },
+  { days: 90, label: 'Expires in 90 days' },
+  { days: 365, label: 'Expires in 1 year' },
+];
+
+/** The `expiresAt` to send for a lifetime of `days` from `now`. */
+export function expiryFor(days: number | null, now = Date.now()): number | null {
+  return days === null ? null : now + days * 86_400_000;
 }
 
 /** What each ingestion mode does, for the selector. */
@@ -232,8 +266,11 @@ function KeysTab() {
   const [ingestAuth, setIngestAuth] = useState<IngestAuth | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [name, setName] = useState('');
-  const [scope, setScope] = useState<'ingest' | 'admin'>('ingest');
+  const [scope, setScope] = useState<ApiKeyScope>('ingest');
+  const [lifetime, setLifetime] = useState<number | null>(null);
   const [created, setCreated] = useState<ApiKey | null>(null);
+  /** The key `created` replaces, when it came from a rotation. */
+  const [replaced, setReplaced] = useState<ApiKey | null>(null);
   const [savingMode, setSavingMode] = useState(false);
   const load = useCallback(() => {
     api
@@ -249,7 +286,8 @@ function KeysTab() {
     <div>
       <p className="muted">
         Send keys as <code>Authorization: Bearer &lt;key&gt;</code> or <code>X-Api-Key</code>. Ingest keys can only send
-        data; admin keys can use the whole API.
+        data, query keys can only search it, and admin keys can use the whole API. Rotating a key creates a replacement;
+        both work until you revoke the old one.
       </p>
       {ingestAuth !== null && (
         <p className="notice" data-testid="ingest-protection">
@@ -293,8 +331,10 @@ function KeysTab() {
         onSubmit={async (e) => {
           e.preventDefault();
           try {
-            setCreated(await api.createApiKey(name, scope));
+            setCreated(await api.createApiKey(name, scope, expiryFor(lifetime)));
+            setReplaced(null);
             setName('');
+            setError(null);
             load();
           } catch (err) {
             setError(err);
@@ -313,10 +353,25 @@ function KeysTab() {
           className="select"
           aria-label="Scope"
           value={scope}
-          onChange={(e) => setScope(e.target.value as 'ingest' | 'admin')}
+          onChange={(e) => setScope(e.target.value as ApiKeyScope)}
         >
-          <option value="ingest">ingest</option>
-          <option value="admin">admin</option>
+          {KEY_SCOPES.map((s) => (
+            <option key={s.scope} value={s.scope}>
+              {s.scope} — {s.help}
+            </option>
+          ))}
+        </select>
+        <select
+          className="select"
+          aria-label="Expiry"
+          value={lifetime ?? ''}
+          onChange={(e) => setLifetime(e.target.value === '' ? null : Number(e.target.value))}
+        >
+          {KEY_LIFETIMES.map((l) => (
+            <option key={l.label} value={l.days ?? ''}>
+              {l.label}
+            </option>
+          ))}
         </select>
         <button className="btn btn-primary">Create key</button>
       </form>
@@ -324,6 +379,12 @@ function KeysTab() {
         <div className="notice" role="status">
           Copy this key now — it will not be shown again:
           <pre className="mono">{created.key}</pre>
+          {replaced && (
+            <p data-testid="rotation-overlap">
+              It replaces &quot;{replaced.name}&quot; ({replaced.prefix}…), which still works. Update every client that
+              uses the old key, then revoke it. Vyrtel does not update clients for you.
+            </p>
+          )}
         </div>
       )}
       <ErrorBanner error={error} />
@@ -335,18 +396,55 @@ function KeysTab() {
             <th>Scope</th>
             <th>Created</th>
             <th>Last used</th>
+            <th>Expires</th>
             <th />
           </tr>
         </thead>
         <tbody>
           {keys?.map((k) => (
             <tr key={k.id}>
-              <td>{k.name}</td>
+              <td>
+                {k.name}
+                {k.rotatedFrom !== null && keys.some((o) => o.id === k.rotatedFrom) && (
+                  <div className="muted small">
+                    replaces {keys.find((o) => o.id === k.rotatedFrom)?.prefix}… (still active)
+                  </div>
+                )}
+              </td>
               <td className="mono">{k.prefix}…</td>
               <td>{k.scope}</td>
               <td>{formatDateTime(k.createdAt)}</td>
               <td>{k.lastUsedAt ? formatDateTime(k.lastUsedAt) : 'never'}</td>
               <td>
+                {k.expiresAt === null ? (
+                  'never'
+                ) : keyExpired(k) ? (
+                  <span className="badge badge-error" title={formatDateTime(k.expiresAt)}>
+                    expired
+                  </span>
+                ) : (
+                  formatDateTime(k.expiresAt)
+                )}
+              </td>
+              <td>
+                {!keyExpired(k) && (
+                  <button
+                    className="btn btn-small"
+                    onClick={async () => {
+                      if (!window.confirm(rotatePrompt(k))) return;
+                      try {
+                        setCreated(await api.rotateApiKey(k.id, expiryFor(lifetime)));
+                        setReplaced(k);
+                        setError(null);
+                      } catch (err) {
+                        setError(err);
+                      }
+                      load();
+                    }}
+                  >
+                    Rotate
+                  </button>
+                )}{' '}
                 <button
                   className="btn btn-small btn-danger"
                   onClick={async () => {

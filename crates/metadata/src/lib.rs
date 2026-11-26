@@ -20,7 +20,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
@@ -170,6 +170,103 @@ pub struct ApiKey {
     pub scope: String,
     pub created_at: i64,
     pub last_used_at: Option<i64>,
+    /// When the key stops being accepted (ms since the epoch); `None` for
+    /// never. Fixed at creation.
+    pub expires_at: Option<i64>,
+    /// The key this one was created to replace ([`Metadata::rotate_api_key`]).
+    pub rotated_from: Option<i64>,
+}
+
+/// An active key as the server's registry loads it: never its plaintext.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveApiKey {
+    pub id: i64,
+    pub key_hash: String,
+    pub scope: String,
+    pub expires_at: Option<i64>,
+}
+
+/// The scopes a key can have: `ingest` sends telemetry, `query` reads it,
+/// `admin` does everything (docs/api.md#operation-scopes).
+pub const API_KEY_SCOPES: [&str; 3] = ["ingest", "query", "admin"];
+
+/// Longest API key name, in characters (after trimming).
+pub const MAX_API_KEY_NAME_CHARS: usize = 100;
+
+/// Latest expiry a key may be given: the end of year 9999 (ms since the
+/// epoch), so every expiry is a date the UI and clients can show.
+pub const MAX_API_KEY_EXPIRY_MS: i64 = 253_402_300_799_999;
+
+fn normalize_api_key_name(name: &str) -> Result<String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err(MetadataError::Invalid("key name is required".into()));
+    }
+    if n.chars().count() > MAX_API_KEY_NAME_CHARS {
+        return Err(MetadataError::Invalid(format!("key name must be at most {MAX_API_KEY_NAME_CHARS} characters")));
+    }
+    if n.chars().any(char::is_control) {
+        return Err(MetadataError::Invalid("key name must not contain control characters".into()));
+    }
+    Ok(n.to_string())
+}
+
+fn check_api_key_expiry(expires_at: Option<i64>, now: i64) -> Result<()> {
+    match expires_at {
+        Some(at) if at <= now => Err(MetadataError::Invalid("expiresAt must be in the future".into())),
+        Some(at) if at > MAX_API_KEY_EXPIRY_MS => {
+            Err(MetadataError::Invalid("expiresAt must be no later than 9999-12-31T23:59:59.999Z".into()))
+        }
+        _ => Ok(()),
+    }
+}
+
+const API_KEY_COLUMNS: &str = "id, name, prefix, scope, created_at, last_used_at, expires_at, rotated_from";
+
+fn api_key_from_row(r: &Row) -> rusqlite::Result<ApiKey> {
+    Ok(ApiKey {
+        id: r.get("id")?,
+        name: r.get("name")?,
+        prefix: r.get("prefix")?,
+        scope: r.get("scope")?,
+        created_at: r.get("created_at")?,
+        last_used_at: r.get("last_used_at")?,
+        expires_at: r.get("expires_at")?,
+        rotated_from: r.get("rotated_from")?,
+    })
+}
+
+/// A key to insert ([`insert_api_key`]).
+struct NewKey<'a> {
+    name: &'a str,
+    prefix: &'a str,
+    key_hash: &'a str,
+    scope: &'a str,
+    expires_at: Option<i64>,
+    rotated_from: Option<i64>,
+}
+
+/// Insert a key in `tx`; an ingest-scoped one also latches ingestion.
+fn insert_api_key(tx: &rusqlite::Transaction, k: NewKey, now: i64) -> Result<ApiKey> {
+    tx.prepare_cached(
+        "INSERT INTO api_keys (name, prefix, key_hash, scope, created_at, expires_at, rotated_from) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?
+    .execute(params![k.name, k.prefix, k.key_hash, k.scope, now, k.expires_at, k.rotated_from])?;
+    let id = tx.last_insert_rowid();
+    if k.scope == "ingest" {
+        latch_ingest(tx, now)?;
+    }
+    Ok(ApiKey {
+        id,
+        name: k.name.to_string(),
+        prefix: k.prefix.to_string(),
+        scope: k.scope.to_string(),
+        created_at: now,
+        last_used_at: None,
+        expires_at: k.expires_at,
+        rotated_from: k.rotated_from,
+    })
 }
 
 /// A local account.
@@ -648,62 +745,96 @@ impl Metadata {
 
     // ---- API keys -------------------------------------------------------
 
+    /// Store a new key that never expires: [`Metadata::create_api_key_until`].
+    pub fn create_api_key(&self, name: &str, prefix: &str, key_hash: &str, scope: &str) -> Result<ApiKey> {
+        self.create_api_key_until(name, prefix, key_hash, scope, None)
+    }
+
     /// Store a new key. Only the hash is persisted; the caller shows the
     /// plaintext to the user once. An ingest-scoped key also latches
     /// ingestion protection (see [`Metadata::ingest_latched`]) in the same
     /// transaction, so a key that was stored has always latched it.
-    pub fn create_api_key(&self, name: &str, prefix: &str, key_hash: &str, scope: &str) -> Result<ApiKey> {
-        if name.trim().is_empty() {
-            return Err(MetadataError::Invalid("key name is required".into()));
+    ///
+    /// The name is trimmed and must be unique among active keys, ignoring
+    /// ASCII case ([`MetadataError::Conflict`] otherwise); a revoked key's
+    /// name can be used again. `expires_at` (ms since the epoch) must be in
+    /// the future. Nothing is stored when any check fails.
+    pub fn create_api_key_until(
+        &self,
+        name: &str,
+        prefix: &str,
+        key_hash: &str,
+        scope: &str,
+        expires_at: Option<i64>,
+    ) -> Result<ApiKey> {
+        let name = normalize_api_key_name(name)?;
+        if !API_KEY_SCOPES.contains(&scope) {
+            return Err(MetadataError::Invalid("scope must be 'ingest', 'query' or 'admin'".into()));
         }
-        if scope != "ingest" && scope != "admin" {
-            return Err(MetadataError::Invalid("scope must be 'ingest' or 'admin'".into()));
-        }
-        let mut c = self.conn.lock().unwrap();
-        let tx = c.transaction()?;
         let now = now_ms();
-        tx.prepare_cached(
-            "INSERT INTO api_keys (name, prefix, key_hash, scope, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        )?
-        .execute(params![name.trim(), prefix, key_hash, scope, now])?;
-        let id = tx.last_insert_rowid();
-        if scope == "ingest" {
-            latch_ingest(&tx, now)?;
+        check_api_key_expiry(expires_at, now)?;
+        let mut c = self.conn.lock().unwrap();
+        // Immediate: the name check and the insert are one write, which waits
+        // for the write lock instead of failing on another writer.
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let taken: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM api_keys WHERE revoked_at IS NULL AND name = ?1 COLLATE NOCASE)",
+            [&name],
+            |r| r.get(0),
+        )?;
+        if taken {
+            return Err(MetadataError::Conflict(format!(
+                "an active API key is already named {name:?}; choose another name, or rotate that key"
+            )));
         }
+        let new = NewKey { name: &name, prefix, key_hash, scope, expires_at, rotated_from: None };
+        let key = insert_api_key(&tx, new, now)?;
         tx.commit()?;
-        Ok(ApiKey {
-            id,
-            name: name.trim().to_string(),
-            prefix: prefix.to_string(),
-            scope: scope.to_string(),
-            created_at: now,
-            last_used_at: None,
-        })
+        Ok(key)
     }
 
+    /// Store a replacement for active key `id`: same name and scope, a new
+    /// secret, and `expires_at` (ms since the epoch, or `None` for never;
+    /// it must be in the future). Key `id` is left active: both are
+    /// accepted until each is revoked, so clients can move over. Fails with
+    /// [`MetadataError::NotFound`] if `id` is not an active key, storing
+    /// nothing.
+    pub fn rotate_api_key(&self, id: i64, prefix: &str, key_hash: &str, expires_at: Option<i64>) -> Result<ApiKey> {
+        let now = now_ms();
+        check_api_key_expiry(expires_at, now)?;
+        let mut c = self.conn.lock().unwrap();
+        // Immediate: the name check and the insert are one write, which waits
+        // for the write lock instead of failing on another writer.
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (name, scope): (String, String) = tx
+            .query_row("SELECT name, scope FROM api_keys WHERE id = ?1 AND revoked_at IS NULL", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?
+            .ok_or(MetadataError::NotFound)?;
+        let new = NewKey { name: &name, prefix, key_hash, scope: &scope, expires_at, rotated_from: Some(id) };
+        let key = insert_api_key(&tx, new, now)?;
+        tx.commit()?;
+        Ok(key)
+    }
+
+    /// Every active (not revoked) key, expired ones included, by id.
     pub fn list_api_keys(&self) -> Result<Vec<ApiKey>> {
         let c = self.conn.lock().unwrap();
-        let mut st = c.prepare_cached(
-            "SELECT id, name, prefix, scope, created_at, last_used_at FROM api_keys WHERE revoked_at IS NULL ORDER BY id",
-        )?;
-        let rows = st.query_map([], |r| {
-            Ok(ApiKey {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                prefix: r.get(2)?,
-                scope: r.get(3)?,
-                created_at: r.get(4)?,
-                last_used_at: r.get(5)?,
-            })
-        })?;
+        let mut st =
+            c.prepare_cached(&format!("SELECT {API_KEY_COLUMNS} FROM api_keys WHERE revoked_at IS NULL ORDER BY id"))?;
+        let rows = st.query_map([], api_key_from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Every active key as `(id, hash, scope)`.
-    pub fn active_api_keys(&self) -> Result<Vec<(i64, String, String)>> {
+    /// Every active (not revoked) key, expired ones included.
+    pub fn active_api_keys(&self) -> Result<Vec<ActiveApiKey>> {
         let c = self.conn.lock().unwrap();
-        let mut st = c.prepare_cached("SELECT id, key_hash, scope FROM api_keys WHERE revoked_at IS NULL")?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        let mut st =
+            c.prepare_cached("SELECT id, key_hash, scope, expires_at FROM api_keys WHERE revoked_at IS NULL")?;
+        let rows = st.query_map([], |r| {
+            Ok(ActiveApiKey { id: r.get(0)?, key_hash: r.get(1)?, scope: r.get(2)?, expires_at: r.get(3)? })
+        })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 

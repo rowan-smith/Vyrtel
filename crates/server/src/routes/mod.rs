@@ -47,23 +47,23 @@ const fn op(method: &'static str, path: &'static str, access: Access) -> Operati
 /// static UI asset ([`web::static_handler`]), public and separate from the
 /// API.
 pub const OPERATIONS: &[Operation] = {
-    use Access::{Admin, Ingest, Public};
+    use Access::{Admin, Ingest, Public, Query};
     &[
         op("POST", "/api/v1/events", Ingest),
         op("POST", "/v1/logs", Ingest),
         op("POST", "/v1/traces", Ingest),
         op("POST", "/v1/metrics", Ingest),
-        op("POST", "/api/v1/query/logs", Admin),
-        op("POST", "/api/v1/query/traces", Admin),
-        op("POST", "/api/v1/query/metrics", Admin),
-        op("POST", "/api/v1/query/{signal}/events", Admin),
-        op("POST", "/api/v1/query/{signal}/histogram", Admin),
-        op("POST", "/api/v1/query/{signal}/count", Admin),
-        op("POST", "/api/v1/query/{signal}/facets", Admin),
-        op("GET", "/api/v1/live/logs", Admin),
-        op("GET", "/api/v1/traces", Admin),
-        op("GET", "/api/v1/traces/{trace_id}", Admin),
-        op("GET", "/api/v1/metrics", Admin),
+        op("POST", "/api/v1/query/logs", Query),
+        op("POST", "/api/v1/query/traces", Query),
+        op("POST", "/api/v1/query/metrics", Query),
+        op("POST", "/api/v1/query/{signal}/events", Query),
+        op("POST", "/api/v1/query/{signal}/histogram", Query),
+        op("POST", "/api/v1/query/{signal}/count", Query),
+        op("POST", "/api/v1/query/{signal}/facets", Query),
+        op("GET", "/api/v1/live/logs", Query),
+        op("GET", "/api/v1/traces", Query),
+        op("GET", "/api/v1/traces/{trace_id}", Query),
+        op("GET", "/api/v1/metrics", Query),
         op("GET", "/api/v1/system/info", Admin),
         op("GET", "/api/v1/system/storage", Admin),
         op("GET", "/api/v1/system/query-stats", Admin),
@@ -82,6 +82,7 @@ pub const OPERATIONS: &[Operation] = {
         op("GET", "/api/v1/api-keys", Admin),
         op("POST", "/api/v1/api-keys", Admin),
         op("DELETE", "/api/v1/api-keys/{id}", Admin),
+        op("POST", "/api/v1/api-keys/{id}/rotate", Admin),
         op("PUT", "/api/v1/ingest-auth", Admin),
         op("GET", "/api/v1/alerts", Admin),
         op("POST", "/api/v1/alerts", Admin),
@@ -137,6 +138,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/v1/saved-queries/{id}", axum::routing::delete(manage::delete_saved_query))
         .route("/api/v1/api-keys", get(manage::list_api_keys).post(manage::create_api_key))
         .route("/api/v1/api-keys/{id}", axum::routing::delete(manage::revoke_api_key))
+        .route("/api/v1/api-keys/{id}/rotate", post(manage::rotate_api_key))
         .route("/api/v1/ingest-auth", axum::routing::put(manage::set_ingest_auth))
         .route("/api/v1/alerts", get(alerts::list).post(alerts::create))
         .route("/api/v1/alerts/{id}", get(alerts::get).put(alerts::update).delete(alerts::delete))

@@ -704,6 +704,14 @@ AUTOINCREMENT` (never reused; a trigger refuses any change to it),
 `updated_at` and the id rules; layout 0.1.2 had only `id`, `username`,
 `password_hash` and `created_at`.
 
+API keys are the `api_keys` table: `name` (non-empty; unique among active
+keys, checked on write), `prefix`, `key_hash` (the SHA-256 of the key,
+never the key), `scope` (`ingest`, `query` or `admin`), `created_at`,
+`last_used_at` and `revoked_at` (ms since the epoch; a revoked row is
+kept), `expires_at` (ms since the epoch, after `created_at`, or NULL for
+never) and `rotated_from` (the key a rotation replaced, or NULL). Layout
+0.1.3 introduced the `query` scope, `expires_at` and `rotated_from`.
+
 ### Layout changes
 
 A start changes a data directory in this order, after the read-only
