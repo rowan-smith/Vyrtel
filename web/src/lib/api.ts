@@ -3,6 +3,7 @@ import type {
   Alert,
   AlertInput,
   ApiKey,
+  ApiKeyScope,
   AuthState,
   Dashboard,
   Diagnostics,
@@ -149,7 +150,10 @@ export const api = {
   evaluateAlert: (id: number) => post<Alert>(`/api/v1/alerts/${id}/evaluate`, {}),
 
   apiKeys: () => get<{ apiKeys: ApiKey[]; ingestAuth: IngestAuth }>('/api/v1/api-keys'),
-  createApiKey: (name: string, scope: 'ingest' | 'admin') => post<ApiKey>('/api/v1/api-keys', { name, scope }),
+  createApiKey: (name: string, scope: ApiKeyScope, expiresAt: number | null = null) =>
+    post<ApiKey>('/api/v1/api-keys', { name, scope, expiresAt }),
+  rotateApiKey: (id: number, expiresAt: number | null = null) =>
+    post<ApiKey>(`/api/v1/api-keys/${id}/rotate`, { expiresAt }),
   revokeApiKey: (id: number) => del(`/api/v1/api-keys/${id}`),
   setIngestAuthMode: (mode: IngestAuth['mode']) => put<{ ingestAuth: IngestAuth }>('/api/v1/ingest-auth', { mode }),
 

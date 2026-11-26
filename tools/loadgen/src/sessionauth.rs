@@ -424,7 +424,7 @@ async fn main() -> anyhow::Result<()> {
     let key_for = |scope: &str| {
         admin
             .post(base("/api/v1/api-keys"))
-            .json(&json!({ "name": format!("sessionauth-{scope}-{}", args.label), "scope": scope }))
+            .json(&json!({ "name": format!("sessionauth-{scope}-{}-{}", args.label, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())), "scope": scope }))
     };
     let admin_key =
         json_ok(key_for("admin"), "creating the admin key").await?["key"].as_str().context("no admin key")?.to_string();

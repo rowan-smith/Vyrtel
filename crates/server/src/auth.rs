@@ -6,7 +6,8 @@
 //! * Sessions are random tokens in an HttpOnly, SameSite=Lax cookie; only
 //!   their SHA-256 is stored.
 //!
-//! The UI and API always need a session or an admin key. Whether ingestion
+//! The UI and API always need a session or an admin key (a query key may
+//! also read telemetry: [`Access::Query`]). Whether ingestion
 //! needs an API key follows the ingestion mode (Settings) and the latch
 //! that the first ingest-scoped key sets for good (see [`KeySet`]). The
 //! boundaries are kept small so OIDC etc. can be added later as another way
@@ -45,11 +46,15 @@ pub enum Access {
     /// No credentials: health, readiness and the sign-in handshake (which
     /// checks the credentials it is given, not an API key).
     Public,
-    /// Ingestion: open or any valid API key, as the ingestion policy
-    /// ([`KeySet`]) decides.
+    /// Ingestion: open or an ingest- or admin-scoped API key, as the
+    /// ingestion policy ([`KeySet`]) decides.
     Ingest,
-    /// Queries, settings and administration: always an admin session or an
-    /// admin-scoped key, whatever the ingestion policy.
+    /// Reading telemetry (queries, live tail, traces, metrics): always a
+    /// session or a query- or admin-scoped key, whatever the ingestion
+    /// policy.
+    Query,
+    /// Settings and administration: always a session or an admin-scoped
+    /// key.
     Admin,
 }
 
@@ -58,6 +63,7 @@ impl Access {
         match self {
             Access::Public => "public",
             Access::Ingest => "ingest",
+            Access::Query => "query",
             Access::Admin => "admin",
         }
     }
@@ -65,16 +71,29 @@ impl Access {
 
 impl Principal {
     /// Whether this caller may perform an operation that needs `access`.
-    /// An admin key may also ingest; an ingest key may do nothing else.
-    /// Ingestion never reads the session cookie, so a signed-in browser
-    /// cannot be made to send data.
+    /// An admin key may do everything; an ingest key may only ingest and a
+    /// query key only read telemetry. A scope this build does not know
+    /// allows nothing. Ingestion never reads the session cookie, so a
+    /// signed-in browser cannot be made to send data.
     pub fn allows(&self, access: Access) -> bool {
         match (self, access) {
             (_, Access::Public) => true,
-            (Principal::User(_), Access::Admin) => true,
+            (Principal::User(_), Access::Query | Access::Admin) => true,
             (Principal::User(_), Access::Ingest) => false,
             (Principal::ApiKey { scope, .. }, Access::Ingest) => scope == "ingest" || scope == "admin",
+            (Principal::ApiKey { scope, .. }, Access::Query) => scope == "query" || scope == "admin",
             (Principal::ApiKey { scope, .. }, Access::Admin) => scope == "admin",
+        }
+    }
+
+    /// Why this caller is refused an operation that needs `access`, which
+    /// it does not [`allow`](Principal::allows): the 403 message.
+    fn refusal(&self, access: Access) -> &'static str {
+        match (self, access) {
+            (_, Access::Ingest) => "this API key may not ingest data",
+            (Principal::ApiKey { scope, .. }, _) if scope == "ingest" => "this API key may only ingest data",
+            (Principal::ApiKey { scope, .. }, _) if scope == "query" => "this API key may only query data",
+            _ => "this API key may not perform this operation",
         }
     }
 }
@@ -214,9 +233,26 @@ pub fn session_from(headers: &HeaderMap) -> Option<String> {
 /// Further changes are refused with 503 instead of queueing without bound.
 pub const MAX_PENDING_KEY_CHANGES: usize = 16;
 
-/// The active API keys at one moment, by SHA-256 of the key with its id
-/// and scope, with the ingestion policy they are checked under. Never
-/// changed once published: a change builds the next set (see [`ApiKeys`]).
+/// One active key in a [`KeySet`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeyEntry {
+    id: i64,
+    scope: String,
+    /// When it stops being accepted (ms since the epoch), if ever.
+    expires_at: Option<i64>,
+}
+
+impl KeyEntry {
+    fn expired(&self, now: i64) -> bool {
+        self.expires_at.is_some_and(|at| at <= now)
+    }
+}
+
+/// The active (not revoked) API keys at one moment, by SHA-256 of the key
+/// with its id, scope and expiry, with the ingestion policy they are
+/// checked under. An expired key stays in the set, refused, until it is
+/// revoked. Never changed once published: a change builds the next set
+/// (see [`ApiKeys`]).
 ///
 /// Whether ingestion is protected depends on the ingestion mode and the
 /// latch, never on how many keys are active:
@@ -234,8 +270,7 @@ pub const MAX_PENDING_KEY_CHANGES: usize = 16;
 /// can send. Admin keys never latch it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct KeySet {
-    by_hash: HashMap<String, (i64, String)>,
-    ingest: usize,
+    by_hash: HashMap<String, KeyEntry>,
     latched: bool,
     mode: IngestAuthMode,
 }
@@ -265,15 +300,16 @@ impl KeySet {
         self.latched
     }
 
-    /// Active ingest-scoped keys.
+    /// Ingest-scoped keys that are neither revoked nor expired.
     pub fn ingest_keys(&self) -> usize {
-        self.ingest
+        let now = metadata::now_ms();
+        self.by_hash.values().filter(|k| k.scope == "ingest" && !k.expired(now)).count()
     }
 
-    /// Ingestion is protected, but no ingest-scoped key exists to send with
-    /// (an admin key still can).
+    /// Ingestion is protected, but no usable ingest-scoped key exists to
+    /// send with (an admin key still can).
     pub fn protected_without_keys(&self) -> bool {
-        self.ingest_protected() && self.ingest == 0
+        self.ingest_protected() && self.ingest_keys() == 0
     }
 
     /// The ingestion policy, for Settings and `/api/v1/system/info`. Holds
@@ -283,7 +319,7 @@ impl KeySet {
             "mode": self.mode.as_str(),
             "effective": if self.ingest_protected() { "protected" } else { "open" },
             "latched": self.latched,
-            "ingestKeys": self.ingest,
+            "ingestKeys": self.ingest_keys(),
             "protectedWithoutKeys": self.protected_without_keys(),
         })
     }
@@ -307,7 +343,7 @@ impl KeySet {
                  created, or the ingestion mode is set to \"required\" (Settings → API keys)"
                     .into(),
             ),
-            (_, true) if self.ingest == 0 => Some(
+            (_, true) if self.ingest_keys() == 0 => Some(
                 "ingestion requires an API key but no ingest-scoped key exists: only admin keys can send until one \
                  is created (Settings → API keys)"
                     .into(),
@@ -341,7 +377,7 @@ impl KeySet {
                 );
             }
         }
-        if self.ingest > 0 && next.protected_without_keys() {
+        if self.ingest_keys() > 0 && next.protected_without_keys() {
             tracing::warn!(
                 "the last ingest-scoped API key was revoked: ingestion stays protected, so senders are refused \
                  unless they use an admin key, until a replacement ingest key is created"
@@ -349,9 +385,13 @@ impl KeySet {
         }
     }
 
-    /// The `(id, scope)` of an active key.
+    /// The `(id, scope)` of an active key that has not expired.
     fn find(&self, key: &str) -> Result<(i64, String), ApiError> {
-        self.by_hash.get(&sha256_hex(key)).cloned().ok_or_else(|| ApiError::unauthorized("invalid API key"))
+        let k = self.by_hash.get(&sha256_hex(key)).ok_or_else(|| ApiError::unauthorized("invalid API key"))?;
+        if k.expired(metadata::now_ms()) {
+            return Err(ApiError::unauthorized("API key expired"));
+        }
+        Ok((k.id, k.scope.clone()))
     }
 
     /// Whether an ingest request with `headers` is admitted: `None` while
@@ -369,38 +409,37 @@ impl KeySet {
         let (id, scope) = self.find(&key)?;
         let p = Principal::ApiKey { id, scope };
         if !p.allows(Access::Ingest) {
-            return Err(ApiError::forbidden("this API key may not ingest data"));
+            return Err(ApiError::forbidden(p.refusal(Access::Ingest)));
         }
         Ok(Some(p))
     }
 
-    /// Accept a key; an ingest-scoped one also latches protection.
+    /// Accept a key that never expires: [`KeySet::add_until`].
+    #[cfg(test)]
     fn add(&mut self, hash: String, id: i64, scope: String) {
+        self.add_until(hash, id, scope, None);
+    }
+
+    /// Accept a key until `expires_at`; an ingest-scoped one also latches
+    /// protection.
+    fn add_until(&mut self, hash: String, id: i64, scope: String, expires_at: Option<i64>) {
         if scope == "ingest" {
-            self.ingest += 1;
             self.latched = true;
         }
-        self.by_hash.insert(hash, (id, scope));
+        self.by_hash.insert(hash, KeyEntry { id, scope, expires_at });
     }
 
     fn ids(&self) -> HashSet<i64> {
-        self.by_hash.values().map(|(id, _)| *id).collect()
+        self.by_hash.values().map(|k| k.id).collect()
     }
 
     fn has_id(&self, id: i64) -> bool {
-        self.by_hash.values().any(|(key_id, _)| *key_id == id)
+        self.by_hash.values().any(|k| k.id == id)
     }
 
     /// Stop accepting a key. The latch is kept.
     fn remove(&mut self, id: i64) {
-        let Self { by_hash, ingest, .. } = self;
-        by_hash.retain(|_, (key_id, scope)| {
-            let revoked = *key_id == id;
-            if revoked && scope == "ingest" {
-                *ingest -= 1;
-            }
-            !revoked
-        });
+        self.by_hash.retain(|_, k| k.id != id);
     }
 }
 
@@ -448,8 +487,8 @@ impl ApiKeys {
     /// does not start) if the mode or latch cannot be read for certain.
     pub fn load(m: &Arc<Metadata>) -> metadata::Result<Self> {
         let mut keys = KeySet::new(m.ingest_auth_mode()?, m.ingest_latched()?);
-        for (id, hash, scope) in m.active_api_keys()? {
-            keys.add(hash, id, scope);
+        for k in m.active_api_keys()? {
+            keys.add_until(k.key_hash, k.id, k.scope, k.expires_at);
         }
         let m = m.clone();
         Ok(Self::with_touch_writer(keys, Arc::new(move |ids: &[i64]| m.touch_api_keys(ids))))
@@ -511,17 +550,42 @@ impl ApiKeys {
         .await?
     }
 
-    /// See [`create_api_key`].
+    /// A key that never expires: [`ApiKeys::create_until`].
     pub async fn create(
         self: &Arc<Self>,
         m: &Arc<Metadata>,
         name: &str,
         scope: &str,
     ) -> ApiResult<(metadata::ApiKey, String)> {
+        self.create_until(m, name, scope, None).await
+    }
+
+    /// See [`create_api_key`].
+    pub async fn create_until(
+        self: &Arc<Self>,
+        m: &Arc<Metadata>,
+        name: &str,
+        scope: &str,
+        expires_at: Option<i64>,
+    ) -> ApiResult<(metadata::ApiKey, String)> {
         let (key, prefix, hash) = new_api_key();
         let (m, name, scope, stored) = (m.clone(), name.to_string(), scope.to_string(), hash.clone());
-        let write = move || m.create_api_key(&name, &prefix, &stored, &scope);
-        let rec = self.change(write, |keys, rec| keys.add(hash, rec.id, rec.scope.clone())).await?;
+        let write = move || m.create_api_key_until(&name, &prefix, &stored, &scope, expires_at);
+        let rec = self.change(write, accept(hash)).await?;
+        Ok((rec, key))
+    }
+
+    /// See [`rotate_api_key`].
+    pub async fn rotate(
+        self: &Arc<Self>,
+        m: &Arc<Metadata>,
+        id: i64,
+        expires_at: Option<i64>,
+    ) -> ApiResult<(metadata::ApiKey, String)> {
+        let (key, prefix, hash) = new_api_key();
+        let (m, stored) = (m.clone(), hash.clone());
+        let write = move || m.rotate_api_key(id, &prefix, &stored, expires_at);
+        let rec = self.change(write, accept(hash)).await?;
         Ok((rec, key))
     }
 
@@ -798,11 +862,33 @@ impl Drop for TouchWriter {
     }
 }
 
-/// Store a new key and accept it; an ingest key also latches ingestion
-/// protection, durably, before this returns. Returns the record and the
-/// plaintext key.
-pub async fn create_api_key(state: &AppState, name: &str, scope: &str) -> ApiResult<(metadata::ApiKey, String)> {
-    state.api_keys.create(&state.metadata, name, scope).await
+/// The registry change that accepts the stored key `rec`, whose hash is
+/// `hash`.
+fn accept(hash: String) -> impl FnOnce(&mut KeySet, &metadata::ApiKey) + Send + 'static {
+    move |keys, rec| keys.add_until(hash, rec.id, rec.scope.clone(), rec.expires_at)
+}
+
+/// Store a new key and accept it until `expires_at` (ms since the epoch;
+/// `None` for never); an ingest key also latches ingestion protection,
+/// durably, before this returns. Returns the record and the plaintext key.
+pub async fn create_api_key(
+    state: &AppState,
+    name: &str,
+    scope: &str,
+    expires_at: Option<i64>,
+) -> ApiResult<(metadata::ApiKey, String)> {
+    state.api_keys.create_until(&state.metadata, name, scope, expires_at).await
+}
+
+/// Store a replacement for active key `id` (same name and scope, a new
+/// secret, accepted until `expires_at`) and accept it. Key `id` stays
+/// active until it is revoked. Returns the record and the plaintext key.
+pub async fn rotate_api_key(
+    state: &AppState,
+    id: i64,
+    expires_at: Option<i64>,
+) -> ApiResult<(metadata::ApiKey, String)> {
+    state.api_keys.rotate(&state.metadata, id, expires_at).await
 }
 
 /// Set the ingestion mode: stored (and synced) first, then in force for
@@ -1126,7 +1212,7 @@ pub async fn authorize(State(state): State<SharedState>, req: Request, next: Nex
     match path.and_then(crate::routes::access_for) {
         Some(Access::Public) => Ok(next.run(req).await),
         Some(Access::Ingest) => require_ingest(state, req, next).await,
-        Some(Access::Admin) => require_user(state, req, next).await,
+        Some(access @ (Access::Query | Access::Admin)) => require_user(state, access, req, next).await,
         None => {
             tracing::error!(route = path.unwrap_or("?"), "route has no operation scope; refused");
             Err(ApiError::forbidden("this operation has no access scope"))
@@ -1151,10 +1237,10 @@ async fn require_ingest(state: SharedState, mut req: Request, next: Next) -> Res
     Ok(next.run(req).await)
 }
 
-/// [`Access::Admin`] operations: an admin session or an admin-scoped key.
-/// A valid credential without that scope gets 403; a missing, invalid,
-/// expired or revoked one 401.
-async fn require_user(state: SharedState, mut req: Request, next: Next) -> Result<Response, ApiError> {
+/// [`Access::Query`] and [`Access::Admin`] operations: a session, or a key
+/// whose scope [allows](Principal::allows) `access`. A valid key without
+/// that scope gets 403; a missing, invalid, expired or revoked one 401.
+async fn require_user(state: SharedState, access: Access, mut req: Request, next: Next) -> Result<Response, ApiError> {
     if let Some(token) = session_from(req.headers())
         && let Some(p) = check_session(&state, token).await?
     {
@@ -1163,8 +1249,8 @@ async fn require_user(state: SharedState, mut req: Request, next: Next) -> Resul
     }
     if let Some(key) = api_key_from(req.headers()) {
         let p = check_api_key(&state, &key)?;
-        if !p.allows(Access::Admin) {
-            return Err(ApiError::forbidden("this API key may only ingest data"));
+        if !p.allows(access) {
+            return Err(ApiError::forbidden(p.refusal(access)));
         }
         req.extensions_mut().insert(p);
         return Ok(next.run(req).await);
@@ -1306,24 +1392,50 @@ mod tests {
         assert_eq!(session_from(&h).as_deref(), Some("tok"));
     }
 
-    /// API-01: the documented scopes and nothing more. Sessions and admin
-    /// keys administer; admin and ingest keys ingest; an ingest key
-    /// administers nothing, a session never ingests, and a scope that is
-    /// neither (never stored, see `Metadata::create_api_key`) gets nothing
-    /// that needs credentials.
+    /// API-01, API-02: the documented scopes and nothing more. Sessions and
+    /// admin keys query and administer; admin and ingest keys ingest; a
+    /// query key only queries, an ingest key only ingests, a session never
+    /// ingests, and a scope that is none of these (never stored, see
+    /// `Metadata::create_api_key`) gets nothing that needs credentials.
     #[test]
     fn principals_get_exactly_their_documented_scopes() {
         let user = Principal::User("admin".into());
-        let (admin, ingest, other) = (key_principal(1, "admin"), key_principal(2, "ingest"), key_principal(3, "read"));
+        let (admin, ingest, query) = (key_principal(1, "admin"), key_principal(2, "ingest"), key_principal(3, "query"));
+        let other = key_principal(4, "read");
         for (p, wants) in [
-            (&user, [true, false, true]),
-            (&admin, [true, true, true]),
-            (&ingest, [true, true, false]),
-            (&other, [true, false, false]),
+            (&user, [true, false, true, true]),
+            (&admin, [true, true, true, true]),
+            (&ingest, [true, true, false, false]),
+            (&query, [true, false, true, false]),
+            (&other, [true, false, false, false]),
         ] {
-            let got = [Access::Public, Access::Ingest, Access::Admin].map(|a| p.allows(a));
+            let got = [Access::Public, Access::Ingest, Access::Query, Access::Admin].map(|a| p.allows(a));
             assert_eq!(got, wants, "{p:?}");
         }
+        assert_eq!(ingest.refusal(Access::Query), "this API key may only ingest data");
+        assert_eq!(query.refusal(Access::Admin), "this API key may only query data");
+        assert_eq!(query.refusal(Access::Ingest), "this API key may not ingest data");
+    }
+
+    // API-02: an expired key is refused (401) wherever it is sent, and stops
+    // counting as an ingest key, but stays in the set until it is revoked.
+    #[test]
+    fn expired_keys_are_refused_until_revoked() {
+        let now = metadata::now_ms();
+        let mut k = KeySet::new(IngestAuthMode::Automatic, false);
+        k.add_until(sha256_hex("vyr_old"), 1, "ingest".into(), Some(now - 1));
+        k.add_until(sha256_hex("vyr_new"), 2, "ingest".into(), Some(now + 60_000));
+        assert!(k.latched() && k.ingest_protected());
+        assert_eq!(k.ingest_keys(), 1, "only the unexpired key counts");
+        let e = k.find("vyr_old").unwrap_err();
+        assert_eq!((e.status.as_u16(), e.message.as_str()), (401, "API key expired"));
+        assert_eq!(k.admit_ingest(&bearer("vyr_old")).unwrap_err().status.as_u16(), 401);
+        assert_eq!(k.find("vyr_new").unwrap(), (2, "ingest".to_string()));
+        k.remove(2);
+        assert!(k.protected_without_keys(), "an expired key does not keep ingestion sendable");
+        assert!(k.has_id(1));
+        k.remove(1);
+        assert!(k.by_hash.is_empty() && k.ingest_protected());
     }
 
     // AUTH-250: only ingest keys latch protection, and nothing unlatches it.

@@ -11,15 +11,21 @@ CREATE TABLE settings (
     updated_at INTEGER NOT NULL
 );
 
+-- API keys. Only the SHA-256 of a key is stored. `expires_at` (ms since
+-- the epoch, NULL for never) is fixed when the key is created. A key made
+-- by rotating another names it in `rotated_from`; both stay active until
+-- each is revoked. A revoked row is kept (`revoked_at`) and never reused.
 CREATE TABLE api_keys (
     id           INTEGER PRIMARY KEY,
-    name         TEXT NOT NULL,
+    name         TEXT NOT NULL CHECK (name <> ''),
     prefix       TEXT NOT NULL,
     key_hash     TEXT NOT NULL UNIQUE,
-    scope        TEXT NOT NULL CHECK (scope IN ('ingest', 'admin')),
+    scope        TEXT NOT NULL CHECK (scope IN ('ingest', 'query', 'admin')),
     created_at   INTEGER NOT NULL,
     last_used_at INTEGER,
-    revoked_at   INTEGER
+    revoked_at   INTEGER,
+    expires_at   INTEGER CHECK (expires_at IS NULL OR expires_at > created_at),
+    rotated_from INTEGER REFERENCES api_keys(id)
 );
 
 -- Local accounts. `id` is the account's identity: AUTOINCREMENT never

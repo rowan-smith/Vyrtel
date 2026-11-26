@@ -188,15 +188,16 @@ request path, though an uncached session lookup can wait behind one.
 ### API keys and request authentication
 
 Authenticating a request by API key never reads SQLite. The active API keys (hash →
-id and scope, the count of ingest-scoped keys, the ingestion protection
+id, scope and expiry, the ingestion protection
 latch and the ingestion mode, which together decide whether ingestion is
 protected) are loaded at startup into an immutable `KeySet`
 (`crates/server/src/auth.rs`). Requests clone an `Arc` to the current set
 under a read lock that is only ever held for a pointer copy or swap, and
-take every part of one decision (is ingestion open, is this key valid,
-which scope) from that one set.
+take every part of one decision (is ingestion open, is this key valid
+and unexpired, which scope) from that one set. An expired key stays in the
+set, refused, until it is revoked, so expiry needs no change of its own.
 
-A create or revoke (`ApiKeys::change`):
+A create, rotate or revoke (`ApiKeys::change`):
 
 1. takes one of 16 change permits, or fails with `503` at once;
 2. waits on an async mutex for its turn, holding no thread (dropping the

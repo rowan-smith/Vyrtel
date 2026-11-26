@@ -350,10 +350,12 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&args.out).with_context(|| format!("creating {}", args.out.display()))?;
     let admin = login(&args).await?;
     let mut keys = Vec::with_capacity(args.active_keys);
+    // Active key names are unique, so a rerun on the same instance needs new ones.
+    let run = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     for i in 0..args.active_keys {
         let created: Value = admin
             .post(format!("{}/api/v1/api-keys", args.target))
-            .json(&json!({ "name": format!("keytouch-{}-{i}", args.label), "scope": "ingest" }))
+            .json(&json!({ "name": format!("keytouch-{}-{run}-{i}", args.label), "scope": "ingest" }))
             .send()
             .await?
             .json()

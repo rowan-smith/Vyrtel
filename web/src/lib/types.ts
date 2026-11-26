@@ -218,13 +218,20 @@ export interface IngestAuth {
   protectedWithoutKeys: boolean;
 }
 
+/** What a key may do: `ingest` sends data, `query` reads it, `admin` does everything. */
+export type ApiKeyScope = 'ingest' | 'query' | 'admin';
+
 export interface ApiKey {
   id: number;
   name: string;
   prefix: string;
-  scope: 'ingest' | 'admin';
+  scope: ApiKeyScope;
   createdAt: number;
   lastUsedAt: number | null;
+  /** When the key stops being accepted (ms since the epoch); `null` for never. */
+  expiresAt: number | null;
+  /** The key this one was created to replace, which stays active until revoked. */
+  rotatedFrom: number | null;
   key?: string;
 }
 

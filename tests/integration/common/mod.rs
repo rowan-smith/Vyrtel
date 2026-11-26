@@ -77,7 +77,7 @@ impl TestServer {
             }
         };
         let state = app.state.clone();
-        let (_, api_key) = server::auth::create_api_key(&state, HARNESS_KEY, "admin").await.unwrap();
+        let (_, api_key) = server::auth::create_api_key(&state, &harness_key_name(), "admin", None).await.unwrap();
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (tx, rx) = oneshot::channel::<()>();
@@ -377,9 +377,16 @@ pub struct Process {
     stderr: tempfile::NamedTempFile,
 }
 
-/// Name of the admin keys the harness creates; [`verification`] leaves
-/// them out, since every start adds one.
+/// Name prefix of the admin keys the harness creates; [`verification`]
+/// leaves them out, since every start adds one.
 pub const HARNESS_KEY: &str = "tests";
+
+/// A name for the next harness key: active key names are unique, and every
+/// start adds a key.
+pub fn harness_key_name() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!("{HARNESS_KEY}-{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
 
 /// The admin password [`Process::start`] gives the server.
 pub const PROCESS_PASSWORD: &str = "process admin";
@@ -392,7 +399,7 @@ impl Process {
             [("VYRTEL_AUTH_ADMIN_PASSWORD", PROCESS_PASSWORD)].into_iter().chain(env.iter().copied()).collect();
         let mut p = Process::start_binary(Path::new(env!("CARGO_BIN_EXE_vyrtel")), dir, &env).await;
         let a = Admin::login_at(&p.client, &p.url, PROCESS_PASSWORD).await;
-        let key = a.post("/api/v1/api-keys", json!({"name": HARNESS_KEY, "scope": "admin"})).await;
+        let key = a.post("/api/v1/api-keys", json!({"name": harness_key_name(), "scope": "admin"})).await;
         p.api_key = key["key"].as_str().unwrap().to_string();
         p.client = authorized_client("authorization", &format!("Bearer {}", p.api_key));
         p
@@ -620,7 +627,7 @@ pub async fn verification(a: &Admin) -> Value {
             .collect::<Vec<_>>(),
         "savedQueries": a.get("/api/v1/saved-queries").await,
         "apiKeys": a.get("/api/v1/api-keys").await["apiKeys"].as_array().unwrap().iter()
-            .filter(|k| k["name"] != HARNESS_KEY)
+            .filter(|k| !k["name"].as_str().is_some_and(|n| n.starts_with(HARNESS_KEY)))
             .map(|k| json!({"id": k["id"], "name": k["name"], "prefix": k["prefix"], "scope": k["scope"]}))
             .collect::<Vec<_>>(),
     })

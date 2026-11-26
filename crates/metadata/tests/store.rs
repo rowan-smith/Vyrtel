@@ -272,13 +272,77 @@ fn alert_state_transitions_and_history() {
 fn api_keys_store_hashes_only() {
     let m = Metadata::open_in_memory().unwrap();
     let k = m.create_api_key("ci", "vyr_abcd", "hash-1", "ingest").unwrap();
-    assert_eq!(m.active_api_keys().unwrap(), vec![(k.id, "hash-1".to_string(), "ingest".to_string())]);
+    let active = ActiveApiKey { id: k.id, key_hash: "hash-1".into(), scope: "ingest".into(), expires_at: None };
+    assert_eq!(m.active_api_keys().unwrap(), vec![active]);
     m.touch_api_key(k.id).unwrap();
     assert!(m.list_api_keys().unwrap()[0].last_used_at.is_some());
     m.revoke_api_key(k.id).unwrap();
     assert_eq!(m.active_api_keys().unwrap(), vec![]);
     assert_eq!(m.count_api_keys().unwrap(), 0);
     assert!(matches!(m.revoke_api_key(k.id), Err(MetadataError::NotFound)));
+}
+
+// API-02: names are trimmed, bounded and unique among active keys (ignoring
+// case); scopes and expiries are checked; a refused create stores nothing.
+#[test]
+fn api_key_names_scopes_and_expiries_are_checked() {
+    let m = Metadata::open_in_memory().unwrap();
+    let later = metadata::now_ms() + 60_000;
+    let q = m.create_api_key_until("  Grafana ", "vyr_q", "hash-q", "query", Some(later)).unwrap();
+    assert_eq!(
+        (q.name.as_str(), q.scope.as_str(), q.expires_at, q.rotated_from),
+        ("Grafana", "query", Some(later), None)
+    );
+    assert_eq!(m.list_api_keys().unwrap(), vec![q.clone()]);
+    assert!(!m.ingest_latched().unwrap(), "a query key never latches");
+
+    let conflict = m.create_api_key("grafana", "vyr_d", "hash-d", "admin");
+    assert!(matches!(conflict, Err(MetadataError::Conflict(ref e)) if e.contains("already named \"grafana\"")));
+    for name in ["", " ", "a\u{7}b", &"x".repeat(MAX_API_KEY_NAME_CHARS + 1)] {
+        assert!(
+            matches!(m.create_api_key(name, "vyr_x", "hash-x", "query"), Err(MetadataError::Invalid(_))),
+            "{name:?}"
+        );
+    }
+    m.create_api_key(&"é".repeat(MAX_API_KEY_NAME_CHARS), "vyr_l", "hash-l", "query").unwrap();
+    for at in [0, metadata::now_ms() - 1, MAX_API_KEY_EXPIRY_MS + 1] {
+        let r = m.create_api_key_until("expiring", "vyr_e", "hash-e", "query", Some(at));
+        assert!(matches!(r, Err(MetadataError::Invalid(_))), "{at}");
+    }
+    assert!(matches!(m.create_api_key("k", "p", "h", "read"), Err(MetadataError::Invalid(_))));
+    assert_eq!(m.list_api_keys().unwrap().len(), 2, "nothing refused was stored");
+
+    m.revoke_api_key(q.id).unwrap();
+    m.create_api_key("grafana", "vyr_g", "hash-g", "query").unwrap();
+}
+
+// API-02: rotating stores a replacement with the same name and scope and
+// leaves the original active; only an active key can be rotated, and a
+// failed rotation stores nothing.
+#[test]
+fn rotating_an_api_key_keeps_the_original_until_it_is_revoked() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("metadata.db");
+    let m = Metadata::open(&path).unwrap();
+    let old = m.create_api_key("collector", "vyr_o", "hash-o", "ingest").unwrap();
+    let later = metadata::now_ms() + 60_000;
+    let new = m.rotate_api_key(old.id, "vyr_n", "hash-n", Some(later)).unwrap();
+    assert_eq!((new.name.as_str(), new.scope.as_str()), ("collector", "ingest"));
+    assert_eq!((new.rotated_from, new.expires_at), (Some(old.id), Some(later)));
+    let hashes: Vec<_> = m.active_api_keys().unwrap().into_iter().map(|k| k.key_hash).collect();
+    assert_eq!(hashes.len(), 2);
+    assert!(hashes.contains(&"hash-o".to_string()) && hashes.contains(&"hash-n".to_string()), "both are active");
+
+    assert!(matches!(m.rotate_api_key(old.id, "vyr_x", "hash-x", Some(0)), Err(MetadataError::Invalid(_))));
+    assert!(m.rotate_api_key(old.id, "vyr_x", "hash-n", None).is_err(), "a duplicate hash fails");
+    assert!(matches!(m.rotate_api_key(999, "vyr_x", "hash-x", None), Err(MetadataError::NotFound)));
+    m.revoke_api_key(old.id).unwrap();
+    assert!(matches!(m.rotate_api_key(old.id, "vyr_x", "hash-x", None), Err(MetadataError::NotFound)));
+    assert_eq!(m.list_api_keys().unwrap(), vec![new.clone()], "no failed rotation stored a key");
+
+    drop(m);
+    let m = Metadata::open(&path).unwrap();
+    assert_eq!(m.list_api_keys().unwrap(), vec![new], "revoked stays revoked across reopening");
 }
 
 // AUTH-PERF-03: last-used writes are batched, and never touch revoked keys.

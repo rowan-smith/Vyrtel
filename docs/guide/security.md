@@ -6,13 +6,14 @@ Vyrtel has three things to secure: the UI and API, ingestion, and the connection
 flowchart LR
     P[Producers] -- "ingest key<br/>(once protected)" --> V[vyrtel :8080]
     U[People] -- "admin login" --> V
-    T[Tools] -- "admin key" --> V
+    T[Tools] -- "query or admin key" --> V
     R[Reverse proxy<br/>TLS] -.-> V
 ```
 
 ## The UI and API
 
-The UI and API always need a login or an admin API key.
+The UI and API always need a login or an admin API key. Reading telemetry also accepts a
+query API key.
 
 - On first start, Vyrtel creates the `admin` user and prints a random password once, in the
   startup banner on standard output. It is never logged or shown again, and there is no default
@@ -55,7 +56,13 @@ change that:
 | `open` | Accepts every request without a key. Use only on a trusted network |
 
 Admin keys can do everything an ingest key can, and also call the rest of the API. Give
-producers ingest keys only.
+producers ingest keys only, and tools that only read data (dashboards, scripts) query keys.
+
+Give each integration its own named key, and an expiry where it fits (Settings → API keys).
+To replace a key, use **Rotate**: it creates a new key with the same name and scope and shows it
+once, while the old key keeps working. Update every client that uses the old key, then revoke
+it; Vyrtel does not update clients or revoke the old key for you. A revoked or expired key is
+refused at once and after restarts.
 
 ## TLS
 

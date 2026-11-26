@@ -85,7 +85,8 @@ Always on for the UI and API. Ingestion follows the ingestion mode
   mode, is open on a fresh install, so producers can send without setup.
   Creating the first ingest key protects it at once and for good: from
   then on it requires a valid API key (`Authorization: Bearer <key>` or
-  `X-Api-Key: <key>`; ingest or admin scope), with a `401` otherwise.
+  `X-Api-Key: <key>`; ingest or admin scope), with a `401` otherwise
+  (`403` for a query key).
   Revoking keys, the last ingest key included, and restarting never open it
   again: with no ingest key left, only an admin key or a replacement ingest
   key can send. Admin keys never protect it. The `required` mode
@@ -100,8 +101,11 @@ Always on for the UI and API. Ingestion follows the ingestion mode
 
   `mode` is the ingestion mode; `effective` is
   `protected` or `open`; `latched` is whether an ingest key has ever been created;
+  `ingestKeys` counts ingest keys that are neither revoked nor expired;
   `protectedWithoutKeys` means senders without an admin key are refused
   until an ingest key is created.
+* **Reading telemetry** (queries, live tail, traces and metrics) requires
+  the session cookie or an API key with scope `query` or `admin`.
 * **Everything else under `/api/v1`** requires either the admin session
   cookie (from `/api/v1/auth/login`) or an API key with scope `admin`.
   A valid session is used first; a missing, empty or unknown cookie falls
@@ -147,24 +151,25 @@ a password or its hash.
 
 ### Operation scopes
 
-Every endpoint needs one of three scopes. Each request is checked against
+Every endpoint needs one of four scopes. Each request is checked against
 one snapshot of the keys and the ingestion policy, so a key change or mode
 change never applies half way through a request.
 
 | Scope    | Accepted credentials                                                        | Missing, invalid, expired or revoked | Valid but not enough  |
 | -------- | --------------------------------------------------------------------------- | ------------------------------------ | --------------------- |
 | `public` | none needed                                                                 | —                                    | —                     |
-| `ingest` | none while ingestion is open; otherwise an API key with scope `ingest` or `admin` (a session cookie is never read) | `401` (only while protected) | — |
-| `admin`  | the session cookie, or an API key with scope `admin`                       | `401`                                | `403` (an ingest key) |
+| `ingest` | none while ingestion is open; otherwise an API key with scope `ingest` or `admin` (a session cookie is never read) | `401` (only while protected) | `403` (a query key, only while protected) |
+| `query`  | the session cookie, or an API key with scope `query` or `admin`            | `401`                                | `403` (an ingest key) |
+| `admin`  | the session cookie, or an API key with scope `admin`                       | `401`                                | `403` (an ingest or query key) |
 
 | Method | Path                                          | Scope    |
 | ------ | --------------------------------------------- | -------- |
 | POST   | `/api/v1/events`                              | `ingest` |
 | POST   | `/v1/logs`, `/v1/traces`, `/v1/metrics`       | `ingest` |
-| POST   | `/api/v1/query/logs`, `/api/v1/query/traces`, `/api/v1/query/metrics` | `admin` |
-| POST   | `/api/v1/query/{signal}/events`, `…/histogram`, `…/count`, `…/facets` | `admin` |
-| GET    | `/api/v1/live/logs`                           | `admin`  |
-| GET    | `/api/v1/traces`, `/api/v1/traces/{trace_id}`, `/api/v1/metrics` | `admin` |
+| POST   | `/api/v1/query/logs`, `/api/v1/query/traces`, `/api/v1/query/metrics` | `query` |
+| POST   | `/api/v1/query/{signal}/events`, `…/histogram`, `…/count`, `…/facets` | `query` |
+| GET    | `/api/v1/live/logs`                           | `query`  |
+| GET    | `/api/v1/traces`, `/api/v1/traces/{trace_id}`, `/api/v1/metrics` | `query` |
 | GET    | `/api/v1/system/info`, `…/storage`, `…/query-stats`, `…/config` | `admin` |
 | GET, POST | `/api/v1/dashboards`                       | `admin`  |
 | GET, PUT, DELETE | `/api/v1/dashboards/{id}`           | `admin`  |
@@ -174,6 +179,7 @@ change never applies half way through a request.
 | DELETE | `/api/v1/saved-queries/{id}`                  | `admin`  |
 | GET, POST | `/api/v1/api-keys`                         | `admin`  |
 | DELETE | `/api/v1/api-keys/{id}`                       | `admin`  |
+| POST   | `/api/v1/api-keys/{id}/rotate`                | `admin`  |
 | PUT    | `/api/v1/ingest-auth`                         | `admin`  |
 | GET, POST | `/api/v1/alerts`                           | `admin`  |
 | GET, PUT, DELETE | `/api/v1/alerts/{id}`               | `admin`  |
@@ -184,8 +190,9 @@ change never applies half way through a request.
 
 Sign-in checks the username and password it is given; it never needs an
 API key, even while ingestion is protected. Any other path is a static
-web UI asset, public and outside the API. There are no other scopes or
-roles; `auth.enabled` and `auth.ingest_api_key` are refused at startup
+web UI asset, public and outside the API. Dashboards, saved queries,
+alerts and system information are `admin`, so a query key cannot read or
+change them. There are no other scopes or roles; `auth.enabled` and `auth.ingest_api_key` are refused at startup
 ([configuration](configuration.md#ingestion-authentication)).
 
 This table is what the server enforces: one authorization layer looks up
@@ -214,16 +221,63 @@ ingest key latched.
 
 ```
 GET    /api/v1/api-keys
-POST   /api/v1/api-keys        {"name": "checkout", "scope": "ingest" | "admin"}
-DELETE /api/v1/api-keys/{id}
+POST   /api/v1/api-keys              {"name": "checkout", "scope": "ingest" | "query" | "admin",
+                                      "expiresAt": 1767225600000}            → 201
+POST   /api/v1/api-keys/{id}/rotate  {"expiresAt": 1767225600000}            → 201
+DELETE /api/v1/api-keys/{id}                                                 → 204
 ```
 
-The create response contains the plaintext `key` — it is shown once; only a
-SHA-256 hash is stored.
+| Scope    | May                                                              |
+| -------- | ---------------------------------------------------------------- |
+| `ingest` | send data (the default when `scope` is left out)                 |
+| `query`  | search and stream logs, traces and metrics; nothing else         |
+| `admin`  | everything, ingestion included                                   |
+
+The create and rotate responses contain the plaintext `key`; it is shown
+once, and only a SHA-256 hash is stored. Neither the key nor its hash is in
+any other response:
+
+```json
+{"id": 7, "name": "checkout", "prefix": "vyr_3f9a1c2b", "scope": "ingest",
+ "createdAt": 1764100000000, "lastUsedAt": null, "expiresAt": 1767225600000,
+ "rotatedFrom": null, "key": "vyr_<redacted>"}
+```
+
+* **Names** are trimmed, 1–100 characters without control characters, and
+  unique among active keys, ignoring ASCII case: a second `checkout` gets
+  `409 conflict` (`an active API key is already named "checkout"`). A
+  revoked key's name can be used again.
+* **Expiry**: `expiresAt` is optional, in milliseconds since the epoch, and
+  must be in the future and no later than 9999-12-31; absent or `null`
+  means the key never expires. It cannot be changed later. From then on the
+  key gets `401 API key expired` everywhere, before and after restarts, and
+  stops counting as an ingest key (`ingestKeys`); it stays in the list,
+  marked by its `expiresAt`, until it is revoked. Expiring the last ingest
+  key leaves ingestion protected, as revoking it does.
+* **Rotate** creates a replacement for an active key: the same name and
+  scope, a new secret, and the `expiresAt` in the request (absent or `null`
+  for never; the old key keeps its own). `rotatedFrom` names the key it
+  replaces. **Both keys stay active**: the old one keeps working until you
+  revoke it, and nothing expires or revokes it automatically. Vyrtel does
+  not hand the new key to clients; update each client, then revoke the old
+  key. Rotating a revoked or unknown key gets `404`, and an expired one
+  `409` (an expiry is final: revoke it and create a new key); any field
+  other than `expiresAt` gets `422`. The body is required (`{}` for no
+  expiry). Expiry uses the server's clock.
+* **Revoke** stops a key at once and for good: a restart never accepts it
+  again, and it cannot be rotated.
+* Refused requests (`400` for an invalid name, scope or expiry; `409`;
+  `422` for a malformed body) store nothing.
+
+Upgrading: keys keep their format (`vyr_` and 64 hex digits) and are
+checked the same way. Layout 0.1.3 adds the `query` scope and the
+`expires_at` and `rotated_from` columns to the metadata database; a 0.1.2
+data directory is refused by this layout, as with every other 0.1.3
+change ([storage format](storage-format.md#metadata-database)).
 
 Key changes take effect when their response is sent:
 
-* A `201` create or `204` revoke has been committed to the metadata store
+* A `201` create or rotate, or a `204` revoke, has been committed to the metadata store
   and synced to disk (it survives a power failure),
   and every request that starts afterwards is authenticated against it
   (including the first ingest key's protection, which is committed with
@@ -231,8 +285,9 @@ Key changes take effect when their response is sent:
   already admitted before the change finish as admitted; nothing is
   cancelled retroactively.
 * A failed change (`4xx`/`5xx`) changes nothing: a create that fails
-  accepts no key and does not protect ingestion; a revoke that fails leaves
-  the key working. Retry it. A revoke never unprotects ingestion.
+  accepts no key and does not protect ingestion; a rotate that fails
+  creates no replacement; a revoke that fails leaves the key working. Retry
+  it. A revoke never unprotects ingestion.
 * Changes run one at a time. While 16 are already waiting or running,
   another gets `503 unavailable` with `Retry-After: 1`. A change whose
   client disconnects before its turn is dropped; once its write has started
