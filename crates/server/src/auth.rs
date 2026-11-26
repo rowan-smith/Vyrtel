@@ -31,10 +31,52 @@ use crate::state::{AppState, SharedState};
 
 pub const SESSION_COOKIE: &str = "vyrtel_session";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Principal {
     User(String),
     ApiKey { id: i64, scope: String },
+}
+
+/// What an operation needs from its caller. Every route has one, listed in
+/// [`crate::routes::OPERATIONS`] and docs/api.md#operation-scopes; the
+/// middleware for its route group checks it with [`Principal::allows`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// No credentials: health, readiness and the sign-in handshake (which
+    /// checks the credentials it is given, not an API key).
+    Public,
+    /// Ingestion: open or any valid API key, as the ingestion policy
+    /// ([`KeySet`]) decides.
+    Ingest,
+    /// Queries, settings and administration: always an admin session or an
+    /// admin-scoped key, whatever the ingestion policy.
+    Admin,
+}
+
+impl Access {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Access::Public => "public",
+            Access::Ingest => "ingest",
+            Access::Admin => "admin",
+        }
+    }
+}
+
+impl Principal {
+    /// Whether this caller may perform an operation that needs `access`.
+    /// An admin key may also ingest; an ingest key may do nothing else.
+    /// Ingestion never reads the session cookie, so a signed-in browser
+    /// cannot be made to send data.
+    pub fn allows(&self, access: Access) -> bool {
+        match (self, access) {
+            (_, Access::Public) => true,
+            (Principal::User(_), Access::Admin) => true,
+            (Principal::User(_), Access::Ingest) => false,
+            (Principal::ApiKey { scope, .. }, Access::Ingest) => scope == "ingest" || scope == "admin",
+            (Principal::ApiKey { scope, .. }, Access::Admin) => scope == "admin",
+        }
+    }
 }
 
 pub fn sha256_hex(s: &str) -> String {
@@ -313,9 +355,9 @@ impl KeySet {
     }
 
     /// Whether an ingest request with `headers` is admitted: `None` while
-    /// ingestion is open, else the key's `(id, scope)`. Policy and key come
+    /// ingestion is open, else the key's principal. Policy and key come
     /// from this one set, so a key change between them cannot mix two.
-    fn admit_ingest(&self, headers: &HeaderMap) -> Result<Option<(i64, String)>, ApiError> {
+    fn admit_ingest(&self, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
         if !self.ingest_protected() {
             return Ok(None);
         }
@@ -324,7 +366,12 @@ impl KeySet {
                 "missing API key; send 'Authorization: Bearer <key>' or 'X-Api-Key: <key>'",
             ));
         };
-        self.find(&key).map(Some)
+        let (id, scope) = self.find(&key)?;
+        let p = Principal::ApiKey { id, scope };
+        if !p.allows(Access::Ingest) {
+            return Err(ApiError::forbidden("this API key may not ingest data"));
+        }
+        Ok(Some(p))
     }
 
     /// Accept a key; an ingest-scoped one also latches protection.
@@ -1071,8 +1118,8 @@ async fn check_session(state: &SharedState, token: String) -> Result<Option<Prin
     Ok(state.sessions.check(sha256_hex(&token), lookup).await?.map(Principal::User))
 }
 
-/// Ingestion endpoints: open, or any valid API key, as one [`KeySet`]
-/// decides; read from memory, never SQLite.
+/// [`Access::Ingest`] operations: open, or any valid API key, as one
+/// [`KeySet`] decides; read from memory, never SQLite.
 pub async fn require_ingest(
     State(state): State<SharedState>,
     mut req: Request,
@@ -1081,18 +1128,20 @@ pub async fn require_ingest(
     let admitted = {
         let keys = state.api_keys.snapshot();
         let admitted = keys.admit_ingest(req.headers())?;
-        if let Some((id, _)) = &admitted {
+        if let Some(Principal::ApiKey { id, .. }) = &admitted {
             state.api_keys.touch(*id, &keys);
         }
         admitted
     };
-    if let Some((id, scope)) = admitted {
-        req.extensions_mut().insert(Principal::ApiKey { id, scope });
+    if let Some(p) = admitted {
+        req.extensions_mut().insert(p);
     }
     Ok(next.run(req).await)
 }
 
-/// Everything else under /api/v1: an admin session or an admin-scoped key.
+/// [`Access::Admin`] operations: an admin session or an admin-scoped key.
+/// A valid credential without that scope gets 403; a missing, invalid,
+/// expired or revoked one 401.
 pub async fn require_user(
     State(state): State<SharedState>,
     mut req: Request,
@@ -1106,9 +1155,7 @@ pub async fn require_user(
     }
     if let Some(key) = api_key_from(req.headers()) {
         let p = check_api_key(&state, &key)?;
-        if let Principal::ApiKey { scope, .. } = &p
-            && scope != "admin"
-        {
+        if !p.allows(Access::Admin) {
             return Err(ApiError::forbidden("this API key may only ingest data"));
         }
         req.extensions_mut().insert(p);
@@ -1251,6 +1298,26 @@ mod tests {
         assert_eq!(session_from(&h).as_deref(), Some("tok"));
     }
 
+    /// API-01: the documented scopes and nothing more. Sessions and admin
+    /// keys administer; admin and ingest keys ingest; an ingest key
+    /// administers nothing, a session never ingests, and a scope that is
+    /// neither (never stored, see `Metadata::create_api_key`) gets nothing
+    /// that needs credentials.
+    #[test]
+    fn principals_get_exactly_their_documented_scopes() {
+        let user = Principal::User("admin".into());
+        let (admin, ingest, other) = (key_principal(1, "admin"), key_principal(2, "ingest"), key_principal(3, "read"));
+        for (p, wants) in [
+            (&user, [true, false, true]),
+            (&admin, [true, true, true]),
+            (&ingest, [true, true, false]),
+            (&other, [true, false, false]),
+        ] {
+            let got = [Access::Public, Access::Ingest, Access::Admin].map(|a| p.allows(a));
+            assert_eq!(got, wants, "{p:?}");
+        }
+    }
+
     // AUTH-250: only ingest keys latch protection, and nothing unlatches it.
     #[test]
     fn only_ingest_keys_latch_protection() {
@@ -1335,8 +1402,8 @@ mod tests {
                 let got = set.admit_ingest(&headers);
                 match (protected, sends) {
                     (false, _) => assert_eq!(got.unwrap(), None, "{case} {sends:?}: open checks no key"),
-                    (true, Ingest) if active => assert_eq!(got.unwrap(), Some((3, "ingest".into())), "{case}"),
-                    (true, Admin) => assert_eq!(got.unwrap(), Some((1, "admin".into())), "{case}"),
+                    (true, Ingest) if active => assert_eq!(got.unwrap(), Some(key_principal(3, "ingest")), "{case}"),
+                    (true, Admin) => assert_eq!(got.unwrap(), Some(key_principal(1, "admin")), "{case}"),
                     (true, _) => assert_eq!(got.unwrap_err().status.as_u16(), 401, "{case} {sends:?}"),
                 }
             }
@@ -1372,6 +1439,10 @@ mod tests {
 
     use metadata::MetadataError;
     use tokio::sync::oneshot;
+
+    fn key_principal(id: i64, scope: &str) -> Principal {
+        Principal::ApiKey { id, scope: scope.into() }
+    }
 
     fn bearer(key: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
@@ -1492,7 +1563,7 @@ mod tests {
 
         let (rec, key) = keys.create(&m, "ci", "ingest").await.unwrap();
         keys.change(disk, move |k, ()| k.remove(rec.id)).await.unwrap_err();
-        assert_eq!(keys.snapshot().admit_ingest(&bearer(&key)).unwrap(), Some((rec.id, "ingest".into())));
+        assert_eq!(keys.snapshot().admit_ingest(&bearer(&key)).unwrap(), Some(key_principal(rec.id, "ingest")));
         assert!(keys.snapshot().admit_ingest(&HeaderMap::new()).is_err(), "ingestion stays protected");
         assert_eq!(keys.revoke(&m, rec.id + 100).await.unwrap_err().status.as_u16(), 404);
         assert_matches_store(&keys, &m);
@@ -1807,7 +1878,7 @@ mod tests {
                             other => assert!(set.ingest_protected() && other.is_err()),
                         }
                         let any_valid = set.admit_ingest(&bearer(&admin)).unwrap();
-                        assert!(any_valid.is_none() || any_valid == Some((admin_rec.id, "admin".into())));
+                        assert!(any_valid.is_none() || any_valid == Some(key_principal(admin_rec.id, "admin")));
                         checks += 1;
                         tokio::task::yield_now().await;
                     }
