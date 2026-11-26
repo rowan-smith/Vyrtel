@@ -218,6 +218,16 @@ export interface IngestAuth {
   protectedWithoutKeys: boolean;
 }
 
+/**
+ * The effective authentication of each kind of operation, derived by the server from the ingestion
+ * mode and latch. Queries and administration always need a login or a scoped API key.
+ */
+export interface Authentication {
+  query: 'required';
+  admin: 'required';
+  ingest: IngestAuth['effective'];
+}
+
 /** What a key may do: `ingest` sends data, `query` reads it, `admin` does everything. */
 export type ApiKeyScope = 'ingest' | 'query' | 'admin';
 
@@ -317,6 +327,7 @@ export interface SystemInfo {
   dataDir: string;
   durability: string;
   ingestAuth: IngestAuth;
+  authentication: Authentication;
   eventCounts: { logs: number; traces: number; metrics: number };
   storageBytes: number;
   memory: {

@@ -96,14 +96,19 @@ Always on for the UI and API. Ingestion follows the ingestion mode
 
   ```json
   "ingestAuth": {"mode": "automatic", "effective": "protected", "latched": true,
-                 "ingestKeys": 0, "protectedWithoutKeys": true}
+                 "ingestKeys": 0, "protectedWithoutKeys": true},
+  "authentication": {"query": "required", "admin": "required", "ingest": "protected"}
   ```
 
   `mode` is the ingestion mode; `effective` is
   `protected` or `open`; `latched` is whether an ingest key has ever been created;
   `ingestKeys` counts ingest keys that are neither revoked nor expired;
   `protectedWithoutKeys` means senders without an admin key are refused
-  until an ingest key is created.
+  until an ingest key is created. `authentication` is the effective state
+  of each kind of operation, derived from the mode and latch on every
+  request and never stored: `query` and `admin` are always `required`,
+  whatever the ingestion mode, and `ingest` equals `ingestAuth.effective`.
+  `PUT /api/v1/ingest-auth` returns both. Neither holds key material.
 * **Reading telemetry** (queries, live tail, traces and metrics) requires
   the session cookie or an API key with scope `query` or `admin`.
 * **Everything else under `/api/v1`** requires either the admin session

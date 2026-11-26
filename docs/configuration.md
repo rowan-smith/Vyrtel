@@ -147,8 +147,10 @@ environment variable to disagree with it.
   of the API still need a login or an admin key.
 * **Status.** `GET /api/v1/system/info` and `GET /api/v1/api-keys` report
   `ingestAuth` (`mode`, `effective` `protected`/`open`,
-  `latched`, `ingestKeys` and `protectedWithoutKeys`); Settings → System
-  and API keys show the same. The
+  `latched`, `ingestKeys` and `protectedWithoutKeys`) and `authentication`
+  (`query` and `admin` always `required`, `ingest` `protected`/`open`);
+  Settings → System and API keys show the same. There is no stored
+  switch that turns authentication off. The
   startup banner says how ingestion is authenticated.
 * **Warnings.** Startup logs a warning when ingestion is open (in
   `automatic` before any ingest key, or with `open`), and when it is

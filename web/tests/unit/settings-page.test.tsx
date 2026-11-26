@@ -333,3 +333,32 @@ it('confirms before Required → Automatic opens an unlatched install, and chang
   expect(calls.find((c) => c.url.endsWith('/api/v1/ingest-auth'))?.body).toEqual({ mode: 'automatic' });
   expect(select).toHaveValue('automatic');
 });
+
+it('shows on the System tab that queries and settings always need credentials, whatever ingestion does', async () => {
+  const ingestAuth: IngestAuth = {
+    mode: 'open',
+    effective: 'open',
+    latched: true,
+    ingestKeys: 0,
+    protectedWithoutKeys: false,
+  };
+  mockFetch({
+    '/api/v1/system/info': () => ({
+      version: '0.0.0-test',
+      uptimeSeconds: 60,
+      dataDir: '/data',
+      durability: 'normal',
+      ingestAuth,
+      authentication: { query: 'required', admin: 'required', ingest: 'open' },
+      eventCounts: { logs: 0, traces: 0, metrics: 0 },
+      memory: { limitBytes: 1024, rssBytes: null, indexCacheUsedBytes: 0, budgets: {} },
+      queue: {},
+      liveSubscribers: 0,
+    }),
+  });
+  renderWithRouter(<SettingsPage />, '/settings?tab=system');
+  expect(await screen.findByTestId('access-summary')).toHaveTextContent(
+    'Always required: queries need a login or a query or admin key; settings need a login or an admin key',
+  );
+  expect(screen.getByText('open (mode "open")')).toBeInTheDocument();
+});
