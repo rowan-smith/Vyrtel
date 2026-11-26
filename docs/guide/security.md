@@ -17,6 +17,8 @@ The UI and API always need a login or an admin API key.
 - On first start, Vyrtel creates the `admin` user and prints a random password once, in the
   startup banner on standard output. It is never logged or shown again, and there is no default
   password ([the first administrator](../configuration.md#the-first-administrator)).
+  Docker, Kubernetes and systemd may keep standard output in their logs, so restrict access to
+  startup output, or set the password yourself when others can read those logs.
 - To choose the password yourself, set `VYRTEL_AUTH_ADMIN_PASSWORD` (or `auth.admin_password`).
   An empty value, or the username itself, stops startup.
   Starting with a different password signs out every existing session.

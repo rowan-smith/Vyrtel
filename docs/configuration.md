@@ -526,6 +526,13 @@ The first start of a new data directory creates the administrator account
   example the port is taken), the same line is still printed before the
   error, since the password is already stored. There is no `admin`/`admin`
   or other default password.
+
+  > **Warning.** The generated password appears on standard output, which
+  > container runtimes (`docker logs`, Kubernetes) and service managers
+  > (the systemd journal) may capture and keep. Restrict access to startup
+  > output, and provision an explicit `auth.admin_password` (for example
+  > from a secret) when log access is shared. If the output may have been
+  > seen, restart with a new `auth.admin_password` to replace it.
 * **`auth.admin_password` set:** the account gets that password and
   nothing is generated or printed. An empty or blank value, or one equal to
   the username in any case, stops startup with a message that does not
