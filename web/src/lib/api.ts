@@ -42,6 +42,11 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
   onUnauthorized = fn;
 }
 
+/** Report a lost sign-in seen outside `request` (the live tail). */
+export function notifyUnauthorized() {
+  onUnauthorized?.();
+}
+
 async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   let res: Response;
   try {

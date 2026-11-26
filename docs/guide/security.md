@@ -62,7 +62,9 @@ Give each integration its own named key, and an expiry where it fits (Settings â
 To replace a key, use **Rotate**: it creates a new key with the same name and scope and shows it
 once, while the old key keeps working. Update every client that uses the old key, then revoke
 it; Vyrtel does not update clients or revoke the old key for you. A revoked or expired key is
-refused at once and after restarts.
+refused at once and after restarts. That includes live-tail streams already open with it:
+revoking a key or signing a session out ends them straight away, and expiry ends them within
+5 seconds.
 
 ## TLS
 

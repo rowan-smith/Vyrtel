@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { setUnauthorizedHandler } from '../../src/lib/api';
 import { RECONNECT_MAX_MS, RECONNECT_MIN_MS, useLiveTail } from '../../src/lib/useLiveTail';
 import { FakeEventSource, logEvent } from './helpers';
 
@@ -89,6 +90,37 @@ describe('useLiveTail across a server restart', () => {
     const count = FakeEventSource.instances.length;
     act(() => vi.advanceTimersByTime(RECONNECT_MIN_MS));
     expect(FakeEventSource.instances).toHaveLength(count + 1);
+  });
+
+  // API-01A: the server ended the stream because its sign-in is gone.
+  it('stops for good and reports the lost sign-in on unauthorized', () => {
+    const lost = vi.fn();
+    setUnauthorizedHandler(lost);
+    try {
+      const { result } = setup();
+      const es = FakeEventSource.latest()!;
+      act(() => es.emit('ready', {}));
+      act(() => es.emit('unauthorized', { error: { code: 'unauthorized', message: 'the session has ended' } }));
+      expect(result.current.status).toBe('error');
+      expect(es.closed).toBe(true);
+      expect(lost).toHaveBeenCalledTimes(1);
+      act(() => vi.advanceTimersByTime(RECONNECT_MAX_MS * 2));
+      expect(FakeEventSource.instances).toHaveLength(1);
+    } finally {
+      setUnauthorizedHandler(null);
+    }
+  });
+
+  it('reconnects on the same source after unavailable', () => {
+    const { result } = setup();
+    const es = FakeEventSource.latest()!;
+    act(() => es.emit('ready', {}));
+    act(() => es.emit('unavailable', { error: { code: 'internal', message: 'internal server error' } }));
+    expect(result.current.status).toBe('connecting');
+    streamEnded(es);
+    act(() => es.emit('ready', {}));
+    expect(result.current.status).toBe('live');
+    expect(FakeEventSource.instances).toHaveLength(1);
   });
 
   it('stops retrying once unmounted', () => {

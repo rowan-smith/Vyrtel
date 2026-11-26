@@ -14,6 +14,7 @@ mod decode_limits;
 mod ingest_limits;
 mod layouts;
 mod live;
+mod live_auth;
 mod query_budgets;
 mod recovery_health;
 mod shutdown;

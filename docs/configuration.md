@@ -479,11 +479,11 @@ affected.
 Each change takes effect before its call returns, for sessions held in the
 server's in-memory cache too, and a login racing a password change or
 deactivation cannot leave a working session behind. Ending a session stops
-it from authenticating new requests; it does not cancel work already
-running. A request admitted before the change, such as a long query,
-finishes as admitted, and a live-tail stream opened with the session stays
-open until it closes (reauthorizing open streams is tracked in
-[#128](https://github.com/rowan-smith/Vyrtel/issues/128)). If a change cannot be
+it from authenticating new requests; a request admitted before the change,
+such as a long query, finishes as admitted. A live-tail stream opened with
+the session ends as soon as the change returns (it sends `unauthorized`),
+and one whose session simply expires ends within 5 seconds of the expiry
+([API](api.md#live-tail)). If a change cannot be
 written, it fails with an error and nothing ends: logout then answers `500`
 and keeps the cookie. A changed `auth.session_ttl` applies only to sessions
 issued afterwards.
@@ -792,7 +792,9 @@ reads. A client that stops reading is closed once a write stays blocked for
 fill first. Until then the server holds at most `connection_buffer` of
 events for it; it falls behind and is told how many batches it missed
 (`lagged`) rather than having them queued. At shutdown a stream sends what
-it has already matched, then `shutdown`.
+it has already matched, then `shutdown`. A stream ends early when the
+session or API key that opened it stops being valid
+([API](api.md#live-tail)).
 
 ### Memory accounting
 

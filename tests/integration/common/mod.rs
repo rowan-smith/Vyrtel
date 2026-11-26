@@ -508,13 +508,26 @@ pub struct Sse {
 impl Sse {
     /// Subscribe to the logs live tail and wait for `ready`.
     pub async fn open(s: &TestServer, query: &str) -> Sse {
-        let resp = s.client.get(s.u("/api/v1/live/logs")).query(&[("query", query)]).send().await.unwrap();
-        assert_eq!(resp.status(), 200);
-        assert!(resp.headers()["content-type"].to_str().unwrap().starts_with("text/event-stream"));
-        let mut sse = Sse { resp, buf: String::new(), retry: None };
+        Sse::open_as(&s.client, s, query).await
+    }
+
+    /// [`Sse::open`] with `client`'s credentials.
+    pub async fn open_as(client: &reqwest::Client, s: &TestServer, query: &str) -> Sse {
+        let mut sse = Sse::connect(client, s, query).await.expect("live tail admitted");
         let (kind, _) = sse.next().await;
         assert_eq!(kind, "ready");
         sse
+    }
+
+    /// Subscribe with `client` without waiting for `ready`; the status when
+    /// the stream is refused.
+    pub async fn connect(client: &reqwest::Client, s: &TestServer, query: &str) -> Result<Sse, u16> {
+        let resp = client.get(s.u("/api/v1/live/logs")).query(&[("query", query)]).send().await.unwrap();
+        if resp.status() != 200 {
+            return Err(resp.status().as_u16());
+        }
+        assert!(resp.headers()["content-type"].to_str().unwrap().starts_with("text/event-stream"));
+        Ok(Sse { resp, buf: String::new(), retry: None })
     }
 
     /// Next (event, data), skipping keep-alive comments.
