@@ -324,6 +324,21 @@ impl KeySet {
         })
     }
 
+    /// The effective authentication of each kind of operation, for
+    /// Settings and `/api/v1/system/info`: queries (the UI's telemetry
+    /// views included) and administration always need a session or a
+    /// scoped API key, whatever the ingestion mode ([`Access::Query`],
+    /// [`Access::Admin`]); ingestion is `protected` or `open` as
+    /// [`KeySet::ingest_protected`] decides. Derived from the mode and the
+    /// latch on every call, never stored. Holds no key material.
+    pub fn authentication(&self) -> serde_json::Value {
+        serde_json::json!({
+            "query": "required",
+            "admin": "required",
+            "ingest": if self.ingest_protected() { "protected" } else { "open" },
+        })
+    }
+
     /// What to warn about at startup: ingestion open to anyone, or
     /// protected with no ingest key to send with. `None` otherwise.
     pub fn startup_warning(&self) -> Option<String> {
@@ -1510,6 +1525,15 @@ mod tests {
             assert_eq!(
                 (status["latched"].as_bool(), status["ingestKeys"].as_u64()),
                 (Some(latched), Some(active as u64))
+            );
+            // Queries and administration need credentials in every state.
+            assert_eq!(
+                set.authentication(),
+                serde_json::json!({
+                    "query": "required", "admin": "required",
+                    "ingest": if protected { "protected" } else { "open" },
+                }),
+                "{case}"
             );
             for sends in [Nothing, Ingest, Admin, Revoked, Invalid] {
                 let headers = match sends {

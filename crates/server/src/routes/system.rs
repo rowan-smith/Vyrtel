@@ -259,6 +259,8 @@ pub async fn info(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
     let active = |s: &StreamStats| json!({ "events": s.active_events + s.frozen_events, "bytes": s.active_bytes });
     let b = &state.budgets;
     let q = &state.query_outcomes;
+    // One snapshot, so the two policy fields always describe the same set.
+    let ingest_keys = state.api_keys.snapshot();
     let storage_bytes: u64 = [&stats.logs, &stats.traces, &stats.metrics]
         .iter()
         .map(|s| s.segment_data_bytes + s.segment_index_bytes + s.wal_bytes)
@@ -271,7 +273,8 @@ pub async fn info(State(state): State<SharedState>) -> ApiResult<Json<Value>> {
         "dataDir": state.config.storage.path,
         "durability": state.config.storage.durability,
         "authEnabled": true,
-        "ingestAuth": state.api_keys.ingest_status(),
+        "ingestAuth": ingest_keys.ingest_status(),
+        "authentication": ingest_keys.authentication(),
         "sessionAuth": state.sessions.snapshot(),
         "apiKeyTouch": state.api_keys.touch_snapshot(),
         "eventCounts": {

@@ -1030,6 +1030,33 @@ change, this invalidates earlier PERF-GATE-1 and
 [COMPAT-GATE-0.1.2](https://github.com/rowan-smith/Vyrtel/issues/229)
 evidence.
 
+### Effective authentication state and removed settings (API-01B)
+
+[#129](https://github.com/rowan-smith/Vyrtel/issues/129) adds
+`authentication` (`query` and `admin` always `required`, `ingest` as the
+policy decides) to `system/info`, `api-keys` and `PUT ingest-auth`, and
+shows it on Settings → System. Everything else this story asks for was
+already in place; the tests below are its evidence.
+
+```bash
+cargo test -p server --lib auth::tests::ingest_admission_by_mode_latch_and_credential
+cargo test -p server --lib config::tests::removed_settings_are_refused_actionably
+cargo test -p server --test integration auth::            # includes the two new tests below
+cd web && npx vitest run tests/unit/settings-page.test.tsx
+```
+
+| Acceptance criterion | Tests and evidence |
+|---|---|
+| Effective redacted state: mandatory query/admin authentication and ingest protection from the mode and latch; no stored global-auth boolean or precedence migration | `auth::tests::ingest_admission_by_mode_latch_and_credential` (`authentication` in all 9 mode × latch × key states); the integration `ingest_auth` helper asserts `authentication` equals `{query: required, admin: required, ingest: ingestAuth.effective}` in both endpoints in every AUTH-250 test; new `reported_authentication_follows_the_key_inventory_across_restarts`. The only persisted policy values stay `ingest_auth_mode` and the latch; `authEnabled` in `auth/me` and `system/info` is a constant `true` |
+| Key/session state survives restart; first ingest key latches; last-key revoke and restart keep it; admin-only keys leave it | new `reported_authentication_follows_the_key_inventory_across_restarts` (real binary, killed between starts: admin and query keys leave it open and unlatched across a restart, the first ingest key latches, revoking it and restarting stay protected with zero ingest keys, the query key still reads and gets `403` on administration); existing `ingest_protection_survives_restarts`, `sessions_end_at_their_expiry_and_survive_restarts`, `concurrent_key_changes_match_the_store_across_restarts` |
+| Removed TOML/env/CLI options refused actionably before mutation | new `removed_auth_options_refuse_to_start_before_touching_the_data_dir` (`[auth] enabled`, `[auth] ingest_api_key`, `VYRTEL_AUTH_ENABLED=false/true`, `VYRTEL_AUTH_INGEST_API_KEY`, and `--no-auth`/`--auth-enabled`: each exits non-zero naming the option and what to do, against a fresh path and a latched data directory; the fresh path is never created and every file of the existing one is byte-identical afterwards); `config::tests::removed_settings_are_refused_actionably`. The command line never had an authentication flag, so clap's refusal by name is the message |
+| Startup/config errors, metadata failure and restart, truthful Settings; no keys, hashes or passwords logged | `an_unreadable_ingest_auth_mode_refuses_to_start`, `an_unreadable_ingest_latch_refuses_to_start`, metadata `ingest_key_history_without_a_latch_is_refused`; the new restart test logs at `debug` across three starts and asserts that no plaintext key, session token, password or SHA-256 of any of them appears in stderr or the status bodies; web `settings-page.test.tsx` (System tab shows queries and settings as always required while ingestion is open) |
+| Open/protected ingestion, invalid/revoked credentials, query/admin authentication, insufficient scopes | existing `every_operation_enforces_its_inventoried_scope`, `ingest_protection_latches_with_the_first_ingest_key`, `ingest_auth_modes_and_their_transitions`, `ingestion_without_keys_leaves_the_rest_of_the_api_closed` |
+
+**Resource impact.** `authentication` is built from the published key set
+on each status request, the same way `ingestAuth` is: no storage, no lock
+beyond the existing snapshot read, nothing on the ingest or query path.
+
 ### Sign-in memory (AUTH-PERF-04)
 
 Each Argon2id password check fills 19 MiB of working memory. In 0.1.2-rc.4

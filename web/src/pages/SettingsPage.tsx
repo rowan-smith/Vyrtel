@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { api } from '../lib/api';
-import type { ApiKey, ApiKeyScope, IngestAuth, QueryFieldStats, StorageStats, SystemInfo } from '../lib/types';
+import type {
+  ApiKey,
+  ApiKeyScope,
+  Authentication,
+  IngestAuth,
+  QueryFieldStats,
+  StorageStats,
+  SystemInfo,
+} from '../lib/types';
 import { formatBytes, formatCount, formatDateTime, formatDuration, formatUptime } from '../lib/format';
 import { useRouter } from '../lib/router';
 import { ErrorBanner, Spinner, Stat } from '../components/common';
@@ -112,6 +120,10 @@ function SystemTab() {
           <td>{i.durability}</td>
         </tr>
         <tr>
+          <th>Queries and settings</th>
+          <td data-testid="access-summary">{accessSummary(i.authentication)}</td>
+        </tr>
+        <tr>
           <th>Ingestion</th>
           <td>{ingestSummary(i.ingestAuth)}</td>
         </tr>
@@ -154,6 +166,15 @@ function SystemTab() {
       </tbody>
     </table>
   );
+}
+
+/** The System tab line for queries and administration, which need credentials whatever the ingestion mode. */
+export function accessSummary(a: Authentication): string {
+  // The server reports both as `required` in every state; show anything else as it is rather than hide it.
+  if (a.query !== 'required' || a.admin !== 'required') {
+    return `unexpected: queries ${String(a.query)}, settings ${String(a.admin)}`;
+  }
+  return 'Always required: queries need a login or a query or admin key; settings need a login or an admin key';
 }
 
 /** One line for the System tab. */

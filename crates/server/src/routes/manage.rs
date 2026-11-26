@@ -161,6 +161,7 @@ pub async fn list_api_keys(State(state): State<SharedState>) -> ApiResult<Json<V
     Ok(Json(json!({
         "apiKeys": k,
         "ingestAuth": keys.ingest_status(),
+        "authentication": keys.authentication(),
     })))
 }
 
@@ -208,7 +209,8 @@ pub async fn set_ingest_auth(
         auth::Principal::ApiKey { id, .. } => format!("API key {id}"),
     };
     tracing::info!(by, from = from.as_str(), to = b.mode.as_str(), "ingestion mode set");
-    Ok(Json(json!({ "ingestAuth": state.api_keys.ingest_status() })))
+    let keys = state.api_keys.snapshot();
+    Ok(Json(json!({ "ingestAuth": keys.ingest_status(), "authentication": keys.authentication() })))
 }
 
 pub async fn revoke_api_key(State(state): State<SharedState>, ApiPath(id): ApiPath<i64>) -> ApiResult<StatusCode> {

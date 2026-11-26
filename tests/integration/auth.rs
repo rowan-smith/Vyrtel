@@ -351,18 +351,22 @@ async fn revoke_key(s: &TestServer, id: i64) {
 /// Whether ingestion needs a key, as system info and the key list (the
 /// UI's sources) report it; asserts they agree.
 async fn key_required(s: &TestServer) -> bool {
-    let info: Value = s.client.get(s.u("/api/v1/system/info")).send().await.unwrap().json().await.unwrap();
-    let keys: Value = s.client.get(s.u("/api/v1/api-keys")).send().await.unwrap().json().await.unwrap();
-    assert_eq!(info["ingestAuth"], keys["ingestAuth"]);
-    info["ingestAuth"]["effective"] == "protected"
+    ingest_auth(s).await["effective"] == "protected"
 }
 
 /// The ingestion policy, as system info and the key list (the UI's
-/// sources) report it; asserts they agree.
+/// sources) report it; asserts they agree, and that `authentication`
+/// (API-01B, #129) reports queries and administration as always needing
+/// credentials and ingestion as the policy decides.
 async fn ingest_auth(s: &TestServer) -> Value {
     let info: Value = s.client.get(s.u("/api/v1/system/info")).send().await.unwrap().json().await.unwrap();
     let keys: Value = s.client.get(s.u("/api/v1/api-keys")).send().await.unwrap().json().await.unwrap();
     assert_eq!(info["ingestAuth"], keys["ingestAuth"]);
+    assert_eq!(info["authentication"], keys["authentication"]);
+    assert_eq!(
+        info["authentication"],
+        json!({"query": "required", "admin": "required", "ingest": info["ingestAuth"]["effective"]})
+    );
     info["ingestAuth"].clone()
 }
 
@@ -764,6 +768,185 @@ async fn an_unreadable_ingest_latch_refuses_to_start() {
     assert!(key_required(&s).await);
     assert_eq!(ingest(&s, None).await, 401);
     s.stop().await;
+}
+
+/// The status both UI sources report, asserting they agree:
+/// (`authentication`, `latched`, `ingestKeys`), and both bodies.
+async fn process_status(p: &Process) -> ((Value, bool, u64), String) {
+    let info = p.get("/api/v1/system/info").await;
+    let keys = p.get("/api/v1/api-keys").await;
+    assert_eq!((&info["ingestAuth"], &info["authentication"]), (&keys["ingestAuth"], &keys["authentication"]));
+    let a = &info["ingestAuth"];
+    let observed = (info["authentication"].clone(), a["latched"].as_bool().unwrap(), a["ingestKeys"].as_u64().unwrap());
+    (observed, format!("{info}{keys}"))
+}
+
+/// What [`process_status`] should observe.
+fn reported(ingest: &str, latched: bool, ingest_keys: u64) -> (Value, bool, u64) {
+    (json!({"query": "required", "admin": "required", "ingest": ingest}), latched, ingest_keys)
+}
+
+/// Create a key through `p`; returns (id, plaintext).
+async fn process_key(p: &Process, name: &str, scope: &str) -> (i64, String) {
+    let r = p.client.post(format!("{}/api/v1/api-keys", p.url)).json(&json!({"name": name, "scope": scope}));
+    let r = r.send().await.unwrap();
+    assert_eq!(r.status(), 201);
+    let v: Value = r.json().await.unwrap();
+    (v["id"].as_i64().unwrap(), v["key"].as_str().unwrap().to_string())
+}
+
+/// Anonymous (query, administration) statuses.
+async fn anonymous_query_and_admin(p: &Process) -> (u16, u16) {
+    let anon = reqwest::Client::new();
+    let q = anon.post(format!("{}/api/v1/query/logs", p.url)).json(&json!({"query": ""})).send().await.unwrap();
+    let a = anon.get(format!("{}/api/v1/api-keys", p.url)).send().await.unwrap();
+    (q.status().as_u16(), a.status().as_u16())
+}
+
+/// API-01B (#129): the reported state follows the current key inventory
+/// and the latch across restarts of the real binary. Admin- and
+/// query-only keys leave ingestion open and the latch unset; the first
+/// ingest key latches it; revoking the last one and restarting keep it.
+/// Queries and administration need credentials in every state, and no
+/// key, key or session hash, session token or password reaches the status
+/// bodies or the log, even at debug level.
+#[tokio::test(flavor = "multi_thread")]
+async fn reported_authentication_follows_the_key_inventory_across_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut secrets = vec![PROCESS_PASSWORD.to_string()];
+    let mut bodies = String::new();
+    let mut log = String::new();
+
+    // Fresh install, then admin- and query-only keys: open and not
+    // latched, also after a restart.
+    let p = Process::start_at_level(dir.path(), &[], "debug").await;
+    secrets.push(p.api_key.clone());
+    let session = Admin::login_at(&reqwest::Client::new(), &p.url, PROCESS_PASSWORD).await.cookie;
+    secrets.push(session.split_once('=').unwrap().1.to_string());
+    assert_eq!(process_status(&p).await.0, reported("open", false, 0));
+    let (_, admin) = process_key(&p, "automation", "admin").await;
+    let (_, query) = process_key(&p, "dashboards", "query").await;
+    secrets.extend([admin, query.clone()]);
+    assert_eq!(process_status(&p).await.0, reported("open", false, 0));
+    assert_eq!(anonymous_query_and_admin(&p).await, (401, 401));
+    log.push_str(&p.stderr());
+    p.kill();
+
+    let p = Process::start_at_level(dir.path(), &[], "debug").await;
+    secrets.push(p.api_key.clone());
+    assert_eq!(process_status(&p).await.0, reported("open", false, 0), "admin and query keys never latch");
+
+    // The first ingest key latches protection; revoking it, the last one,
+    // keeps ingestion protected with no ingest key.
+    let (id, ingest) = process_key(&p, "producers", "ingest").await;
+    secrets.push(ingest);
+    assert_eq!(process_status(&p).await.0, reported("protected", true, 1));
+    let r = p.client.delete(format!("{}/api/v1/api-keys/{id}", p.url)).send().await.unwrap();
+    assert_eq!(r.status(), 204);
+    let (observed, body) = process_status(&p).await;
+    assert_eq!(observed, reported("protected", true, 0));
+    assert!(body.contains(r#""protectedWithoutKeys":true"#), "{body}");
+    bodies.push_str(&body);
+    assert_eq!(anonymous_query_and_admin(&p).await, (401, 401));
+    log.push_str(&p.stderr());
+    p.kill();
+
+    // A restart keeps the latch with no ingest key; the query key from
+    // before still reads, and still may not administer.
+    let p = Process::start_at_level(dir.path(), &[], "debug").await;
+    secrets.push(p.api_key.clone());
+    let (observed, body) = process_status(&p).await;
+    assert_eq!(observed, reported("protected", true, 0));
+    bodies.push_str(&body);
+    assert_eq!(anonymous_query_and_admin(&p).await, (401, 401));
+    let by_query = authorized_client("authorization", &format!("Bearer {query}"));
+    let r = by_query.post(format!("{}/api/v1/query/logs", p.url)).json(&json!({"query": ""})).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let r = by_query.get(format!("{}/api/v1/system/info", p.url)).send().await.unwrap();
+    assert_eq!(r.status(), 403);
+    log.push_str(&p.stderr());
+    p.kill();
+
+    assert!(log.contains("ingestion protection is latched") || log.contains("ingestion now requires an API key"));
+    let hashes: Vec<String> = secrets.iter().map(|s| server::auth::sha256_hex(s)).collect();
+    for secret in secrets.iter().chain(&hashes) {
+        assert!(!log.contains(secret.as_str()), "a secret or its hash was logged: {log}");
+        assert!(!bodies.contains(secret.as_str()), "a secret or its hash was reported: {bodies}");
+    }
+}
+
+/// Every file under `dir` with its bytes, sorted.
+fn dir_snapshot(dir: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut files = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(d) = pending.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let e = e.unwrap();
+            if e.file_type().unwrap().is_dir() {
+                pending.push(e.path());
+            } else {
+                files.push((e.path(), std::fs::read(e.path()).unwrap()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// API-01B (#129): a removed authentication option, in the configuration
+/// file or the environment, and an authentication flag on the command line
+/// (which never had one), stop the start with what to do instead, before
+/// the data directory is created or changed. None is ignored or read as a
+/// global opt-out.
+#[tokio::test(flavor = "multi_thread")]
+async fn removed_auth_options_refuse_to_start_before_touching_the_data_dir() {
+    let root = tempfile::tempdir().unwrap();
+    let existing = root.path().join("existing");
+    let fresh = root.path().join("fresh");
+    // A latched data directory, so a start that went ahead would open its
+    // metadata.
+    let p = Process::start(&existing, &[]).await;
+    process_key(&p, "producers", "ingest").await;
+    p.kill();
+    let before = dir_snapshot(&existing);
+
+    let file = |name: &str, text: &str| {
+        let path = root.path().join(name);
+        std::fs::write(&path, text).unwrap();
+        path.to_str().unwrap().to_string()
+    };
+    let disabled = file("disabled.toml", "[auth]\nenabled = false\n");
+    let legacy_key = file("legacy-key.toml", "[auth]\ningest_api_key = true\n");
+    let enabled = "auth.enabled is no longer a setting: the UI and API now always require a login";
+    let ingest_key = "auth.ingest_api_key is no longer a setting: remove it and create ingest-scoped API keys";
+    /// Arguments, environment, and what the error must say.
+    type Case<'a> = (Vec<&'a str>, Vec<(&'a str, &'a str)>, String);
+    let cases: Vec<Case> = vec![
+        (vec!["--config", &disabled], vec![], enabled.into()),
+        (vec!["--config", &legacy_key], vec![], ingest_key.into()),
+        (vec![], vec![("VYRTEL_AUTH_ENABLED", "false")], format!("VYRTEL_AUTH_ENABLED: {enabled}")),
+        (vec![], vec![("VYRTEL_AUTH_ENABLED", "true")], format!("VYRTEL_AUTH_ENABLED: {enabled}")),
+        (vec![], vec![("VYRTEL_AUTH_INGEST_API_KEY", "1")], format!("VYRTEL_AUTH_INGEST_API_KEY: {ingest_key}")),
+        (vec!["--no-auth"], vec![], "unexpected argument '--no-auth'".into()),
+        (vec!["--auth-enabled", "false"], vec![], "unexpected argument '--auth-enabled'".into()),
+    ];
+    for (args, env, want) in &cases {
+        for dir in [&existing, &fresh] {
+            let out = std::process::Command::new(env!("CARGO_BIN_EXE_vyrtel"))
+                .args(["--data-dir", dir.to_str().unwrap(), "--bind", "127.0.0.1:0"])
+                .args(args)
+                .env("VYRTEL_AUTH_ADMIN_PASSWORD", PROCESS_PASSWORD)
+                .envs(env.iter().copied())
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(!out.status.success(), "{args:?} {env:?} started: {stderr}");
+            assert!(stderr.contains(want.as_str()), "{args:?} {env:?}: {stderr}");
+            assert!(!stderr.contains(PROCESS_PASSWORD), "{stderr}");
+        }
+        assert!(!fresh.exists(), "{args:?} {env:?} created a data directory");
+        assert!(dir_snapshot(&existing) == before, "{args:?} {env:?} changed the data directory");
+    }
 }
 
 /// The banner says how ingestion is authenticated, in each state.

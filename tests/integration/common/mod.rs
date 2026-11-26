@@ -395,9 +395,14 @@ impl Process {
     /// Start with `env`, wait until it is healthy, and log in as admin:
     /// `client` then sends the session cookie with every request.
     pub async fn start(dir: &Path, env: &[(&str, &str)]) -> Process {
+        Process::start_at_level(dir, env, "warn").await
+    }
+
+    /// [`Process::start`], logging at `level` (`--log-level`).
+    pub async fn start_at_level(dir: &Path, env: &[(&str, &str)], level: &str) -> Process {
         let env: Vec<(&str, &str)> =
             [("VYRTEL_AUTH_ADMIN_PASSWORD", PROCESS_PASSWORD)].into_iter().chain(env.iter().copied()).collect();
-        let mut p = Process::start_binary(Path::new(env!("CARGO_BIN_EXE_vyrtel")), dir, &env).await;
+        let mut p = Process::launch(Path::new(env!("CARGO_BIN_EXE_vyrtel")), dir, &env, level).await;
         let a = Admin::login_at(&p.client, &p.url, PROCESS_PASSWORD).await;
         let key = a.post("/api/v1/api-keys", json!({"name": harness_key_name(), "scope": "admin"})).await;
         p.api_key = key["key"].as_str().unwrap().to_string();
@@ -407,12 +412,16 @@ impl Process {
 
     /// [`Process::start`] with another Vyrtel binary, such as an older release.
     pub async fn start_binary(binary: &Path, dir: &Path, env: &[(&str, &str)]) -> Process {
+        Process::launch(binary, dir, env, "warn").await
+    }
+
+    async fn launch(binary: &Path, dir: &Path, env: &[(&str, &str)], level: &str) -> Process {
         use std::process::{Command, Stdio};
         // Reserve a free port, then hand it to the server.
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let stderr = tempfile::NamedTempFile::new().unwrap();
         let child = Command::new(binary)
-            .args(["--data-dir", dir.to_str().unwrap(), "--bind", &format!("127.0.0.1:{port}"), "--log-level", "warn"])
+            .args(["--data-dir", dir.to_str().unwrap(), "--bind", &format!("127.0.0.1:{port}"), "--log-level", level])
             .envs(env.iter().copied())
             .stdout(Stdio::null())
             .stderr(stderr.reopen().unwrap())
