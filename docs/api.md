@@ -852,8 +852,10 @@ change is recorded and POSTed to the webhook (3 attempts, 10 s timeout):
 Admin-managed settings ([configuration](configuration.md#admin-managed-settings)):
 the operational options an administrator saves in the data directory.
 Every route needs the `admin` scope; a change made with a session cookie
-must come from Vyrtel's own pages (`403` if the browser marks it
-cross-site or same-site, or its `Origin` is another host). Nothing here
+must show it comes from Vyrtel's own pages: `Sec-Fetch-Site: same-origin`
+or, without that header, an `Origin` naming this host. Anything else,
+including a request with neither header, gets `403`. Clients that cannot
+send them use an `admin` API key. Nothing here
 returns or accepts the admin password, the ingestion protection latch,
 `storage.path` or `server.bind`. Every setting currently applies at the
 next restart.

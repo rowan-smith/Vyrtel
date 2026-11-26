@@ -49,28 +49,34 @@ fn actor(principal: &Principal) -> String {
     }
 }
 
-/// A change made with a session cookie must come from Vyrtel's own pages:
-/// a browser that says the request is cross-site or same-site (another
-/// origin), or whose `Origin` is not this host, is refused. API keys are
-/// never sent by a browser on its own, so they are not checked.
+/// A change made with a session cookie must provably come from Vyrtel's
+/// own pages: the browser says so (`Sec-Fetch-Site: same-origin`) or,
+/// when it does not send that header, sends an `Origin` naming this host.
+/// A request with neither is refused too, not assumed safe. Clients that
+/// cannot send those headers (scripts, older tools) use an admin API key
+/// instead: a browser never sends one on its own, so keys are not checked.
 fn same_origin(principal: &Principal, headers: &HeaderMap) -> ApiResult<()> {
     if !matches!(principal, Principal::User(_)) {
         return Ok(());
     }
-    let refuse = || ApiError::forbidden("settings can only be changed from Vyrtel's own pages");
+    let refuse = |why: &str| {
+        ApiError::forbidden(format!(
+            "settings can only be changed from Vyrtel's own pages ({why}); scripts should use an admin API key"
+        ))
+    };
     if let Some(site) = headers.get("sec-fetch-site") {
         return match site.to_str().unwrap_or("") {
-            "same-origin" | "none" => Ok(()),
-            _ => Err(refuse()),
+            "same-origin" => Ok(()),
+            _ => Err(refuse("the browser marked the request as coming from another site")),
         };
     }
-    if let Some(origin) = headers.get(header::ORIGIN) {
-        let origin = origin.to_str().unwrap_or("");
-        let authority = origin.split_once("://").map(|(_, a)| a).unwrap_or("");
-        let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
-        if authority.is_empty() || !authority.eq_ignore_ascii_case(host) {
-            return Err(refuse());
-        }
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return Err(refuse("the request names no origin"));
+    };
+    let authority = origin.to_str().unwrap_or("").split_once("://").map(|(_, a)| a).unwrap_or("");
+    let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
+    if authority.is_empty() || !authority.eq_ignore_ascii_case(host) {
+        return Err(refuse("its origin is another host"));
     }
     Ok(())
 }
@@ -167,23 +173,25 @@ mod tests {
         h
     }
 
-    /// Cookie writes must be same-origin; key writes are not browser-made.
+    /// Cookie writes must show they are same-origin; a request that shows
+    /// nothing is refused. Key writes are not browser-made.
     #[test]
     fn session_writes_must_come_from_the_same_origin() {
         let user = Principal::User("admin".into());
         let key = Principal::ApiKey { id: 1, scope: "admin".into() };
         let host = ("host", "vyrtel.local:8080");
         for ok in [
-            vec![],
-            vec![host],
             vec![host, ("sec-fetch-site", "same-origin")],
-            vec![host, ("sec-fetch-site", "none")],
+            vec![host, ("sec-fetch-site", "same-origin"), ("origin", "http://vyrtel.local:8080")],
             vec![host, ("origin", "http://vyrtel.local:8080")],
             vec![host, ("origin", "https://VYRTEL.local:8080")],
         ] {
             same_origin(&user, &headers(&ok)).unwrap_or_else(|e| panic!("{ok:?}: {}", e.message));
         }
         for bad in [
+            vec![],
+            vec![host],
+            vec![host, ("sec-fetch-site", "none")],
             vec![host, ("sec-fetch-site", "cross-site")],
             vec![host, ("sec-fetch-site", "same-site")],
             vec![host, ("origin", "http://evil.example")],

@@ -273,6 +273,16 @@ pub const FIELDS: &[Field] = {
 pub const DEPLOYMENT: &[&str] =
     &["server.bind", "server.listen_backlog", "storage.path", "auth.admin_username", "auth.admin_password"];
 
+/// Admin-managed settings that are not in [`FIELDS`] yet, with what owns
+/// them meanwhile. With [`FIELDS`] they are the 33 operational settings of
+/// #253's inventory; `ingest.auth_mode` keeps its own live endpoint until
+/// #254 brings it under this contract. It is not a configuration-file field
+/// (it never was one), so the 37 file fields are [`FIELDS`] and
+/// [`DEPLOYMENT`]. `server.listen_backlog`, added to the file after that
+/// inventory was taken, is a deployment input like `server.bind`.
+pub const SEPARATE: &[(&str, &str)] =
+    &[("ingest.auth_mode", "PUT /api/v1/ingest-auth (metadata key ingest_auth_mode), live")];
+
 /// The groups, in display order. Each has its own revision.
 pub const GROUPS: &[&str] = &["server", "storage", "retention", "ingest", "query", "auth", "alerts", "log"];
 

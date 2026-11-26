@@ -626,9 +626,12 @@ deployment inputs stay in the file, the environment and flags only:
 | `storage.path`                            | Locates the data directory, which holds the settings themselves.                        |
 | `auth.admin_username`, `auth.admin_password` | [The first administrator](#the-first-administrator). Never shown, exported or imported. |
 
-Settings never hold the ingestion mode or the protection latch (they have
-their own endpoint, [`PUT /api/v1/ingest-auth`](api.md#ingestion-mode)),
-credentials or telemetry.
+That makes 32 admin-managed settings and 5 deployment inputs: every one of
+the 37 configuration-file options has exactly one owner. The ingestion mode
+is also an operational setting (the 33rd), but it was never a file option and
+keeps its own live endpoint,
+[`PUT /api/v1/ingest-auth`](api.md#ingestion-mode), for now. Settings never
+hold the protection latch, credentials or telemetry.
 
 **Precedence.** A value the configuration file, the environment or a flag
 sets wins over a saved one. While it does, the setting cannot be saved:
@@ -646,6 +649,12 @@ then, and can be cancelled back to the running values. Saved settings are
 read before logging, storage, queues and listeners are set up, so a saved
 `log.level` or `log.format` decides even the first log line.
 
+**Sessions must show they are same-origin.** A change made with a session
+cookie needs `Sec-Fetch-Site: same-origin` or, from a browser that does not
+send it, an `Origin` naming this host. One with neither is refused with
+`403`. Scripts and tools that cannot send those headers use an `admin` API
+key instead.
+
 **Changes are checked whole and saved atomically.** Each change is
 validated against the complete configuration it would produce (the same
 rules as the file, plus a log filter that must parse), then saved in one
@@ -658,8 +667,7 @@ other. A refused change saves nothing. Changes to `storage.durability`,
 data or weaken durability and must be confirmed.
 
 **Who.** Reading and changing settings needs an administrator: a session or
-an `admin` API key. A change made with a session cookie must come from
-Vyrtel's own pages (a cross-site request is refused with `403`).
+an `admin` API key (see above for session-cookie changes).
 
 **Change records.** The last 50 changes are kept with who made them, the
 groups, revisions and field names (never values), and their outcome:

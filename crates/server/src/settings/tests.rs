@@ -20,7 +20,8 @@ fn rows(m: &Metadata) -> Vec<(String, String)> {
 }
 
 /// TC: every one of the 37 configuration-file fields is either an
-/// admin-managed setting or a deployment input, never both or neither.
+/// admin-managed setting or a deployment input, never both or neither, and
+/// the count reconciles with #253's 33 + 4 inventory.
 #[test]
 fn every_configuration_field_has_one_owner() {
     let json = serde_json::to_value(Config::default()).unwrap();
@@ -46,6 +47,16 @@ fn every_configuration_field_has_one_owner() {
     for g in GROUPS {
         assert!(FIELDS.iter().any(|f| f.group() == *g), "{g} has fields");
     }
+    // #253's inventory: 33 settings move to Settings, 4 inputs stay in the
+    // file. The 33 are these 32 and the ingestion mode, which keeps its own
+    // endpoint for now; the inputs gained server.listen_backlog. Nothing is
+    // left without an owner.
+    let separate: BTreeSet<String> = SEPARATE.iter().map(|(k, _)| k.to_string()).collect();
+    assert_eq!(separate, BTreeSet::from(["ingest.auth_mode".to_string()]));
+    assert!(separate.is_disjoint(&all) && separate.is_disjoint(&managed));
+    assert_eq!(managed.len() + separate.len(), 33);
+    assert_eq!(deployment.len(), 4 + 1);
+    assert!(deployment.contains("server.listen_backlog"));
 }
 
 /// Defaults round-trip through their canonical stored form.

@@ -2040,7 +2040,8 @@ async fn send_operation(
     let secret = keys.iter().find(|(c, _)| *c == credential).map(|(_, v)| v.as_str());
     r = match (credential, secret) {
         (Credential::Nothing, _) => r,
-        (Credential::Session, Some(cookie)) => r.header("cookie", cookie),
+        // As a browser on Vyrtel's own pages sends it (settings writes need it).
+        (Credential::Session, Some(cookie)) => r.header("cookie", cookie).header("origin", &s.url),
         (_, Some(key)) => r.bearer_auth(key),
         (c, None) => panic!("no {c:?} prepared"),
     };

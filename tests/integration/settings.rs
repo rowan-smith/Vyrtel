@@ -198,8 +198,23 @@ async fn only_administrators_change_settings_from_their_own_origin() {
     assert_eq!(send(Some("cross-site"), Some("http://evil.example".into())).await.unwrap().status(), 403);
     assert_eq!(send(Some("same-site"), None).await.unwrap().status(), 403);
     assert_eq!(send(None, Some("http://evil.example".into())).await.unwrap().status(), 403);
+    // Neither header: not assumed to be same-origin.
+    let r = send(None, None).await.unwrap();
+    assert_eq!(r.status(), 403);
+    assert!(r.text().await.unwrap().contains("use an admin API key"));
     assert_eq!(s.get_ok("/api/v1/settings/export").await["settings"], json!({}));
-    let r = send(Some("same-origin"), Some(s.url.clone())).await.unwrap();
+    // An older browser sends only Origin.
+    let r = send(None, Some(s.url.clone())).await.unwrap();
+    assert_eq!(r.status(), 200);
+    let body = json!({"revision": 1, "values": {"max_results": 6}});
+    let r = anon
+        .put(s.u("/api/v1/settings/query"))
+        .header("cookie", &admin.cookie)
+        .header("sec-fetch-site", "same-origin")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
     let doc: Value = r.json().await.unwrap();
     assert_eq!(doc["changes"].as_array().unwrap().last().unwrap()["actor"], "user:admin");
