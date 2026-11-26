@@ -145,6 +145,55 @@ response is the stored, lowercased username
 ([local accounts](configuration.md#local-accounts)). No response carries
 a password or its hash.
 
+### Operation scopes
+
+Every endpoint needs one of three scopes. Each request is checked against
+one snapshot of the keys and the ingestion policy, so a key change or mode
+change never applies half way through a request.
+
+| Scope    | Accepted credentials                                                        | Missing, invalid, expired or revoked | Valid but not enough  |
+| -------- | --------------------------------------------------------------------------- | ------------------------------------ | --------------------- |
+| `public` | none needed                                                                 | —                                    | —                     |
+| `ingest` | none while ingestion is open; otherwise an API key with scope `ingest` or `admin` (a session cookie is never read) | `401` (only while protected) | — |
+| `admin`  | the session cookie, or an API key with scope `admin`                       | `401`                                | `403` (an ingest key) |
+
+| Method | Path                                          | Scope    |
+| ------ | --------------------------------------------- | -------- |
+| POST   | `/api/v1/events`                              | `ingest` |
+| POST   | `/v1/logs`, `/v1/traces`, `/v1/metrics`       | `ingest` |
+| POST   | `/api/v1/query/logs`, `/api/v1/query/traces`, `/api/v1/query/metrics` | `admin` |
+| POST   | `/api/v1/query/{signal}/events`, `…/histogram`, `…/count`, `…/facets` | `admin` |
+| GET    | `/api/v1/live/logs`                           | `admin`  |
+| GET    | `/api/v1/traces`, `/api/v1/traces/{trace_id}`, `/api/v1/metrics` | `admin` |
+| GET    | `/api/v1/system/info`, `…/storage`, `…/query-stats`, `…/config` | `admin` |
+| GET, POST | `/api/v1/dashboards`                       | `admin`  |
+| GET, PUT, DELETE | `/api/v1/dashboards/{id}`           | `admin`  |
+| POST   | `/api/v1/dashboards/{id}/panels`              | `admin`  |
+| PUT, DELETE | `/api/v1/dashboards/{id}/panels/{panel_id}` | `admin` |
+| GET, POST | `/api/v1/saved-queries`                    | `admin`  |
+| DELETE | `/api/v1/saved-queries/{id}`                  | `admin`  |
+| GET, POST | `/api/v1/api-keys`                         | `admin`  |
+| DELETE | `/api/v1/api-keys/{id}`                       | `admin`  |
+| PUT    | `/api/v1/ingest-auth`                         | `admin`  |
+| GET, POST | `/api/v1/alerts`                           | `admin`  |
+| GET, PUT, DELETE | `/api/v1/alerts/{id}`               | `admin`  |
+| POST   | `/api/v1/alerts/{id}/evaluate`                | `admin`  |
+| GET    | `/health`, `/ready`                           | `public` |
+| POST   | `/api/v1/auth/login`, `/api/v1/auth/logout`   | `public` |
+| GET    | `/api/v1/auth/me`                             | `public` |
+
+Sign-in checks the username and password it is given; it never needs an
+API key, even while ingestion is protected. Any other path is a static
+web UI asset, public and outside the API. There are no other scopes or
+roles; `auth.enabled` and `auth.ingest_api_key` are refused at startup
+([configuration](configuration.md#ingestion-authentication)).
+
+This table is what the server enforces: one authorization layer looks up
+each request's route in it (`server::routes::OPERATIONS`). A method a path
+does not list is checked with that path's scope before it gets `405`, and
+`HEAD` is checked like `GET`. A route missing from the table is refused
+with `403` whatever the credentials, and its tests fail until it is listed.
+
 ### Ingestion mode
 
 ```

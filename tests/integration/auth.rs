@@ -1673,3 +1673,149 @@ async fn a_first_start_that_cannot_listen_still_shows_its_password() {
     assert!(!p.stderr().contains(pw.as_str()));
     p.kill();
 }
+
+/// What one request in [`every_operation_enforces_its_inventoried_scope`]
+/// carries.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Credential {
+    Nothing,
+    Invalid,
+    Revoked,
+    IngestKey,
+    AdminKey,
+    Session,
+}
+
+/// The status of `op` sent with `credential`. Path parameters name nothing
+/// that exists and bodies are empty, so an admitted request changes nothing
+/// that matters (at most a 4xx from the handler, never 401 or 403).
+async fn send_operation(
+    s: &TestServer,
+    op: &server::routes::Operation,
+    credential: Credential,
+    keys: &[(Credential, String)],
+) -> u16 {
+    let path = op
+        .path
+        .replace("{signal}", "logs")
+        .replace("{trace_id}", "0123456789abcdef0123456789abcdef")
+        .replace("{panel_id}", "999999")
+        .replace("{id}", "999999");
+    let method = reqwest::Method::from_bytes(op.method.as_bytes()).unwrap();
+    let mut r = reqwest::Client::new().request(method, s.u(&path)).timeout(std::time::Duration::from_secs(10));
+    if op.method != "GET" {
+        r = r.header("content-type", "application/json").body("{}");
+    }
+    let secret = keys.iter().find(|(c, _)| *c == credential).map(|(_, v)| v.as_str());
+    r = match (credential, secret) {
+        (Credential::Nothing, _) => r,
+        (Credential::Session, Some(cookie)) => r.header("cookie", cookie),
+        (_, Some(key)) => r.bearer_auth(key),
+        (c, None) => panic!("no {c:?} prepared"),
+    };
+    // Headers only: a live-tail stream stays open until dropped.
+    r.send().await.unwrap().status().as_u16()
+}
+
+/// API-01: every operation in the published inventory, with every kind of
+/// credential, before and after ingestion is protected. Admin operations
+/// always need credentials: none, an invalid or a revoked key get 401, an
+/// ingest key 403. Protected ingestion takes any valid key and refuses the
+/// rest, a session included, with 401; open ingestion takes everything.
+/// Public operations need nothing, so sign-in works without an API key.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_operation_enforces_its_inventoried_scope() {
+    use Credential::*;
+    use server::auth::Access;
+
+    let s = TestServer::start_with(|c| c.auth.admin_password = Some("correct horse".into())).await;
+    let cookie = session_cookie(&login(&s, "correct horse").await);
+    let mut keys = vec![(Invalid, "vyr_never_issued".to_string()), (AdminKey, s.api_key.clone()), (Session, cookie)];
+    let ops = server::routes::OPERATIONS;
+    assert!(ops.iter().any(|o| o.access == Access::Ingest) && ops.iter().any(|o| o.access == Access::Public));
+
+    let expected = |access: Access, protected: bool, c: Credential| -> Option<u16> {
+        match (access, c) {
+            (Access::Public, _) => None,
+            (Access::Ingest, _) if !protected => None,
+            (Access::Ingest, IngestKey | AdminKey) => None,
+            (Access::Ingest, _) => Some(401),
+            (Access::Admin, AdminKey | Session) => None,
+            (Access::Admin, IngestKey) => Some(403),
+            (Access::Admin, _) => Some(401),
+        }
+    };
+    let check = async |protected: bool, credentials: &[Credential], keys: &[(Credential, String)]| {
+        for op in ops {
+            let sends: &[Credential] = if op.access == Access::Public { &[Nothing] } else { credentials };
+            for &c in sends {
+                let got = send_operation(&s, op, c, keys).await;
+                let what =
+                    format!("{} {} ({}) with {c:?}, protected={protected}", op.method, op.path, op.access.as_str());
+                match expected(op.access, protected, c) {
+                    Some(want) => assert_eq!(got, want, "{what}"),
+                    None => assert!(got != 401 && got != 403, "{what}: {got}"),
+                }
+            }
+        }
+    };
+
+    // Fresh install: ingestion open, everything else closed.
+    check(false, &[Nothing, Invalid, AdminKey, Session], &keys).await;
+
+    // The first ingest key protects ingestion at once; a revoked one is refused.
+    let (revoked, revoked_key) = create_key(&s, "gone", "ingest").await;
+    revoke_key(&s, revoked).await;
+    let (_, ingest_key) = create_key(&s, "sender", "ingest").await;
+    keys.extend([(Revoked, revoked_key), (IngestKey, ingest_key)]);
+    check(true, &[Nothing, Invalid, Revoked, IngestKey, AdminKey, Session], &keys).await;
+
+    // Methods a path does not list are authorized by the path's scope
+    // before they get 405, and HEAD is checked like GET.
+    let client = reqwest::Client::new();
+    for op in ops.iter().filter(|o| o.access != Access::Public) {
+        let url = s.u(&op
+            .path
+            .replace("{signal}", "logs")
+            .replace("{trace_id}", "0")
+            .replace("{panel_id}", "1")
+            .replace("{id}", "1"));
+        let patch = client.patch(&url).send().await.unwrap().status();
+        assert_eq!(patch, 401, "PATCH {} without credentials", op.path);
+        let admin = client.patch(&url).bearer_auth(&s.api_key).send().await.unwrap().status();
+        assert_eq!(admin, 405, "PATCH {} with an admin key", op.path);
+        if op.method == "GET" {
+            assert_eq!(client.head(&url).send().await.unwrap().status(), 401, "HEAD {}", op.path);
+        }
+    }
+    s.stop().await;
+}
+
+/// API-01: the scope comes from the inventory, so a route missing from it
+/// is refused, with or without credentials, rather than served open.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_route_missing_from_the_inventory_is_refused() {
+    use axum::middleware::from_fn_with_state;
+    use tower::ServiceExt;
+
+    let s = TestServer::start().await;
+    let state = s.state().clone();
+    let app = axum::Router::new()
+        .route("/api/v1/unlisted", axum::routing::get(|| async { "served" }))
+        .route("/health", axum::routing::get(|| async { "listed" }))
+        .route_layer(from_fn_with_state(state.clone(), server::auth::authorize))
+        .with_state(state);
+    let get = |path: &str, key: Option<&str>| {
+        let mut r = axum::http::Request::get(path);
+        if let Some(k) = key {
+            r = r.header("authorization", format!("Bearer {k}"));
+        }
+        r.body(axum::body::Body::empty()).unwrap()
+    };
+    for key in [None, Some(s.api_key.as_str())] {
+        let r = app.clone().oneshot(get("/api/v1/unlisted", key)).await.unwrap();
+        assert_eq!(r.status(), 403, "unlisted route with {key:?}");
+    }
+    assert_eq!(app.oneshot(get("/health", None)).await.unwrap().status(), 200, "a listed public route");
+    s.stop().await;
+}

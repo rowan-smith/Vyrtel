@@ -30,7 +30,7 @@ metadata = { path = "crates/metadata" }
 anyhow = "1"
 async-compression = { version = "0.4", default-features = false, features = ["tokio", "gzip"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "getrandom", "password-hash"] }
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "macros"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "query", "tokio", "macros"] }
 base64 = "0.23"
 clap = { version = "4", features = ["derive", "env"] }
 crc32fast = "1"
