@@ -263,14 +263,26 @@ impl App {
             human_bytes(c.transport_limits().estimated_peak()),
             authentication(&self.state.api_keys.snapshot()),
         );
-        if let Some(pw) = &self.generated_password {
-            out.push_str(&format!(
-                "\nAdmin login         {} / {pw}\n                    (generated once; set auth.admin_password to choose your own)\n",
-                c.auth.admin_username
-            ));
+        if let Some(notice) = self.admin_login_notice() {
+            out.push('\n');
+            out.push_str(&notice);
         }
         out.push_str("\nReady.\n");
         out
+    }
+
+    /// The one place a generated admin password is shown (stdout, as part of
+    /// the banner): `None` unless this start generated it. Never logged.
+    /// `main` prints it on its own when the server stops before the banner
+    /// (the port is taken), since the password is already stored and no
+    /// later start shows it again.
+    pub fn admin_login_notice(&self) -> Option<String> {
+        self.generated_password.as_ref().map(|pw| {
+            format!(
+                "Admin login         {} / {pw}\n                    (generated once; set auth.admin_password to choose your own)\n",
+                self.state.config.auth.admin_username
+            )
+        })
     }
 
     /// Serve until `shutdown_signal` resolves, then drain accepted work

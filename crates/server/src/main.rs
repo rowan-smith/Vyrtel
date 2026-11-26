@@ -262,7 +262,17 @@ fn main() -> ExitCode {
         let backlog = config.server.listen_backlog;
         let app = App::build_with(config, options)?;
         let listener =
-            server::transport::bind(&bind, backlog).await.with_context(|| format!("cannot listen on {bind}"))?;
+            match server::transport::bind(&bind, backlog).await.with_context(|| format!("cannot listen on {bind}")) {
+                Ok(l) => l,
+                Err(e) => {
+                    // A first start has already stored its generated password;
+                    // show it now, or nothing ever will (IAM-02, #77).
+                    if let Some(notice) = app.admin_login_notice() {
+                        println!("{notice}");
+                    }
+                    return Err(e);
+                }
+            };
         if let Some((effective, somaxconn)) = server::transport::effective_backlog(backlog)
             && effective < backlog
         {
