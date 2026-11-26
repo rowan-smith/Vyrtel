@@ -100,7 +100,9 @@ The OTLP fixtures contain `{{now-…}}` placeholders; see
   segment paths (see [Testing](testing.md#storage-write-failure-tests)).
   Current faults are listed under `signals.<signal>.faults` in
   `/api/v1/system/storage`.
-* `vyrtel config` prints the effective configuration.
+* `vyrtel config` prints the effective configuration, saved settings included;
+  `vyrtel settings show` lists each setting with its source (see
+  [Admin-managed settings](configuration.md#admin-managed-settings)).
 
 ## Formatting and linting
 

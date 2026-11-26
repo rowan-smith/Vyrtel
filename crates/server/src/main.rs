@@ -8,13 +8,16 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use server::App;
 use server::app::{IncompleteShutdown, StartOptions};
-use server::config::{ByteSize, Config, LogFormat, format_duration};
+use server::config::{ByteSize, Config, LogFormat, Source, format_duration};
 use tokio::sync::watch;
 
 /// Vyrtel: small, fast, self-hosted observability (logs, traces, metrics).
 #[derive(Parser)]
 #[command(name = "vyrtel", version, about, long_about = None)]
-#[command(after_help = "Configuration precedence: defaults < config file < VYRTEL_* environment variables < flags.\n\
+#[command(after_help = "Configuration precedence: defaults < saved settings < config file < VYRTEL_* environment \
+                        variables < flags.\n\
+                        Operational settings are managed in Settings or with `vyrtel settings`; a value the file, \
+                        the environment or a flag sets wins and cannot be changed there.\n\
                         See docs/configuration.md for every option.")]
 struct Cli {
     /// Path to a TOML config file (default: ./vyrtel.toml if present).
@@ -60,6 +63,107 @@ enum Command {
     /// if not. Run the new version's binary on the stopped directory before
     /// switching versions.
     CheckDataDir,
+    /// Inspect or repair the admin-managed settings saved in the data
+    /// directory. Changes need the server stopped and apply at its next
+    /// start. See docs/configuration.md#admin-managed-settings.
+    #[command(subcommand)]
+    Settings(SettingsCommand),
+}
+
+#[derive(Subcommand)]
+enum SettingsCommand {
+    /// Every setting with the value the next start uses, and its source.
+    Show,
+    /// Only the settings that are not at their defaults.
+    Diff,
+    /// Print the saved settings as JSON (no deployment inputs or credentials).
+    Export,
+    /// Replace every saved setting with an export (a file, or - for stdin).
+    Import {
+        file: PathBuf,
+        /// Allow changes that can lose data or weaken durability.
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Save one setting, e.g. `vyrtel settings set query.timeout 1m`.
+    Set {
+        key: String,
+        value: String,
+        /// Allow a change that can lose data or weaken durability.
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Return settings to their defaults: the keys given, or --all. Also
+    /// removes a saved value this version cannot read.
+    Reset {
+        keys: Vec<String>,
+        #[arg(long, conflicts_with = "keys")]
+        all: bool,
+        /// Allow changes that can lose data or weaken durability.
+        #[arg(long)]
+        confirm: bool,
+    },
+}
+
+fn settings_command(config: &Config, command: SettingsCommand) -> ExitCode {
+    use server::settings::{self, Edit};
+    let result = match command {
+        SettingsCommand::Show => {
+            settings::read_offline(config).map(|s| print!("{}", settings::describe(config, &s, false)))
+        }
+        SettingsCommand::Diff => {
+            settings::read_offline(config).map(|s| print!("{}", settings::describe(config, &s, true)))
+        }
+        SettingsCommand::Export => settings::read_offline(config).map(|s| {
+            println!("{}", serde_json::to_string_pretty(&settings::export(&s)).unwrap_or_default());
+        }),
+        SettingsCommand::Import { file, confirm } => read_export(&file)
+            .and_then(|doc| {
+                let values = settings::import_values(&doc).map_err(|e| e.to_string())?;
+                settings::change_offline(config, Edit::Import { revisions: None, values, confirm })
+            })
+            .map(|_| ()),
+        SettingsCommand::Set { key, value, confirm } => match key.split_once('.') {
+            None => Err(format!("{key} is not a setting (use section.key, e.g. query.timeout)")),
+            Some((group, name)) => {
+                let values = [(name.to_string(), Some(settings::parse_cli_value(&value)))].into();
+                let edit = Edit::Save { group: group.to_string(), revision: 0, values, confirm };
+                settings::change_offline(config, edit).map(|_| ())
+            }
+        },
+        SettingsCommand::Reset { keys, all, confirm } => {
+            let keys = if all { settings::FIELDS.iter().map(|f| f.key.to_string()).collect() } else { keys };
+            if keys.is_empty() {
+                Err("name the settings to reset, or use --all".to_string())
+            } else {
+                settings::change_offline(config, Edit::Reset { keys, confirm }).map(|_| ())
+            }
+        }
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("vyrtel: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// A settings export from `file` (`-`: stdin), at most
+/// [`server::settings::MAX_IMPORT_BYTES`].
+fn read_export(file: &std::path::Path) -> Result<serde_json::Value, String> {
+    let limit = server::settings::MAX_IMPORT_BYTES as u64 + 1;
+    let mut text = String::new();
+    let read = if file.as_os_str() == "-" {
+        std::io::stdin().take(limit).read_to_string(&mut text)
+    } else {
+        std::fs::File::open(file).and_then(|f| f.take(limit).read_to_string(&mut text))
+    };
+    read.map_err(|e| format!("reading {}: {e}", file.display()))?;
+    if text.len() as u64 >= limit {
+        return Err(format!("{} is larger than a settings export can be", file.display()));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("{} is not JSON: {e}", file.display()))
 }
 
 fn load_config(cli: &Cli) -> anyhow::Result<Config> {
@@ -75,23 +179,31 @@ fn load_config(cli: &Cli) -> anyhow::Result<Config> {
     config.apply_env(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     if let Some(d) = &cli.data_dir {
         config.storage.path = d.clone();
+        config.origin.set("storage.path", Source::Flag);
     }
     if let Some(b) = &cli.bind {
         config.server.bind = b.clone();
+        config.origin.set("server.bind", Source::Flag);
     }
     if let Some(m) = &cli.memory_limit {
         config.storage.max_memory = ByteSize::parse(m).map_err(anyhow::Error::msg)?;
+        config.origin.set("storage.max_memory", Source::Flag);
     }
     if let Some(l) = &cli.log_level {
         config.log.level = l.clone();
+        config.origin.set("log.level", Source::Flag);
     }
     if let Some(f) = &cli.log_format {
         config.log.format = if f == "json" { LogFormat::Json } else { LogFormat::Text };
+        config.origin.set("log.format", Source::Flag);
     }
     config.validate().map_err(anyhow::Error::msg)?;
     Ok(config)
 }
 
+/// The one logging setup, from the final configuration (saved settings
+/// included): nothing is logged before it, and what goes wrong before it
+/// is printed to stderr instead.
 fn init_logging(config: &Config) {
     use tracing_subscriber::EnvFilter;
     // Vyrtel's own logs go to stderr/stdout only. They are never fed back
@@ -209,7 +321,7 @@ fn main() -> ExitCode {
     // Before any thread is started: arenas that exist already stay (see server::malloc).
     let arenas = server::malloc::cap_arenas();
     let cli = Cli::parse();
-    let config = match load_config(&cli) {
+    let mut config = match load_config(&cli) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("vyrtel: configuration error: {e:#}");
@@ -217,7 +329,20 @@ fn main() -> ExitCode {
         }
     };
     let options = StartOptions { accept_incomplete_restore: cli.accept_incomplete_restore };
-    match cli.command {
+    let command = cli.command;
+    if matches!(command, Some(Command::Serve | Command::Config) | None) {
+        // Saved settings decide logging and what is set up before the data
+        // directory is opened; the start reads them again under its lock.
+        config = match server::settings::for_start(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("vyrtel: configuration error: {e}");
+                return ExitCode::from(2);
+            }
+        };
+    }
+    match command {
+        Some(Command::Settings(c)) => return settings_command(&config, c),
         Some(Command::Healthcheck) => return healthcheck(&config),
         Some(Command::Config) => {
             println!("{}", toml::to_string_pretty(&config).unwrap_or_default());

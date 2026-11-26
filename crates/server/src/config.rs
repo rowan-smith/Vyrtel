@@ -2,6 +2,7 @@
 //!
 //! Every option is documented in docs/configuration.md.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -426,6 +427,58 @@ pub struct Config {
     pub auth: AuthSection,
     pub alerts: AlertsSection,
     pub log: LogSection,
+    /// Where each value came from. Not configuration itself.
+    #[serde(skip)]
+    pub origin: Origin,
+}
+
+/// Where a configuration value came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    Default,
+    /// The configuration file.
+    File,
+    /// A `VYRTEL_*` environment variable.
+    Environment,
+    /// A command-line flag.
+    Flag,
+    /// Admin-managed settings in the metadata database (`crate::settings`).
+    Settings,
+    /// Set in code by whatever built the [`Config`] (an embedding program
+    /// or a test) without recording a source: a value that is not the
+    /// default and has no other source.
+    Caller,
+}
+
+impl Source {
+    /// Set by the deployment (file, environment, flag or the calling code)
+    /// rather than in Settings or by default.
+    pub fn is_deployment(self) -> bool {
+        matches!(self, Source::File | Source::Environment | Source::Flag | Source::Caller)
+    }
+}
+
+/// The [`Source`] of each value set by something other than the defaults,
+/// by `section.key`. A value that is not listed is a default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Origin(BTreeMap<String, Source>);
+
+impl Origin {
+    pub fn set(&mut self, key: &str, source: Source) {
+        self.0.insert(key.to_string(), source);
+    }
+
+    pub fn get(&self, key: &str) -> Source {
+        self.0.get(key).copied().unwrap_or(Source::Default)
+    }
+}
+
+/// The `section.key` an environment variable in [`ENV_VARS`] sets.
+fn env_field(var: &str) -> Option<String> {
+    let rest = var.strip_prefix("VYRTEL_")?;
+    let (section, key) = rest.split_once('_')?;
+    Some(format!("{}.{}", section.to_ascii_lowercase(), key.to_ascii_lowercase()))
 }
 
 /// Every supported environment variable, for docs and `--help`.
@@ -546,14 +599,18 @@ fn parse_bool(s: &str) -> Result<bool, String> {
 impl Config {
     pub fn from_toml(text: &str) -> Result<Config, String> {
         let table: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
+        let mut origin = Origin::default();
         for (section, value) in &table {
             for key in value.as_table().into_iter().flat_map(|t| t.keys()) {
                 if let Some(msg) = removed_setting(section, key) {
                     return Err(msg);
                 }
+                origin.set(&format!("{section}.{key}"), Source::File);
             }
         }
-        table.try_into().map_err(|e: toml::de::Error| e.to_string())
+        let mut config: Config = table.try_into().map_err(|e: toml::de::Error| e.to_string())?;
+        config.origin = origin;
+        Ok(config)
     }
 
     pub fn load_file(path: &Path) -> Result<Config, String> {
@@ -566,6 +623,9 @@ impl Config {
         let wrap = |k: &str, r: Result<(), String>| r.map_err(|e| format!("{k}: {e}"));
         for key in ENV_VARS {
             let Some(v) = get(key) else { continue };
+            if let Some(field) = env_field(key) {
+                self.origin.set(&field, Source::Environment);
+            }
             let r: Result<(), String> = (|| {
                 match *key {
                     "VYRTEL_SERVER_BIND" => self.server.bind = v.clone(),

@@ -20,7 +20,11 @@ pub struct LiveBatch {
 }
 
 pub struct AppState {
+    /// The configuration this process runs with: the deployment's values,
+    /// saved settings and defaults, fixed at start.
     pub config: Config,
+    /// Saved settings, as changed since the start (SET-04, #253).
+    pub settings: crate::settings::Settings,
     pub budgets: MemoryBudgets,
     pub storage: Arc<Storage>,
     pub engine: Arc<Engine>,

@@ -177,6 +177,9 @@ change never applies half way through a request.
 | GET    | `/api/v1/live/logs`                           | `query`  |
 | GET    | `/api/v1/traces`, `/api/v1/traces/{trace_id}`, `/api/v1/metrics` | `query` |
 | GET    | `/api/v1/system/info`, `…/storage`, `…/query-stats`, `…/config` | `admin` |
+| GET    | `/api/v1/settings`, `/api/v1/settings/export` | `admin`  |
+| PUT    | `/api/v1/settings/{group}`                    | `admin`  |
+| POST   | `/api/v1/settings/{group}/cancel`, `/api/v1/settings/import` | `admin` |
 | GET, POST | `/api/v1/dashboards`                       | `admin`  |
 | GET, PUT, DELETE | `/api/v1/dashboards/{id}`           | `admin`  |
 | POST   | `/api/v1/dashboards/{id}/panels`              | `admin`  |
@@ -843,6 +846,88 @@ change is recorded and POSTed to the webhook (3 attempts, 10 s timeout):
   "evaluatedAt": "2026-10-06T10:21:00Z"
 }
 ```
+
+## Settings
+
+Admin-managed settings ([configuration](configuration.md#admin-managed-settings)):
+the operational options an administrator saves in the data directory.
+Every route needs the `admin` scope; a change made with a session cookie
+must show it comes from Vyrtel's own pages: `Sec-Fetch-Site: same-origin`
+or, without that header, an `Origin` naming this host. Anything else,
+including a request with neither header, gets `403`. Clients that cannot
+send them use an `admin` API key. Nothing here
+returns or accepts the admin password, the ingestion protection latch,
+`storage.path` or `server.bind`. Every setting currently applies at the
+next restart.
+
+```
+GET  /api/v1/settings                  every group, its revision and fields; deployment inputs; change records
+PUT  /api/v1/settings/{group}          save fields of one group: {"revision": n, "values": {...}, "confirm": false}
+POST /api/v1/settings/{group}/cancel   make the group's next-start values its running ones: {"revision": n}
+GET  /api/v1/settings/export           saved values only, as an export document
+POST /api/v1/settings/import           replace every saved value: {"revisions": {...}, "export": {...}, "confirm": false}
+```
+
+`GET /api/v1/settings`:
+
+```json
+{
+  "restartRequired": true,
+  "valid": true,
+  "groups": [
+    { "name": "query", "revision": 3, "fields": [
+      { "key": "query.timeout", "name": "timeout", "type": "duration", "choices": null,
+        "min": "1ms", "max": null, "description": "Execution time of one query request (504 beyond).",
+        "dangerous": false, "apply": "restart",
+        "default": "30s", "configured": "45s", "effective": "30s", "source": "default",
+        "pending": "45s", "managedBy": null, "overridden": false } ] }
+  ],
+  "deployment": [
+    { "key": "server.bind", "value": "0.0.0.0:8080", "source": "default" },
+    { "key": "auth.admin_password", "value": null, "set": true, "source": "environment", "firstStartOnly": true }
+  ],
+  "changes": [
+    { "at": 1764115200000, "actor": "user:admin", "action": "save", "groups": ["query"],
+      "revisions": {"query": 3}, "fields": ["query.timeout"], "outcome": "committed", "apply": "restart" }
+  ]
+}
+```
+
+| Field        | Meaning                                                                                       |
+|--------------|-----------------------------------------------------------------------------------------------|
+| `type`       | `duration`, `bytes`, `count`, `boolean`, `choice` (one of `choices`), `retention` (a duration or `"forever"`), `logFilter` |
+| `min`, `max` | Bounds of the value on its own, for display; the server checks the whole configuration        |
+| `dangerous`  | A change can lose data or weaken durability, and must be sent with `"confirm": true`          |
+| `apply`      | When a saved value takes effect: `restart`                                                    |
+| `default`    | The built-in default                                                                          |
+| `configured` | The saved value, or `null`                                                                    |
+| `effective`  | What the running process uses, and `source` where it came from: `default`, `settings`, `file`, `environment`, `flag`, or `caller` (set in code by a program embedding Vyrtel) |
+| `pending`    | What the next start will use, when that differs from `effective`; otherwise `null`            |
+| `managedBy`  | `file`, `environment`, `flag` or `caller` when the deployment sets this field, which wins: it cannot be saved here |
+| `overridden` | A saved value exists that `managedBy` overrides                                               |
+
+Values are sent and returned in the forms the configuration file uses and
+stored canonically: durations as strings (`"90s"`, a number means
+seconds), sizes as bytes (`"64MB"` is accepted), retention as a duration
+or `"forever"`. `null` in `values` returns a field to its default. A
+change is validated against the complete configuration it produces and
+saved atomically with its group's next revision; the response is the
+updated settings document. Errors (nothing is saved):
+
+| Status | `code`                          | When                                                          |
+|--------|---------------------------------|---------------------------------------------------------------|
+| `400`  | `invalid_setting`               | A value of the wrong type, out of range, or a configuration that would not start (details in `message`) |
+| `400`  | `unknown_setting`               | Not an admin-managed setting (including deployment inputs)    |
+| `404`  | `unknown_settings_group`        | Not a settings group                                          |
+| `409`  | `settings_conflict`             | `revision` is not the group's current one (`group`, `expected`, `current`); reload and retry |
+| `409`  | `setting_managed_by_deployment` | The file, environment or a flag sets it (`key`)               |
+| `428`  | `confirmation_required`         | A dangerous field changes without `"confirm": true` (`fields`) |
+
+An export is `{"format": "vyrtel.settings", "version": 1, "vyrtel":
+"<version>", "exportedAt": <ms>, "settings": {"query.timeout": "45s", …}}`.
+An import sends one back with every group's current revision (a group
+left out counts as revision 0) and replaces all saved values, or none if
+any entry is refused.
 
 ## System
 
